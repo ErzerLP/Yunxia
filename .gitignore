@@ -16,6 +16,16 @@ Thumbs.db
 *.orig
 *.rej
 
+# Local design / planning documents (keep local, do not push)
+docs/
+DESIGN.md
+DOCS-INDEX.md
+FRONTEND-DESIGN.md
+FRONTEND-PLAN.md
+INTERFACE-ARCHITECTURE.md
+PRD.md
+TAD.md
+
 # Backend local runtime artifacts
 backend/.env
 backend/data/
