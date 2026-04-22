@@ -5,6 +5,15 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        GO_IMAGE: "${YUNXIA_DOCKER_GO_IMAGE:-golang:1.25-bookworm}"
+        RUNTIME_IMAGE: "${YUNXIA_DOCKER_RUNTIME_IMAGE:-debian:bookworm-slim}"
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        http_proxy: "${http_proxy:-}"
+        https_proxy: "${https_proxy:-}"
+        NO_PROXY: "${NO_PROXY:-}"
+        no_proxy: "${no_proxy:-}"
     container_name: yunxia-backend
     restart: unless-stopped
     ports:
@@ -36,6 +45,14 @@ services:
     build:
       context: ./backend
       dockerfile: docker/aria2.Dockerfile
+      args:
+        ARIA2_BASE_IMAGE: "${YUNXIA_DOCKER_ARIA2_BASE_IMAGE:-alpine:3.22}"
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        http_proxy: "${http_proxy:-}"
+        https_proxy: "${https_proxy:-}"
+        NO_PROXY: "${NO_PROXY:-}"
+        no_proxy: "${no_proxy:-}"
     container_name: yunxia-aria2
     restart: unless-stopped
     environment:

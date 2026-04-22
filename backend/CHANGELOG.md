@@ -675,6 +675,22 @@
 - `go test ./internal/application/service ./internal/interfaces/http -run 'Test(ACL|Share|Task|Trash)' -v`
 - `go test ./...`
 
+#### 14.6 Docker 构建兼容性补强
+
+- `backend/Dockerfile` 新增可配置基础镜像参数：
+  - `GO_IMAGE`
+  - `RUNTIME_IMAGE`
+- `backend/docker/aria2.Dockerfile` 新增可配置基础镜像参数：
+  - `ARIA2_BASE_IMAGE`
+- `docker-compose.backend.yml` 现在会透传：
+  - 基础镜像选择参数
+  - `HTTP_PROXY / HTTPS_PROXY / NO_PROXY`
+  - `http_proxy / https_proxy / no_proxy`
+- 目的：
+  - 兼容测试机已缓存基础镜像
+  - 兼容受限网络下的 docker build 代理透传
+  - 避免因固定镜像 tag 或代理不可达导致部署验证被阻塞
+
 ---
 
 ## 维护约定

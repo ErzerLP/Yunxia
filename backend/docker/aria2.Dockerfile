@@ -1,4 +1,13 @@
-FROM alpine:3.22
+ARG ARIA2_BASE_IMAGE=alpine:3.22
+
+FROM ${ARIA2_BASE_IMAGE}
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG NO_PROXY
+ARG no_proxy
 
 RUN apk add --no-cache aria2 ca-certificates tzdata
 
