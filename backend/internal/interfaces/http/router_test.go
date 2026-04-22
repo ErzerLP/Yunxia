@@ -470,6 +470,10 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", fakeS3),
 	)
+	vfsSvc := appsvc.NewVFSService(
+		sourceRepo,
+		appsvc.WithVFSFileDriver("s3", fakeS3),
+	)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
 	authHandler := httphandler.NewAuthHandler(authSvc)
@@ -482,6 +486,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	uploadHandler := httphandler.NewUploadHandler(uploadSvc)
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
+	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
 	webdavHandler := httphandler.NewWebDAVHandler("/dav", sourceRepo, configRepo, userRepo, aclAuthorizer, hasher)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
 
@@ -491,6 +496,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	RegisterACLRoutes(engine, aclHandler, authMW)
 	RegisterTaskRoutes(engine, taskHandler, authMW)
 	RegisterShareRoutes(engine, shareHandler, authMW)
+	RegisterVFSRoutes(engine, vfsHandler, authMW)
 	RegisterWebDAVRoutes(engine, "/dav", webdavHandler)
 	return engine
 }

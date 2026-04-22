@@ -64,6 +64,24 @@ func (s *VFSService) ResolveWritableTarget(ctx context.Context, virtualPath stri
 	return resolved, nil
 }
 
+// ResolvePath 将统一虚拟路径解析到真实挂载源。
+func (s *VFSService) ResolvePath(ctx context.Context, virtualPath string) (ResolvedPath, error) {
+	mounts, err := s.registry.ListEnabledMounts(ctx)
+	if err != nil {
+		return ResolvedPath{}, err
+	}
+
+	resolved, err := resolveVirtualPathByLongestPrefix(virtualPath, mounts)
+	if err != nil {
+		return ResolvedPath{}, err
+	}
+	if !resolved.IsRealMount {
+		return ResolvedPath{}, ErrFileNotFound
+	}
+
+	return resolved, nil
+}
+
 // List 列出统一虚拟目录树中的当前目录内容。
 func (s *VFSService) List(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error) {
 	normalizedCurrentPath, err := normalizeVirtualPath(currentPath)

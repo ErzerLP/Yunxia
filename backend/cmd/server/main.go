@@ -114,6 +114,10 @@ func main() {
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", s3Driver),
 	)
+	vfsSvc := appsvc.NewVFSService(
+		sourceRepo,
+		appsvc.WithVFSFileDriver("s3", s3Driver),
+	)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
 	authHandler := httphandler.NewAuthHandler(authSvc)
@@ -126,6 +130,7 @@ func main() {
 	uploadHandler := httphandler.NewUploadHandler(uploadSvc)
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
+	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
 	webdavHandler := httphandler.NewWebDAVHandler(cfg.WebDAV.Prefix, sourceRepo, systemConfigRepo, userRepo, aclAuthorizer, hasher)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
 
@@ -135,6 +140,7 @@ func main() {
 	httpiface.RegisterACLRoutes(engine, aclHandler, authMW)
 	httpiface.RegisterTaskRoutes(engine, taskHandler, authMW)
 	httpiface.RegisterShareRoutes(engine, shareHandler, authMW)
+	httpiface.RegisterVFSRoutes(engine, vfsHandler, authMW)
 	httpiface.RegisterWebDAVRoutes(engine, cfg.WebDAV.Prefix, webdavHandler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

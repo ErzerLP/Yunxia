@@ -31,6 +31,25 @@ func joinVirtualPath(parentPath string, name string) string {
 	return parentPath + "/" + strings.TrimPrefix(name, "/")
 }
 
+// mergeMountAndInnerPath 将挂载路径与源内路径合成为统一虚拟路径。
+func mergeMountAndInnerPath(mountPath string, innerPath string) string {
+	normalizedMountPath, err := normalizeMountPath(mountPath)
+	if err != nil {
+		return ""
+	}
+	normalizedInnerPath, err := normalizeVirtualPath(innerPath)
+	if err != nil {
+		return ""
+	}
+	if normalizedInnerPath == "/" {
+		return normalizedMountPath
+	}
+	if normalizedMountPath == "/" {
+		return normalizedInnerPath
+	}
+	return normalizedMountPath + normalizedInnerPath
+}
+
 // isSubPath 判断 target 是否位于 base 之下，包含自身。
 func isSubPath(base string, target string) bool {
 	normalizedBase, err := normalizeVirtualPath(base)

@@ -32,3 +32,24 @@ type VFSSearchResponse struct {
 	PathPrefix string    `json:"path_prefix"`
 	Keyword    string    `json:"keyword"`
 }
+
+// VFSListQuery 表示统一虚拟目录列表查询参数。
+type VFSListQuery struct {
+	Path string `form:"path"`
+}
+
+// VFSSearchQuery 表示统一虚拟目录搜索查询参数。
+type VFSSearchQuery struct {
+	Path     string `form:"path"`
+	Keyword  string `form:"keyword" binding:"required"`
+	Page     int    `form:"page"`
+	PageSize int    `form:"page_size"`
+}
+
+// VFSAccessURLRequest 表示统一虚拟目录访问地址请求。
+type VFSAccessURLRequest struct {
+	Path        string `json:"path" binding:"required"`
+	Purpose     string `json:"purpose" binding:"required"`
+	Disposition string `json:"disposition" binding:"required"`
+	ExpiresIn   int    `json:"expires_in"`
+}
