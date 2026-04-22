@@ -1154,6 +1154,41 @@ func isHiddenStorageEntry(entry StorageEntry) bool {
 	return isHiddenVirtualPath(entry.Path)
 }
 
+func sourcePathExists(ctx context.Context, source *entity.StorageSource, virtualPath string, fileDrivers map[string]FileDriver) (bool, error) {
+	switch source.DriverType {
+	case "local":
+		return localPathExists(source, virtualPath)
+	default:
+		driver, exists := fileDrivers[source.DriverType]
+		if !exists {
+			return false, ErrSourceDriverUnsupported
+		}
+		_, err := driver.Stat(ctx, source, virtualPath)
+		if err == nil {
+			return true, nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+}
+
+func localPathExists(source *entity.StorageSource, virtualPath string) (bool, error) {
+	_, physicalPath, err := resolvePhysicalPath(source, virtualPath)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(physicalPath)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
 func isHiddenVirtualPath(virtualPath string) bool {
 	trimmed := strings.Trim(strings.TrimSpace(virtualPath), "/")
 	if trimmed == "" {

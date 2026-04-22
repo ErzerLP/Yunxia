@@ -19,6 +19,10 @@ var (
 	ErrSourceInUse = errors.New("source in use")
 	// ErrPathInvalid 表示路径非法。
 	ErrPathInvalid = errors.New("path invalid")
+	// ErrNoBackingStorage 表示目标虚拟路径没有可承接写入的真实存储源。
+	ErrNoBackingStorage = errors.New("no backing storage")
+	// ErrNameConflict 表示统一虚拟目录树中出现同父目录重名冲突。
+	ErrNameConflict = errors.New("name conflict")
 	// ErrFileNotFound 表示文件不存在。
 	ErrFileNotFound = errors.New("file not found")
 	// ErrFileAlreadyExists 表示文件已存在。
