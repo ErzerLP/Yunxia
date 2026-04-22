@@ -140,6 +140,10 @@ func (h *UploadHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusUnprocessableEntity, "UPLOAD_TOO_LARGE", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_DRIVER_UNSUPPORTED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrNoBackingStorage):
+		httpresp.Error(c, http.StatusConflict, "NO_BACKING_STORAGE", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrNameConflict):
+		httpresp.Error(c, http.StatusConflict, "NAME_CONFLICT", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrPathInvalid):
 		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrFileAlreadyExists):

@@ -98,12 +98,18 @@ func main() {
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashFileDriver("s3", s3Driver),
 	)
+	vfsSvc := appsvc.NewVFSService(
+		sourceRepo,
+		appsvc.WithVFSFileDriver("s3", s3Driver),
+		appsvc.WithVFSFileOperator(fileSvc),
+	)
 	uploadSvc := appsvc.NewUploadService(
 		sourceRepo,
 		uploadRepo,
 		options,
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadDriver("s3", s3Driver),
+		appsvc.WithUploadVFSResolver(vfsSvc),
 	)
 	taskSvc := appsvc.NewTaskService(taskRepo, sourceRepo, downloadSvc, appsvc.WithTaskACLAuthorizer(aclAuthorizer))
 	shareSvc := appsvc.NewShareService(
@@ -113,11 +119,6 @@ func main() {
 		fileAccessSvc,
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", s3Driver),
-	)
-	vfsSvc := appsvc.NewVFSService(
-		sourceRepo,
-		appsvc.WithVFSFileDriver("s3", s3Driver),
-		appsvc.WithVFSFileOperator(fileSvc),
 	)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)

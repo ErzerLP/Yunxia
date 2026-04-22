@@ -28,6 +28,17 @@ type UploadService struct {
 	aclAuthorizer *ACLAuthorizer
 	options       SystemOptions
 	uploadDrivers map[string]UploadDriver
+	vfsResolver   interface {
+		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
+	}
+}
+
+type resolvedUploadInitTarget struct {
+	source                  *entity.StorageSource
+	path                    string
+	targetVirtualParentPath string
+	resolvedSourceID        uint
+	resolvedInnerParentPath string
 }
 
 // NewUploadService 创建上传服务。
@@ -46,36 +57,37 @@ func NewUploadService(sourceRepo domainrepo.SourceRepository, uploadRepo domainr
 
 // Init 初始化上传会话。
 func (s *UploadService) Init(ctx context.Context, userID uint, req appdto.UploadInitRequest) (*appdto.UploadInitResponse, error) {
-	source, err := s.sourceRepo.FindByID(ctx, req.SourceID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.authorizePath(ctx, source.ID, req.Path, ACLActionWrite); err != nil {
-		return nil, err
-	}
-	if source.DriverType != "local" {
-		return s.initWithUploadDriver(ctx, userID, source, req)
-	}
-	return s.initLocal(ctx, userID, source, req)
-}
-
-func (s *UploadService) initLocal(ctx context.Context, userID uint, source *entity.StorageSource, req appdto.UploadInitRequest) (*appdto.UploadInitResponse, error) {
-	if req.FileSize > s.options.MaxUploadSize {
-		return nil, ErrUploadTooLarge
-	}
 	if err := validateFileName(req.Filename); err != nil {
 		return nil, err
 	}
-	targetDir, err := normalizeVirtualPath(req.Path)
+
+	target, err := s.resolveInitTarget(ctx, req)
 	if err != nil {
 		return nil, err
 	}
+	req.SourceID = target.source.ID
+	req.Path = target.path
+
+	if err := s.authorizePath(ctx, target.source.ID, target.path, ACLActionWrite); err != nil {
+		return nil, err
+	}
+	if target.source.DriverType != "local" {
+		return s.initWithUploadDriver(ctx, userID, target, req)
+	}
+	return s.initLocal(ctx, userID, target, req)
+}
+
+func (s *UploadService) initLocal(ctx context.Context, userID uint, target resolvedUploadInitTarget, req appdto.UploadInitRequest) (*appdto.UploadInitResponse, error) {
+	if req.FileSize > s.options.MaxUploadSize {
+		return nil, ErrUploadTooLarge
+	}
+	targetDir := target.path
 
 	targetVirtual := path.Join(targetDir, req.Filename)
 	if targetDir == "/" {
 		targetVirtual = "/" + req.Filename
 	}
-	_, targetPhysical, err := resolvePhysicalPath(source, targetVirtual)
+	_, targetPhysical, err := resolvePhysicalPath(target.source, targetVirtual)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +95,7 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, source *enti
 		hash, hashErr := hashFileMD5(targetPhysical)
 		if hashErr == nil && hash == req.FileHash {
 			info, _ := os.Stat(targetPhysical)
-			item := buildFileItem(source.ID, targetVirtual, info)
+			item := buildFileItem(target.source.ID, targetVirtual, info)
 			return &appdto.UploadInitResponse{
 				IsFastUpload:     true,
 				File:             &item,
@@ -118,21 +130,24 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, source *enti
 	}
 	now := time.Now()
 	session := &entity.UploadSession{
-		UploadID:       "upl_" + stringsNoDash(uuid.NewString()),
-		UserID:         userID,
-		SourceID:       req.SourceID,
-		Path:           targetDir,
-		Filename:       req.Filename,
-		FileSize:       req.FileSize,
-		FileHash:       req.FileHash,
-		ChunkSize:      s.options.DefaultChunkSize,
-		TotalChunks:    totalChunks,
-		UploadedChunks: []int{},
-		Status:         "uploading",
-		IsFastUpload:   false,
-		ExpiresAt:      now.Add(7 * 24 * time.Hour),
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		UploadID:                "upl_" + stringsNoDash(uuid.NewString()),
+		UserID:                  userID,
+		SourceID:                req.SourceID,
+		Path:                    targetDir,
+		TargetVirtualParentPath: target.targetVirtualParentPath,
+		ResolvedSourceID:        target.resolvedSourceID,
+		ResolvedInnerParentPath: target.resolvedInnerParentPath,
+		Filename:                req.Filename,
+		FileSize:                req.FileSize,
+		FileHash:                req.FileHash,
+		ChunkSize:               s.options.DefaultChunkSize,
+		TotalChunks:             totalChunks,
+		UploadedChunks:          []int{},
+		Status:                  "uploading",
+		IsFastUpload:            false,
+		ExpiresAt:               now.Add(7 * 24 * time.Hour),
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 	if err := s.uploadRepo.Create(ctx, session); err != nil {
 		return nil, err
@@ -155,21 +170,15 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, source *enti
 	}, nil
 }
 
-func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, source *entity.StorageSource, req appdto.UploadInitRequest) (*appdto.UploadInitResponse, error) {
-	driver, err := s.getUploadDriver(source.DriverType)
+func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, target resolvedUploadInitTarget, req appdto.UploadInitRequest) (*appdto.UploadInitResponse, error) {
+	driver, err := s.getUploadDriver(target.source.DriverType)
 	if err != nil {
 		return nil, err
 	}
 	if req.FileSize > s.options.MaxUploadSize {
 		return nil, ErrUploadTooLarge
 	}
-	if err := validateFileName(req.Filename); err != nil {
-		return nil, err
-	}
-	targetDir, err := normalizeVirtualPath(req.Path)
-	if err != nil {
-		return nil, err
-	}
+	targetDir := target.path
 
 	partSize := s.options.DefaultChunkSize
 	totalChunks := int((req.FileSize + partSize - 1) / partSize)
@@ -177,7 +186,7 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, s
 		totalChunks = 1
 	}
 
-	plan, err := driver.InitMultipartUpload(ctx, source, MultipartUploadRequest{
+	plan, err := driver.InitMultipartUpload(ctx, target.source, MultipartUploadRequest{
 		VirtualPath: targetDir,
 		Filename:    req.Filename,
 		ContentType: detectContentType(req.Filename),
@@ -196,22 +205,25 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, s
 
 	now := time.Now()
 	session := &entity.UploadSession{
-		UploadID:        "upl_" + stringsNoDash(uuid.NewString()),
-		UserID:          userID,
-		SourceID:        req.SourceID,
-		Path:            targetDir,
-		Filename:        req.Filename,
-		FileSize:        req.FileSize,
-		FileHash:        req.FileHash,
-		ChunkSize:       partSize,
-		TotalChunks:     totalChunks,
-		UploadedChunks:  []int{},
-		StorageDataJSON: string(stateJSON),
-		Status:          "uploading",
-		IsFastUpload:    false,
-		ExpiresAt:       now.Add(7 * 24 * time.Hour),
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		UploadID:                "upl_" + stringsNoDash(uuid.NewString()),
+		UserID:                  userID,
+		SourceID:                req.SourceID,
+		Path:                    targetDir,
+		TargetVirtualParentPath: target.targetVirtualParentPath,
+		ResolvedSourceID:        target.resolvedSourceID,
+		ResolvedInnerParentPath: target.resolvedInnerParentPath,
+		Filename:                req.Filename,
+		FileSize:                req.FileSize,
+		FileHash:                req.FileHash,
+		ChunkSize:               partSize,
+		TotalChunks:             totalChunks,
+		UploadedChunks:          []int{},
+		StorageDataJSON:         string(stateJSON),
+		Status:                  "uploading",
+		IsFastUpload:            false,
+		ExpiresAt:               now.Add(7 * 24 * time.Hour),
+		CreatedAt:               now,
+		UpdatedAt:               now,
 	}
 	if err := s.uploadRepo.Create(ctx, session); err != nil {
 		return nil, err
@@ -223,7 +235,7 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, s
 		Upload:       &view,
 		Transport: &appdto.UploadTransport{
 			Mode:        "direct_parts",
-			DriverType:  source.DriverType,
+			DriverType:  target.source.DriverType,
 			Concurrency: 3,
 			RetryLimit:  3,
 		},
@@ -447,19 +459,85 @@ func (s *UploadService) chunkFilePath(uploadID string, index int) string {
 
 func toUploadSessionView(session *entity.UploadSession) appdto.UploadSessionView {
 	return appdto.UploadSessionView{
-		UploadID:       session.UploadID,
-		SourceID:       session.SourceID,
-		Path:           session.Path,
-		Filename:       session.Filename,
-		FileSize:       session.FileSize,
-		FileHash:       session.FileHash,
-		ChunkSize:      session.ChunkSize,
-		TotalChunks:    session.TotalChunks,
-		UploadedChunks: session.UploadedChunks,
-		Status:         session.Status,
-		IsFastUpload:   session.IsFastUpload,
-		ExpiresAt:      session.ExpiresAt.Format(time.RFC3339),
+		UploadID:                session.UploadID,
+		SourceID:                session.SourceID,
+		Path:                    session.Path,
+		Filename:                session.Filename,
+		FileSize:                session.FileSize,
+		FileHash:                session.FileHash,
+		ChunkSize:               session.ChunkSize,
+		TotalChunks:             session.TotalChunks,
+		UploadedChunks:          session.UploadedChunks,
+		Status:                  session.Status,
+		IsFastUpload:            session.IsFastUpload,
+		ExpiresAt:               session.ExpiresAt.Format(time.RFC3339),
+		TargetVirtualParentPath: session.TargetVirtualParentPath,
+		ResolvedSourceID:        session.ResolvedSourceID,
+		ResolvedInnerParentPath: session.ResolvedInnerParentPath,
 	}
+}
+
+func (s *UploadService) resolveInitTarget(ctx context.Context, req appdto.UploadInitRequest) (resolvedUploadInitTarget, error) {
+	if strings.TrimSpace(req.TargetVirtualParentPath) != "" {
+		virtualParentPath, err := normalizeVirtualPath(req.TargetVirtualParentPath)
+		if err != nil {
+			return resolvedUploadInitTarget{}, err
+		}
+
+		resolver := s.requireUploadVFSResolver()
+		resolved, err := resolver.ResolveWritableTarget(ctx, joinVirtualPath(virtualParentPath, req.Filename))
+		if err != nil {
+			return resolvedUploadInitTarget{}, err
+		}
+		resolvedInnerParentPath, _, err := splitParentName(resolved.InnerPath)
+		if err != nil {
+			return resolvedUploadInitTarget{}, err
+		}
+		return resolvedUploadInitTarget{
+			source:                  resolved.Source,
+			path:                    resolvedInnerParentPath,
+			targetVirtualParentPath: virtualParentPath,
+			resolvedSourceID:        resolved.Source.ID,
+			resolvedInnerParentPath: resolvedInnerParentPath,
+		}, nil
+	}
+
+	if req.SourceID == 0 {
+		return resolvedUploadInitTarget{}, ErrPathInvalid
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		return resolvedUploadInitTarget{}, ErrPathInvalid
+	}
+
+	source, err := s.sourceRepo.FindByID(ctx, req.SourceID)
+	if err != nil {
+		return resolvedUploadInitTarget{}, err
+	}
+	normalizedPath, err := normalizeVirtualPath(req.Path)
+	if err != nil {
+		return resolvedUploadInitTarget{}, err
+	}
+	return resolvedUploadInitTarget{
+		source:                  source,
+		path:                    normalizedPath,
+		resolvedSourceID:        source.ID,
+		resolvedInnerParentPath: normalizedPath,
+	}, nil
+}
+
+func (s *UploadService) requireUploadVFSResolver() interface {
+	ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
+} {
+	if s.vfsResolver == nil {
+		return unsupportedUploadVFSResolver{}
+	}
+	return s.vfsResolver
+}
+
+type unsupportedUploadVFSResolver struct{}
+
+func (unsupportedUploadVFSResolver) ResolveWritableTarget(context.Context, string) (ResolvedPath, error) {
+	return ResolvedPath{}, ErrSourceDriverUnsupported
 }
 
 func stringsNoDash(value string) string {

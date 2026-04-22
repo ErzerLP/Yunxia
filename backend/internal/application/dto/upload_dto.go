@@ -2,18 +2,21 @@ package dto
 
 // UploadSessionView 表示上传会话视图。
 type UploadSessionView struct {
-	UploadID       string `json:"upload_id"`
-	SourceID       uint   `json:"source_id"`
-	Path           string `json:"path"`
-	Filename       string `json:"filename"`
-	FileSize       int64  `json:"file_size"`
-	FileHash       string `json:"file_hash"`
-	ChunkSize      int64  `json:"chunk_size"`
-	TotalChunks    int    `json:"total_chunks"`
-	UploadedChunks []int  `json:"uploaded_chunks"`
-	Status         string `json:"status"`
-	IsFastUpload   bool   `json:"is_fast_upload"`
-	ExpiresAt      string `json:"expires_at"`
+	UploadID                string `json:"upload_id"`
+	SourceID                uint   `json:"source_id"`
+	Path                    string `json:"path"`
+	Filename                string `json:"filename"`
+	FileSize                int64  `json:"file_size"`
+	FileHash                string `json:"file_hash"`
+	ChunkSize               int64  `json:"chunk_size"`
+	TotalChunks             int    `json:"total_chunks"`
+	UploadedChunks          []int  `json:"uploaded_chunks"`
+	Status                  string `json:"status"`
+	IsFastUpload            bool   `json:"is_fast_upload"`
+	ExpiresAt               string `json:"expires_at"`
+	TargetVirtualParentPath string `json:"target_virtual_parent_path,omitempty"`
+	ResolvedSourceID        uint   `json:"resolved_source_id,omitempty"`
+	ResolvedInnerParentPath string `json:"resolved_inner_parent_path,omitempty"`
 }
 
 // UploadTransport 表示上传传输方式。
@@ -39,12 +42,13 @@ type UploadPartInstruction struct {
 
 // UploadInitRequest 表示上传初始化请求。
 type UploadInitRequest struct {
-	SourceID       uint   `json:"source_id" binding:"required"`
-	Path           string `json:"path" binding:"required"`
-	Filename       string `json:"filename" binding:"required"`
-	FileSize       int64  `json:"file_size" binding:"required,gt=0"`
-	FileHash       string `json:"file_hash"`
-	LastModifiedAt string `json:"last_modified_at"`
+	SourceID                uint   `json:"source_id"`
+	Path                    string `json:"path"`
+	TargetVirtualParentPath string `json:"target_virtual_parent_path"`
+	Filename                string `json:"filename" binding:"required"`
+	FileSize                int64  `json:"file_size" binding:"required,gt=0"`
+	FileHash                string `json:"file_hash"`
+	LastModifiedAt          string `json:"last_modified_at"`
 }
 
 // UploadInitResponse 表示上传初始化响应。
@@ -66,7 +70,7 @@ type UploadChunkResponse struct {
 
 // UploadFinishRequest 表示上传完成请求。
 type UploadFinishRequest struct {
-	UploadID string          `json:"upload_id" binding:"required"`
+	UploadID string           `json:"upload_id" binding:"required"`
 	Parts    []UploadPartETag `json:"parts"`
 }
 
