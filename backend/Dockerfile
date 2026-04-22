@@ -1,4 +1,14 @@
-FROM golang:1.25-bookworm AS builder
+ARG GO_IMAGE=golang:1.25-bookworm
+ARG RUNTIME_IMAGE=debian:bookworm-slim
+
+FROM ${GO_IMAGE} AS builder
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG NO_PROXY
+ARG no_proxy
 
 WORKDIR /src
 
@@ -13,7 +23,14 @@ COPY . .
 
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/yunxia-server ./cmd/server
 
-FROM debian:bookworm-slim AS runner
+FROM ${RUNTIME_IMAGE} AS runner
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG http_proxy
+ARG https_proxy
+ARG NO_PROXY
+ARG no_proxy
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata curl \
