@@ -127,6 +127,56 @@ func TestVFSAccessURLByVirtualPath(t *testing.T) {
 	}
 }
 
+func TestVFSUploadInitToMappedPath(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	docsSourceID := createLocalSourceWithMountForTest(t, engine, accessToken, "docs-root", "/docs")
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v1/upload/init", map[string]any{
+		"target_virtual_parent_path": "/docs",
+		"filename":                   "brief.txt",
+		"file_size":                  5,
+		"file_hash":                  "5d41402abc4b2a76b9719d911017c592",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs upload init expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	initPayload := decodeEnvelope[uploadInitData](t, rec.Body.Bytes())
+	if initPayload.Upload.SourceID != docsSourceID {
+		t.Fatalf("expected resolved source %d, got %+v", docsSourceID, initPayload.Upload)
+	}
+	if initPayload.Upload.Path != "/" {
+		t.Fatalf("expected resolved inner parent path /, got %+v", initPayload.Upload)
+	}
+	if initPayload.Upload.TargetVirtualParentPath != "/docs" {
+		t.Fatalf("expected target virtual parent path /docs, got %+v", initPayload.Upload)
+	}
+	if initPayload.Upload.ResolvedSourceID != docsSourceID || initPayload.Upload.ResolvedInnerParentPath != "/" {
+		t.Fatalf("expected resolved snapshot to be persisted, got %+v", initPayload.Upload)
+	}
+}
+
+func TestVFSUploadInitRejectsPureVirtualParent(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	_ = createLocalSourceWithMountForTest(t, engine, accessToken, "docs-team", "/docs/team")
+	_ = createLocalSourceWithMountForTest(t, engine, accessToken, "docs-personal", "/docs/personal")
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v1/upload/init", map[string]any{
+		"target_virtual_parent_path": "/docs",
+		"filename":                   "brief.txt",
+		"file_size":                  5,
+		"file_hash":                  "5d41402abc4b2a76b9719d911017c592",
+	}, accessToken)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("vfs pure virtual upload init expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "NO_BACKING_STORAGE")
+}
+
 func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, _ := bootstrapAdmin(t, engine)

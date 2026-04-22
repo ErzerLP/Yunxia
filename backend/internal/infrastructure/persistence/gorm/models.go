@@ -64,22 +64,25 @@ type StorageSourceModel struct {
 
 // UploadSessionModel 表示上传会话表。
 type UploadSessionModel struct {
-	UploadID           string    `gorm:"primaryKey;size:64"`
-	UserID             uint      `gorm:"index;not null"`
-	SourceID           uint      `gorm:"index;not null"`
-	Path               string    `gorm:"size:1024;not null"`
-	Filename           string    `gorm:"size:255;not null"`
-	FileSize           int64     `gorm:"not null"`
-	FileHash           string    `gorm:"size:64;not null"`
-	ChunkSize          int64     `gorm:"not null"`
-	TotalChunks        int       `gorm:"not null"`
-	UploadedChunksJSON string    `gorm:"type:text;not null"`
-	StorageDataJSON    string    `gorm:"type:text;not null;default:''"`
-	Status             string    `gorm:"size:32;not null"`
-	IsFastUpload       bool      `gorm:"not null;default:false"`
-	ExpiresAt          time.Time `gorm:"index;not null"`
-	CreatedAt          time.Time `gorm:"not null"`
-	UpdatedAt          time.Time `gorm:"not null"`
+	UploadID                string    `gorm:"primaryKey;size:64"`
+	UserID                  uint      `gorm:"index;not null"`
+	SourceID                uint      `gorm:"index;not null"`
+	Path                    string    `gorm:"size:1024;not null"`
+	TargetVirtualParentPath string    `gorm:"size:1024;not null;default:''"`
+	ResolvedSourceID        uint      `gorm:"index;not null;default:0"`
+	ResolvedInnerParentPath string    `gorm:"size:1024;not null;default:''"`
+	Filename                string    `gorm:"size:255;not null"`
+	FileSize                int64     `gorm:"not null"`
+	FileHash                string    `gorm:"size:64;not null"`
+	ChunkSize               int64     `gorm:"not null"`
+	TotalChunks             int       `gorm:"not null"`
+	UploadedChunksJSON      string    `gorm:"type:text;not null"`
+	StorageDataJSON         string    `gorm:"type:text;not null;default:''"`
+	Status                  string    `gorm:"size:32;not null"`
+	IsFastUpload            bool      `gorm:"not null;default:false"`
+	ExpiresAt               time.Time `gorm:"index;not null"`
+	CreatedAt               time.Time `gorm:"not null"`
+	UpdatedAt               time.Time `gorm:"not null"`
 }
 
 // DownloadTaskModel 表示下载任务表。

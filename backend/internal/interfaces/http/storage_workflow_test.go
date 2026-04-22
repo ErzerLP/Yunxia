@@ -41,13 +41,16 @@ type sourceTestData struct {
 type uploadInitData struct {
 	IsFastUpload bool `json:"is_fast_upload"`
 	Upload       struct {
-		UploadID    string `json:"upload_id"`
-		SourceID    int    `json:"source_id"`
-		Path        string `json:"path"`
-		Filename    string `json:"filename"`
-		ChunkSize   int64  `json:"chunk_size"`
-		TotalChunks int    `json:"total_chunks"`
-		Status      string `json:"status"`
+		UploadID                string `json:"upload_id"`
+		SourceID                int    `json:"source_id"`
+		Path                    string `json:"path"`
+		Filename                string `json:"filename"`
+		ChunkSize               int64  `json:"chunk_size"`
+		TotalChunks             int    `json:"total_chunks"`
+		Status                  string `json:"status"`
+		TargetVirtualParentPath string `json:"target_virtual_parent_path"`
+		ResolvedSourceID        int    `json:"resolved_source_id"`
+		ResolvedInnerParentPath string `json:"resolved_inner_parent_path"`
 	} `json:"upload"`
 	Transport struct {
 		Mode       string `json:"mode"`

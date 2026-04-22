@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+
 	domainrepo "yunxia/internal/domain/repository"
 	domainstorage "yunxia/internal/domain/storage"
 )
@@ -128,6 +130,15 @@ func WithUploadDriver(driverType string, driver UploadDriver) UploadServiceOptio
 func WithUploadACLAuthorizer(authorizer *ACLAuthorizer) UploadServiceOption {
 	return func(s *UploadService) {
 		s.aclAuthorizer = authorizer
+	}
+}
+
+// WithUploadVFSResolver 注册 UploadService 使用的 VFS 写入落点解析器。
+func WithUploadVFSResolver(resolver interface {
+	ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
+}) UploadServiceOption {
+	return func(s *UploadService) {
+		s.vfsResolver = resolver
 	}
 }
 

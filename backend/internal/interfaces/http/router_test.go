@@ -449,12 +449,18 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashFileDriver("s3", fakeS3),
 	)
+	vfsSvc := appsvc.NewVFSService(
+		sourceRepo,
+		appsvc.WithVFSFileDriver("s3", fakeS3),
+		appsvc.WithVFSFileOperator(fileSvc),
+	)
 	uploadSvc := appsvc.NewUploadService(
 		sourceRepo,
 		uploadRepo,
 		options,
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadDriver("s3", fakeS3),
+		appsvc.WithUploadVFSResolver(vfsSvc),
 	)
 	taskSvc := appsvc.NewTaskService(
 		gormrepo.NewTaskRepository(db),
@@ -469,11 +475,6 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		fileAccessSvc,
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", fakeS3),
-	)
-	vfsSvc := appsvc.NewVFSService(
-		sourceRepo,
-		appsvc.WithVFSFileDriver("s3", fakeS3),
-		appsvc.WithVFSFileOperator(fileSvc),
 	)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
