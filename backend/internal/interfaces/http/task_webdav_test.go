@@ -35,6 +35,11 @@ func TestTaskLifecycle(t *testing.T) {
 	}
 	created := decodeEnvelope[taskCreateData](t, rec.Body.Bytes())
 	taskID := int(created.Task["id"].(float64))
+	if created.Task["save_virtual_path"] != "/local/downloads" ||
+		int(created.Task["resolved_source_id"].(float64)) != sourceID ||
+		created.Task["resolved_inner_save_path"] != "/downloads" {
+		t.Fatalf("expected task virtual snapshots, got %+v", created.Task)
+	}
 
 	rec = performRequest(t, engine, http.MethodGet, "/api/v1/tasks", nil, accessToken)
 	if rec.Code != http.StatusOK {
@@ -48,6 +53,12 @@ func TestTaskLifecycle(t *testing.T) {
 	rec = performRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d", taskID), nil, accessToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get task expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
+	if got["save_virtual_path"] != "/local/downloads" ||
+		int(got["resolved_source_id"].(float64)) != sourceID ||
+		got["resolved_inner_save_path"] != "/downloads" {
+		t.Fatalf("expected task detail virtual snapshots, got %+v", got)
 	}
 
 	rec = performRequest(t, engine, http.MethodPost, fmt.Sprintf("/api/v1/tasks/%d/pause", taskID), nil, accessToken)

@@ -7,6 +7,7 @@ type ACLRule struct {
 	ID                uint
 	SourceID          uint
 	Path              string
+	VirtualPath       string
 	SubjectType       string
 	SubjectID         uint
 	Effect            string

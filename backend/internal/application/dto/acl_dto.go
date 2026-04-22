@@ -19,6 +19,7 @@ type ACLRuleView struct {
 	ID                uint           `json:"id"`
 	SourceID          uint           `json:"source_id"`
 	Path              string         `json:"path"`
+	VirtualPath       string         `json:"virtual_path,omitempty"`
 	SubjectType       string         `json:"subject_type"`
 	SubjectID         uint           `json:"subject_id"`
 	Effect            string         `json:"effect"`

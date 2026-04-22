@@ -100,9 +100,10 @@ type trashListData struct {
 }
 
 type trashRestoreData struct {
-	ID           int    `json:"id"`
-	Restored     bool   `json:"restored"`
-	RestoredPath string `json:"restored_path"`
+	ID                  int    `json:"id"`
+	Restored            bool   `json:"restored"`
+	RestoredPath        string `json:"restored_path"`
+	RestoredVirtualPath string `json:"restored_virtual_path"`
 }
 
 func TestS3SourceCreateDetailAndFileAccessLifecycle(t *testing.T) {
@@ -1057,6 +1058,9 @@ func TestLocalTrashLifecycle(t *testing.T) {
 	if trashItem["original_path"] != "/docs/hello.txt" {
 		t.Fatalf("unexpected local trash original_path = %+v", trashItem)
 	}
+	if trashItem["original_virtual_path"] != "/local/docs/hello.txt" {
+		t.Fatalf("unexpected local trash original_virtual_path = %+v", trashItem)
+	}
 	if got := trashItem["trash_path"].(string); len(got) < len("/.trash/") || got[:len("/.trash/")] != "/.trash/" {
 		t.Fatalf("unexpected local trash path = %+v", trashItem)
 	}
@@ -1072,7 +1076,7 @@ func TestLocalTrashLifecycle(t *testing.T) {
 		t.Fatalf("local trash restore expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	restored := decodeEnvelope[trashRestoreData](t, rec.Body.Bytes())
-	if !restored.Restored || restored.RestoredPath != "/docs/hello.txt" {
+	if !restored.Restored || restored.RestoredPath != "/docs/hello.txt" || restored.RestoredVirtualPath != "/local/docs/hello.txt" {
 		t.Fatalf("unexpected local restore payload = %+v", restored)
 	}
 

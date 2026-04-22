@@ -74,7 +74,7 @@ func main() {
 		appsvc.WithSystemStatsDependencies(userRepo, sourceRepo, taskRepo),
 		appsvc.WithSystemStatsFileDriver("s3", s3Driver),
 	)
-	aclAuthorizer := appsvc.NewACLAuthorizer(systemConfigRepo, aclRepo)
+	aclAuthorizer := appsvc.NewACLAuthorizer(systemConfigRepo, aclRepo, sourceRepo)
 	sourceSvc := appsvc.NewSourceService(
 		sourceRepo,
 		systemConfigRepo,

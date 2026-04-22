@@ -70,15 +70,18 @@ func (r *ShareRepository) ListByUser(ctx context.Context, userID uint) ([]*entit
 // Update 更新分享链接。
 func (r *ShareRepository) Update(ctx context.Context, share *entity.ShareLink) error {
 	values := map[string]any{
-		"user_id":       share.UserID,
-		"source_id":     share.SourceID,
-		"path":          share.Path,
-		"name":          share.Name,
-		"is_dir":        share.IsDir,
-		"token":         share.Token,
-		"password_hash": share.PasswordHash,
-		"expires_at":    share.ExpiresAt,
-		"updated_at":    share.UpdatedAt,
+		"user_id":             share.UserID,
+		"source_id":           share.SourceID,
+		"path":                share.Path,
+		"target_virtual_path": share.TargetVirtualPath,
+		"resolved_source_id":  share.ResolvedSourceID,
+		"resolved_inner_path": share.ResolvedInnerPath,
+		"name":                share.Name,
+		"is_dir":              share.IsDir,
+		"token":               share.Token,
+		"password_hash":       share.PasswordHash,
+		"expires_at":          share.ExpiresAt,
+		"updated_at":          share.UpdatedAt,
 	}
 	result := r.db.WithContext(ctx).Model(&ShareLinkModel{}).Where("id = ?", share.ID).Updates(values)
 	if result.Error != nil {
@@ -116,32 +119,38 @@ func (r *ShareRepository) findInto(ctx context.Context, id uint, share *entity.S
 
 func shareModelFromEntity(share *entity.ShareLink) *ShareLinkModel {
 	return &ShareLinkModel{
-		ID:           share.ID,
-		UserID:       share.UserID,
-		SourceID:     share.SourceID,
-		Path:         share.Path,
-		Name:         share.Name,
-		IsDir:        share.IsDir,
-		Token:        share.Token,
-		PasswordHash: share.PasswordHash,
-		ExpiresAt:    share.ExpiresAt,
-		CreatedAt:    share.CreatedAt,
-		UpdatedAt:    share.UpdatedAt,
+		ID:                share.ID,
+		UserID:            share.UserID,
+		SourceID:          share.SourceID,
+		Path:              share.Path,
+		TargetVirtualPath: share.TargetVirtualPath,
+		ResolvedSourceID:  share.ResolvedSourceID,
+		ResolvedInnerPath: share.ResolvedInnerPath,
+		Name:              share.Name,
+		IsDir:             share.IsDir,
+		Token:             share.Token,
+		PasswordHash:      share.PasswordHash,
+		ExpiresAt:         share.ExpiresAt,
+		CreatedAt:         share.CreatedAt,
+		UpdatedAt:         share.UpdatedAt,
 	}
 }
 
 func shareEntityFromModel(model *ShareLinkModel) *entity.ShareLink {
 	return &entity.ShareLink{
-		ID:           model.ID,
-		UserID:       model.UserID,
-		SourceID:     model.SourceID,
-		Path:         model.Path,
-		Name:         model.Name,
-		IsDir:        model.IsDir,
-		Token:        model.Token,
-		PasswordHash: model.PasswordHash,
-		ExpiresAt:    model.ExpiresAt,
-		CreatedAt:    model.CreatedAt,
-		UpdatedAt:    model.UpdatedAt,
+		ID:                model.ID,
+		UserID:            model.UserID,
+		SourceID:          model.SourceID,
+		Path:              model.Path,
+		TargetVirtualPath: model.TargetVirtualPath,
+		ResolvedSourceID:  model.ResolvedSourceID,
+		ResolvedInnerPath: model.ResolvedInnerPath,
+		Name:              model.Name,
+		IsDir:             model.IsDir,
+		Token:             model.Token,
+		PasswordHash:      model.PasswordHash,
+		ExpiresAt:         model.ExpiresAt,
+		CreatedAt:         model.CreatedAt,
+		UpdatedAt:         model.UpdatedAt,
 	}
 }

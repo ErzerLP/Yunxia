@@ -331,7 +331,7 @@ func TestACLManagementRequireAdminAndLifecycle(t *testing.T) {
 	created := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
 	rule := created["rule"].(map[string]any)
 	ruleID := int(rule["id"].(float64))
-	if rule["path"] != "/projects" || rule["subject_type"] != "user" || rule["effect"] != "allow" {
+	if rule["path"] != "/projects" || rule["virtual_path"] != "/local/projects" || rule["subject_type"] != "user" || rule["effect"] != "allow" {
 		t.Fatalf("unexpected created acl rule payload = %+v", created)
 	}
 
@@ -343,6 +343,9 @@ func TestACLManagementRequireAdminAndLifecycle(t *testing.T) {
 	items := listed["items"].([]any)
 	if len(items) != 1 {
 		t.Fatalf("expected 1 acl rule, got %+v", listed)
+	}
+	if items[0].(map[string]any)["virtual_path"] != "/local/projects" {
+		t.Fatalf("expected listed acl virtual_path=/local/projects, got %+v", listed)
 	}
 
 	rec = performRequest(t, engine, http.MethodPut, fmt.Sprintf("/api/v1/acl/rules/%d", ruleID), map[string]any{
@@ -364,7 +367,7 @@ func TestACLManagementRequireAdminAndLifecycle(t *testing.T) {
 	}
 	updated := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
 	updatedRule := updated["rule"].(map[string]any)
-	if updatedRule["effect"] != "deny" || updatedRule["priority"].(float64) != 200 || updatedRule["inherit_to_children"] != false {
+	if updatedRule["effect"] != "deny" || updatedRule["priority"].(float64) != 200 || updatedRule["inherit_to_children"] != false || updatedRule["virtual_path"] != "/local/projects" {
 		t.Fatalf("unexpected updated acl rule payload = %+v", updated)
 	}
 
@@ -425,7 +428,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		appsvc.WithSystemStatsDependencies(userRepo, sourceRepo, gormrepo.NewTaskRepository(db)),
 		appsvc.WithSystemStatsFileDriver("s3", fakeS3),
 	)
-	aclAuthorizer := appsvc.NewACLAuthorizer(configRepo, aclRepo)
+	aclAuthorizer := appsvc.NewACLAuthorizer(configRepo, aclRepo, sourceRepo)
 	sourceSvc := appsvc.NewSourceService(
 		sourceRepo,
 		configRepo,
