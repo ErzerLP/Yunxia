@@ -603,6 +603,78 @@
 - 当前已知限制：
   - 当前后端仍不会把任务 `save_path` 自动映射为默认 local source 的物理路径；若希望 Yunxia 立即浏览 Aria2 下载结果，仍需手动创建 `base_path=/downloads` 的 local source
 
+### 14. 统一存储 / VFS 第一阶段落地
+
+#### 14.1 source 双路径模型
+
+- `storage_sources` 已补 `mount_path`
+- 当前 source 语义拆分为：
+  - `mount_path`：挂载到统一虚拟目录树的位置
+  - `root_path`：源内起始目录
+- 默认本地源稳定挂载为 `/local`
+- `mount_path` 当前要求：
+  - 绝对路径
+  - 规范化
+  - 全局唯一
+
+#### 14.2 VFS 核心与 v2 文件接口
+
+- 新增统一虚拟目录树核心：
+  - 最长前缀路径解析
+  - 挂载注册表
+  - 纯虚拟目录投影
+  - 名称冲突检查
+- 新增 v2 文件接口：
+  - `GET /api/v2/fs/list`
+  - `GET /api/v2/fs/search`
+  - `GET /api/v2/fs/download`
+  - `POST /api/v2/fs/access-url`
+  - `POST /api/v2/fs/mkdir`
+  - `POST /api/v2/fs/rename`
+  - `POST /api/v2/fs/move`
+  - `POST /api/v2/fs/copy`
+  - `DELETE /api/v2/fs`
+- 当前关键语义：
+  - 北向统一使用 `virtual_path`
+  - 纯虚拟目录可读不可写
+  - 同父目录下文件 / 目录 / 挂载点 / 虚拟节点统一占名
+  - S3 下载在 v2 下继续走 `302 -> presigned URL`
+
+#### 14.3 上传迁移到 virtual path
+
+- `POST /api/v1/upload/init` 现已兼容：
+  - 旧模式：`source_id + path`
+  - 新模式：`target_virtual_parent_path`
+- 上传会话新增快照字段：
+  - `target_virtual_parent_path`
+  - `resolved_source_id`
+  - `resolved_inner_parent_path`
+- 分片上传与 finish 阶段继续复用现有 local / s3 传输协议
+
+#### 14.4 业务模块虚拟路径快照
+
+- ACL 规则新增：
+  - `virtual_path`
+- Share 新增：
+  - `target_virtual_path`
+  - `resolved_source_id`
+  - `resolved_inner_path`
+- Task 新增：
+  - `save_virtual_path`
+  - `resolved_source_id`
+  - `resolved_inner_save_path`
+- Trash 新增：
+  - `original_virtual_path`
+  - restore 返回 `restored_virtual_path`
+- 当前 ACL runtime 已优先按 `virtual_path` 判定，旧 `source_id + path` 作为迁移兼容
+
+#### 14.5 本轮新增验证
+
+- `go test ./internal/interfaces/http -run 'TestVFSUpload' -v`
+- `go test ./internal/interfaces/http -run 'Upload' -v`
+- `go test ./internal/application/service ./internal/interfaces/http -run 'Test(ACL|Share|Task|Trash)' -v`
+- `go test ./...`
+
 ---
 
 ## 维护约定
