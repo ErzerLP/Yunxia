@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -657,6 +658,23 @@ type mountRegistryTestRepo struct {
 	sources []*entity.StorageSource
 }
 
+type vfsFileOperatorCall struct {
+	Operation  string
+	SourceID   uint
+	ParentPath string
+	Name       string
+	Path       string
+	NewName    string
+	TargetPath string
+	DeleteMode string
+}
+
+type vfsFileOperatorSpy struct {
+	calls      []vfsFileOperatorCall
+	mkdirItem  *appdto.FileItem
+	renameItem *appdto.FileItem
+}
+
 func (r mountRegistryTestRepo) Create(context.Context, *entity.StorageSource) error {
 	return nil
 }
@@ -742,6 +760,72 @@ func mustFindVFSItem(t *testing.T, items []appdto.VFSItem, name string) appdto.V
 
 	t.Fatalf("expected vfs item %s in %+v", name, items)
 	return appdto.VFSItem{}
+}
+
+func (s *vfsFileOperatorSpy) Mkdir(_ context.Context, req appdto.MkdirRequest) (*appdto.FileItem, error) {
+	s.calls = append(s.calls, vfsFileOperatorCall{
+		Operation:  "mkdir",
+		SourceID:   req.SourceID,
+		ParentPath: req.ParentPath,
+		Name:       req.Name,
+	})
+	if s.mkdirItem != nil {
+		return s.mkdirItem, nil
+	}
+	return &appdto.FileItem{
+		Name:       req.Name,
+		Path:       joinVirtualPath(req.ParentPath, req.Name),
+		ParentPath: req.ParentPath,
+		SourceID:   req.SourceID,
+		IsDir:      true,
+	}, nil
+}
+
+func (s *vfsFileOperatorSpy) Rename(_ context.Context, req appdto.RenameRequest) (string, string, *appdto.FileItem, error) {
+	s.calls = append(s.calls, vfsFileOperatorCall{
+		Operation: "rename",
+		SourceID:  req.SourceID,
+		Path:      req.Path,
+		NewName:   req.NewName,
+	})
+	if s.renameItem != nil {
+		parentPath := path.Dir(req.Path)
+		if parentPath == "." {
+			parentPath = "/"
+		}
+		return req.Path, joinVirtualPath(parentPath, req.NewName), s.renameItem, nil
+	}
+	return "", "", nil, nil
+}
+
+func (s *vfsFileOperatorSpy) Move(_ context.Context, req appdto.MoveCopyRequest) (string, string, error) {
+	s.calls = append(s.calls, vfsFileOperatorCall{
+		Operation:  "move",
+		SourceID:   req.SourceID,
+		Path:       req.Path,
+		TargetPath: req.TargetPath,
+	})
+	return req.Path, joinVirtualPath(req.TargetPath, path.Base(req.Path)), nil
+}
+
+func (s *vfsFileOperatorSpy) Copy(_ context.Context, req appdto.MoveCopyRequest) (string, string, error) {
+	s.calls = append(s.calls, vfsFileOperatorCall{
+		Operation:  "copy",
+		SourceID:   req.SourceID,
+		Path:       req.Path,
+		TargetPath: req.TargetPath,
+	})
+	return req.Path, joinVirtualPath(req.TargetPath, path.Base(req.Path)), nil
+}
+
+func (s *vfsFileOperatorSpy) Delete(_ context.Context, req appdto.DeleteFileRequest) (time.Time, error) {
+	s.calls = append(s.calls, vfsFileOperatorCall{
+		Operation:  "delete",
+		SourceID:   req.SourceID,
+		Path:       req.Path,
+		DeleteMode: req.DeleteMode,
+	})
+	return time.Now(), nil
 }
 
 func TestNormalizeMountPath(t *testing.T) {
@@ -991,5 +1075,122 @@ func TestVFSListRealAndVirtualChildrenMergedWithMountPriority(t *testing.T) {
 	}
 	if collectVFSNames(listed.Items)[2] != "team" {
 		t.Fatalf("expected merged items to stay sorted, got %v", collectVFSNames(listed.Items))
+	}
+}
+
+func TestVFSMkdirOnMappedPath(t *testing.T) {
+	operator := &vfsFileOperatorSpy{
+		mkdirItem: &appdto.FileItem{
+			Name:       "team",
+			Path:       "/team",
+			ParentPath: "/",
+			SourceID:   1,
+			IsDir:      true,
+		},
+	}
+	svc := NewVFSService(
+		mountRegistryTestRepo{sources: []*entity.StorageSource{
+			newTestLocalSource(t, 1, "文档库", "/docs"),
+		}},
+		WithVFSFileOperator(operator),
+	)
+
+	item, err := svc.Mkdir(context.Background(), appdto.VFSMkdirRequest{
+		ParentPath: "/docs",
+		Name:       "team",
+	})
+	if err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if len(operator.calls) != 1 {
+		t.Fatalf("expected exactly one mkdir call, got %+v", operator.calls)
+	}
+	call := operator.calls[0]
+	if call.Operation != "mkdir" || call.SourceID != 1 || call.ParentPath != "/" || call.Name != "team" {
+		t.Fatalf("unexpected mkdir delegation = %+v", call)
+	}
+	if item.Path != "/docs/team" || item.ParentPath != "/docs" || item.EntryKind != "directory" {
+		t.Fatalf("unexpected vfs mkdir item = %+v", item)
+	}
+}
+
+func TestVFSMkdirRejectsPureVirtualParent(t *testing.T) {
+	operator := &vfsFileOperatorSpy{}
+	svc := NewVFSService(
+		mountRegistryTestRepo{sources: []*entity.StorageSource{
+			newTestLocalSource(t, 1, "团队文档", "/docs/team"),
+			newTestLocalSource(t, 2, "个人文档", "/docs/personal"),
+		}},
+		WithVFSFileOperator(operator),
+	)
+
+	_, err := svc.Mkdir(context.Background(), appdto.VFSMkdirRequest{
+		ParentPath: "/docs",
+		Name:       "shared",
+	})
+	if !errors.Is(err, ErrNoBackingStorage) {
+		t.Fatalf("expected ErrNoBackingStorage, got %v", err)
+	}
+	if len(operator.calls) != 0 {
+		t.Fatalf("expected no delegated mkdir call, got %+v", operator.calls)
+	}
+}
+
+func TestVFSRenameRejectsMountNameConflict(t *testing.T) {
+	operator := &vfsFileOperatorSpy{}
+	svc := NewVFSService(
+		mountRegistryTestRepo{sources: []*entity.StorageSource{
+			newTestLocalSource(t, 1, "文档库", "/docs"),
+			newTestLocalSource(t, 2, "团队归档", "/docs/team/archive"),
+		}},
+		WithVFSFileOperator(operator),
+	)
+
+	_, _, _, err := svc.Rename(context.Background(), appdto.VFSRenameRequest{
+		Path:    "/docs/readme.md",
+		NewName: "team",
+	})
+	if !errors.Is(err, ErrNameConflict) {
+		t.Fatalf("expected ErrNameConflict, got %v", err)
+	}
+	if len(operator.calls) != 0 {
+		t.Fatalf("expected no delegated rename call, got %+v", operator.calls)
+	}
+}
+
+func TestVFSMoveAcrossMountsFallsBackToCopyDelete(t *testing.T) {
+	docsSource, docsBasePath := newTestLocalSourceWithBase(t, 1, "文档库", "/docs")
+	archiveSource, archiveBasePath := newTestLocalSourceWithBase(t, 2, "归档库", "/archive")
+	if err := os.WriteFile(filepath.Join(docsBasePath, "readme.md"), []byte("hello cross mount"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(readme.md) error = %v", err)
+	}
+	if err := os.MkdirAll(archiveBasePath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(archiveBasePath) error = %v", err)
+	}
+
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		docsSource,
+		archiveSource,
+	}})
+
+	oldPath, newPath, err := svc.Move(context.Background(), appdto.VFSMoveCopyRequest{
+		Path:       "/docs/readme.md",
+		TargetPath: "/archive",
+	})
+	if err != nil {
+		t.Fatalf("Move() error = %v", err)
+	}
+	if oldPath != "/docs/readme.md" || newPath != "/archive/readme.md" {
+		t.Fatalf("unexpected move paths old=%s new=%s", oldPath, newPath)
+	}
+	if _, err := os.Stat(filepath.Join(docsBasePath, "readme.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source file removed after cross-mount move, got err=%v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(archiveBasePath, "readme.md"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(archive/readme.md) error = %v", err)
+	}
+	if string(content) != "hello cross mount" {
+		t.Fatalf("unexpected copied content = %q", string(content))
 	}
 }

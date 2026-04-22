@@ -127,6 +127,108 @@ func TestVFSAccessURLByVirtualPath(t *testing.T) {
 	}
 }
 
+func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	docsSourceID := createLocalSourceWithMountForTest(t, engine, accessToken, "docs-root", "/docs")
+	_ = createLocalSourceWithMountForTest(t, engine, accessToken, "archive-root", "/archive")
+	uploadLocalObjectForTest(t, engine, accessToken, docsSourceID, "/", "hello.txt", []byte("hello vfs write"))
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/mkdir", map[string]any{
+		"parent_path": "/docs",
+		"name":        "notes",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs mkdir expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/rename", map[string]any{
+		"path":     "/docs/hello.txt",
+		"new_name": "greeting.txt",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs rename expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/move", map[string]any{
+		"path":        "/docs/greeting.txt",
+		"target_path": "/archive",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs move expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/copy", map[string]any{
+		"path":        "/archive/greeting.txt",
+		"target_path": "/docs/notes",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs copy expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodDelete, "/api/v2/fs", map[string]any{
+		"path":        "/docs/notes/greeting.txt",
+		"delete_mode": "permanent",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs delete expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/archive", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list archive expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	archiveListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	if !containsString(collectMapNames(archiveListed.Items), "greeting.txt") {
+		t.Fatalf("expected archive to contain greeting.txt, got %+v", archiveListed.Items)
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/docs/notes", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list notes expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	notesListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	if containsString(collectMapNames(notesListed.Items), "greeting.txt") {
+		t.Fatalf("expected deleted greeting.txt absent from /docs/notes, got %+v", notesListed.Items)
+	}
+}
+
+func TestVFSMkdirRejectsPureVirtualParent(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	_ = createLocalSourceWithMountForTest(t, engine, accessToken, "docs-team", "/docs/team")
+	_ = createLocalSourceWithMountForTest(t, engine, accessToken, "docs-personal", "/docs/personal")
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/mkdir", map[string]any{
+		"parent_path": "/docs",
+		"name":        "shared",
+	}, accessToken)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("vfs pure virtual mkdir expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "NO_BACKING_STORAGE")
+}
+
+func TestVFSRenameRejectsMountNameConflict(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	docsSourceID := createLocalSourceWithMountForTest(t, engine, accessToken, "docs-root", "/docs")
+	_ = createLocalSourceWithMountForTest(t, engine, accessToken, "docs-team-archive", "/docs/team/archive")
+	uploadLocalObjectForTest(t, engine, accessToken, docsSourceID, "/", "readme.md", []byte("hello"))
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/rename", map[string]any{
+		"path":     "/docs/readme.md",
+		"new_name": "team",
+	}, accessToken)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("vfs rename mount conflict expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "NAME_CONFLICT")
+}
+
 func createLocalSourceWithMountForTest(t *testing.T, engine *gin.Engine, accessToken string, name string, mountPath string) int {
 	t.Helper()
 
@@ -181,4 +283,12 @@ func createS3SourceWithMountForTest(t *testing.T, engine *gin.Engine, accessToke
 
 	created := decodeEnvelope[sourceCreateData](t, rec.Body.Bytes())
 	return int(created.Source["id"].(float64))
+}
+
+func collectMapNames(items []map[string]any) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item["name"].(string))
+	}
+	return names
 }

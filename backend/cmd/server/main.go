@@ -117,6 +117,7 @@ func main() {
 	vfsSvc := appsvc.NewVFSService(
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", s3Driver),
+		appsvc.WithVFSFileOperator(fileSvc),
 	)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
