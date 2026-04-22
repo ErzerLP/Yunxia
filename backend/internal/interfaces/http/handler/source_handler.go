@@ -161,6 +161,8 @@ func (h *SourceHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_CONNECTION_FAILED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceNameConflict):
 		httpresp.Error(c, http.StatusConflict, "SOURCE_NAME_CONFLICT", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrSourceMountPathConflict):
+		httpresp.Error(c, http.StatusConflict, "MOUNT_PATH_CONFLICT", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceInUse):
 		httpresp.Error(c, http.StatusConflict, "SOURCE_IN_USE", err.Error(), nil)
 	default:

@@ -53,6 +53,7 @@ type StorageSourceModel struct {
 	IsWebDAVExposed bool   `gorm:"not null;default:false"`
 	WebDAVReadOnly  bool   `gorm:"not null;default:true"`
 	WebDAVSlug      string `gorm:"uniqueIndex;size:128;not null"`
+	MountPath       string `gorm:"uniqueIndex;size:512;not null"`
 	RootPath        string `gorm:"size:512;not null"`
 	SortOrder       int    `gorm:"not null;default:0"`
 	ConfigJSON      string `gorm:"type:text;not null"`

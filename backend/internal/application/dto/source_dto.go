@@ -10,6 +10,7 @@ type StorageSourceView struct {
 	IsWebDAVExposed bool   `json:"is_webdav_exposed"`
 	WebDAVReadOnly  bool   `json:"webdav_read_only"`
 	WebDAVSlug      string `json:"webdav_slug"`
+	MountPath       string `json:"mount_path"`
 	RootPath        string `json:"root_path"`
 	UsedBytes       *int64 `json:"used_bytes"`
 	TotalBytes      *int64 `json:"total_bytes"`
@@ -31,10 +32,10 @@ type SourceListResponse struct {
 
 // SourceDetailResponse 表示存储源详情响应。
 type SourceDetailResponse struct {
-	Source        StorageSourceView             `json:"source"`
-	Config        map[string]any                `json:"config"`
-	SecretFields  map[string]SecretFieldMask    `json:"secret_fields"`
-	LastCheckedAt *string                       `json:"last_checked_at"`
+	Source        StorageSourceView          `json:"source"`
+	Config        map[string]any             `json:"config"`
+	SecretFields  map[string]SecretFieldMask `json:"secret_fields"`
+	LastCheckedAt *string                    `json:"last_checked_at"`
 }
 
 // SourceUpsertRequest 表示创建/更新存储源请求。
@@ -44,6 +45,7 @@ type SourceUpsertRequest struct {
 	IsEnabled       bool           `json:"is_enabled"`
 	IsWebDAVExposed bool           `json:"is_webdav_exposed"`
 	WebDAVReadOnly  bool           `json:"webdav_read_only"`
+	MountPath       string         `json:"mount_path"`
 	RootPath        string         `json:"root_path" binding:"required"`
 	SortOrder       int            `json:"sort_order"`
 	Config          map[string]any `json:"config"`
