@@ -53,3 +53,27 @@ type VFSAccessURLRequest struct {
 	Disposition string `json:"disposition" binding:"required"`
 	ExpiresIn   int    `json:"expires_in"`
 }
+
+// VFSMkdirRequest 表示统一虚拟目录创建目录请求。
+type VFSMkdirRequest struct {
+	ParentPath string `json:"parent_path" binding:"required"`
+	Name       string `json:"name" binding:"required"`
+}
+
+// VFSRenameRequest 表示统一虚拟目录重命名请求。
+type VFSRenameRequest struct {
+	Path    string `json:"path" binding:"required"`
+	NewName string `json:"new_name" binding:"required"`
+}
+
+// VFSMoveCopyRequest 表示统一虚拟目录移动/复制请求。
+type VFSMoveCopyRequest struct {
+	Path       string `json:"path" binding:"required"`
+	TargetPath string `json:"target_path" binding:"required"`
+}
+
+// VFSDeleteRequest 表示统一虚拟目录删除请求。
+type VFSDeleteRequest struct {
+	Path       string `json:"path" binding:"required"`
+	DeleteMode string `json:"delete_mode"`
+}

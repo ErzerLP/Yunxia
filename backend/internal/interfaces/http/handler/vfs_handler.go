@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -23,6 +24,11 @@ type VFSHandler struct {
 	vfsService interface {
 		List(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error)
 		ResolvePath(ctx context.Context, virtualPath string) (appsvc.ResolvedPath, error)
+		Mkdir(ctx context.Context, req appdto.VFSMkdirRequest) (*appdto.VFSItem, error)
+		Rename(ctx context.Context, req appdto.VFSRenameRequest) (string, string, *appdto.VFSItem, error)
+		Move(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
+		Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
+		Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
 	}
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
@@ -39,6 +45,11 @@ func NewVFSHandler(
 	vfsService interface {
 		List(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error)
 		ResolvePath(ctx context.Context, virtualPath string) (appsvc.ResolvedPath, error)
+		Mkdir(ctx context.Context, req appdto.VFSMkdirRequest) (*appdto.VFSItem, error)
+		Rename(ctx context.Context, req appdto.VFSRenameRequest) (string, string, *appdto.VFSItem, error)
+		Move(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
+		Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
+		Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
 	},
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
@@ -72,6 +83,107 @@ func (h *VFSHandler) List(c *gin.Context) {
 		return
 	}
 	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
+// Mkdir 在统一虚拟目录树中创建目录。
+func (h *VFSHandler) Mkdir(c *gin.Context) {
+	var req appdto.VFSMkdirRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+
+	item, err := h.vfsService.Mkdir(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", gin.H{"created": item})
+}
+
+// Rename 在统一虚拟目录树中重命名节点。
+func (h *VFSHandler) Rename(c *gin.Context) {
+	var req appdto.VFSRenameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+
+	oldPath, newPath, item, err := h.vfsService.Rename(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", gin.H{
+		"old_path": oldPath,
+		"new_path": newPath,
+		"file":     item,
+	})
+}
+
+// Move 在统一虚拟目录树中移动节点。
+func (h *VFSHandler) Move(c *gin.Context) {
+	var req appdto.VFSMoveCopyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+
+	oldPath, newPath, err := h.vfsService.Move(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", gin.H{
+		"old_path": oldPath,
+		"new_path": newPath,
+		"moved":    true,
+	})
+}
+
+// Copy 在统一虚拟目录树中复制节点。
+func (h *VFSHandler) Copy(c *gin.Context) {
+	var req appdto.VFSMoveCopyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+
+	sourcePath, newPath, err := h.vfsService.Copy(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", gin.H{
+		"source_path": sourcePath,
+		"new_path":    newPath,
+		"copied":      true,
+	})
+}
+
+// Delete 在统一虚拟目录树中删除节点。
+func (h *VFSHandler) Delete(c *gin.Context) {
+	var req appdto.VFSDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+
+	deletedAt, err := h.vfsService.Delete(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	deleteMode := req.DeleteMode
+	if deleteMode == "" {
+		deleteMode = "trash"
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", gin.H{
+		"deleted":     true,
+		"delete_mode": deleteMode,
+		"path":        req.Path,
+		"deleted_at":  deletedAt.Format(time.RFC3339),
+	})
 }
 
 // Search 返回统一虚拟目录搜索结果。
@@ -239,6 +351,11 @@ func (h *VFSHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrFileNotFound):
 		httpresp.Error(c, http.StatusNotFound, "FILE_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrNameConflict),
+		errors.Is(err, appsvc.ErrFileAlreadyExists),
+		errors.Is(err, appsvc.ErrFileMoveConflict),
+		errors.Is(err, appsvc.ErrFileCopyConflict):
+		httpresp.Error(c, http.StatusConflict, "NAME_CONFLICT", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrFileIsDirectory):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "FILE_IS_DIRECTORY", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrACLDenied):

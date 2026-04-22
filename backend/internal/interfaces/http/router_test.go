@@ -473,6 +473,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	vfsSvc := appsvc.NewVFSService(
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", fakeS3),
+		appsvc.WithVFSFileOperator(fileSvc),
 	)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
