@@ -1172,6 +1172,9 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 	if len(nav.Items) != 1 || nav.Items[0]["driver_type"] != "local" {
 		t.Fatalf("unexpected navigation sources = %+v", nav)
 	}
+	if nav.Items[0]["mount_path"] != "/local" {
+		t.Fatalf("expected default local mount_path /local, got %+v", nav.Items[0])
+	}
 
 	basePath := filepath.ToSlash(filepath.Join(t.TempDir(), "media-source"))
 	rec = performRequest(t, engine, http.MethodPost, "/api/v1/sources/test", map[string]any{
@@ -1180,6 +1183,7 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 		"is_enabled":        true,
 		"is_webdav_exposed": false,
 		"webdav_read_only":  true,
+		"mount_path":        "/media",
 		"root_path":         "/",
 		"sort_order":        10,
 		"config":            map[string]any{"base_path": basePath},
@@ -1199,6 +1203,7 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 		"is_enabled":        true,
 		"is_webdav_exposed": false,
 		"webdav_read_only":  true,
+		"mount_path":        "/media",
 		"root_path":         "/",
 		"sort_order":        10,
 		"config":            map[string]any{"base_path": basePath},
@@ -1209,6 +1214,26 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 	}
 	created := decodeEnvelope[sourceCreateData](t, rec.Body.Bytes())
 	sourceID := int(created.Source["id"].(float64))
+	if created.Source["mount_path"] != "/media" || created.Source["root_path"] != "/" {
+		t.Fatalf("expected created source mount/root path, got %+v", created.Source)
+	}
+
+	conflictBasePath := filepath.ToSlash(filepath.Join(t.TempDir(), "conflict-source"))
+	rec = performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
+		"name":              "重复挂载仓库",
+		"driver_type":       "local",
+		"is_enabled":        true,
+		"is_webdav_exposed": false,
+		"webdav_read_only":  true,
+		"mount_path":        "/media",
+		"root_path":         "/",
+		"sort_order":        30,
+		"config":            map[string]any{"base_path": conflictBasePath},
+		"secret_patch":      map[string]any{},
+	}, accessToken)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate mount path expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
 
 	rec = performRequest(t, engine, http.MethodGet, "/api/v1/sources?view=admin", nil, accessToken)
 	adminList := decodeEnvelope[sourceListData](t, rec.Body.Bytes())
@@ -1224,12 +1249,16 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 	if detail.Config["base_path"] != basePath {
 		t.Fatalf("unexpected source detail config = %+v", detail)
 	}
+	if detail.Source["mount_path"] != "/media" || detail.Source["root_path"] != "/" {
+		t.Fatalf("expected detail source mount/root path, got %+v", detail.Source)
+	}
 
 	rec = performRequest(t, engine, http.MethodPut, fmt.Sprintf("/api/v1/sources/%d", sourceID), map[string]any{
 		"name":              "媒体仓库-新",
 		"is_enabled":        true,
 		"is_webdav_exposed": true,
 		"webdav_read_only":  false,
+		"mount_path":        "/library",
 		"root_path":         "/movies",
 		"sort_order":        20,
 		"config":            map[string]any{"base_path": basePath},
@@ -1246,6 +1275,9 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 	updatedDetail := decodeEnvelope[sourceDetailData](t, rec.Body.Bytes())
 	if updatedDetail.Source["webdav_read_only"] != false || updatedDetail.Source["is_webdav_exposed"] != true {
 		t.Fatalf("expected persisted webdav flags, got %+v", updatedDetail.Source)
+	}
+	if updatedDetail.Source["mount_path"] != "/library" || updatedDetail.Source["root_path"] != "/movies" {
+		t.Fatalf("expected updated source mount/root path, got %+v", updatedDetail.Source)
 	}
 
 	rec = performRequest(t, engine, http.MethodDelete, fmt.Sprintf("/api/v1/sources/%d", sourceID), nil, accessToken)

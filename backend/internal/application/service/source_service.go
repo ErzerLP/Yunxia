@@ -154,6 +154,9 @@ func (s *SourceService) Create(ctx context.Context, req appdto.SourceUpsertReque
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureMountPathAvailable(ctx, source.MountPath, 0); err != nil {
+		return nil, err
+	}
 	if err := s.validateSource(ctx, source); err != nil {
 		return nil, err
 	}
@@ -175,6 +178,9 @@ func (s *SourceService) Update(ctx context.Context, id uint, req appdto.SourceUp
 
 	source, err := s.buildSourceEntity(req, existing)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureMountPathAvailable(ctx, source.MountPath, existing.ID); err != nil {
 		return nil, err
 	}
 	if err := s.validateSource(ctx, source); err != nil {
@@ -207,6 +213,15 @@ func (s *SourceService) Delete(ctx context.Context, id uint) error {
 
 func (s *SourceService) buildSourceEntity(req appdto.SourceUpsertRequest, existing *entity.StorageSource) (*entity.StorageSource, error) {
 	now := time.Now()
+	rootPath, err := normalizeVirtualPath(req.RootPath)
+	if err != nil {
+		return nil, err
+	}
+	mountPath, err := resolveSourceMountPath(req, existing)
+	if err != nil {
+		return nil, err
+	}
+
 	source := &entity.StorageSource{
 		Name:            req.Name,
 		DriverType:      req.DriverType,
@@ -214,7 +229,8 @@ func (s *SourceService) buildSourceEntity(req appdto.SourceUpsertRequest, existi
 		IsEnabled:       req.IsEnabled,
 		IsWebDAVExposed: req.IsWebDAVExposed,
 		WebDAVReadOnly:  req.WebDAVReadOnly,
-		RootPath:        req.RootPath,
+		MountPath:       mountPath,
+		RootPath:        rootPath,
 		SortOrder:       req.SortOrder,
 		LastCheckedAt:   timePointer(now),
 		CreatedAt:       now,
@@ -314,6 +330,7 @@ func (s *SourceService) toSourceView(source *entity.StorageSource) appdto.Storag
 		IsWebDAVExposed: source.IsWebDAVExposed,
 		WebDAVReadOnly:  source.WebDAVReadOnly,
 		WebDAVSlug:      source.WebDAVSlug,
+		MountPath:       source.MountPath,
 		RootPath:        source.RootPath,
 		UsedBytes:       usedBytes,
 		TotalBytes:      nil,
@@ -357,6 +374,7 @@ func ensureDefaultLocalSource(ctx context.Context, repo domainrepo.SourceReposit
 		IsWebDAVExposed: false,
 		WebDAVReadOnly:  true,
 		WebDAVSlug:      "local",
+		MountPath:       "/local",
 		RootPath:        "/",
 		SortOrder:       0,
 		ConfigJSON:      configJSON,
@@ -371,6 +389,60 @@ func ensureDefaultLocalSource(ctx context.Context, repo domainrepo.SourceReposit
 
 func timePointer(value time.Time) *time.Time {
 	return &value
+}
+
+func resolveSourceMountPath(req appdto.SourceUpsertRequest, existing *entity.StorageSource) (string, error) {
+	mountPath := req.MountPath
+	switch {
+	case mountPath != "":
+	case existing != nil && existing.MountPath != "":
+		mountPath = existing.MountPath
+	case existing != nil && existing.WebDAVSlug != "":
+		mountPath = "/" + existing.WebDAVSlug
+	default:
+		fallback := generateSlug(req.Name, defaultSourceMountSlug(req.DriverType))
+		mountPath = "/" + fallback
+	}
+
+	return normalizeVirtualPath(mountPath)
+}
+
+func defaultSourceMountSlug(driverType string) string {
+	switch driverType {
+	case "s3":
+		return "source-s3"
+	default:
+		return "source-local"
+	}
+}
+
+func (s *SourceService) ensureMountPathAvailable(ctx context.Context, mountPath string, excludeID uint) error {
+	sources, err := s.sourceRepo.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, item := range sources {
+		if item.ID == excludeID {
+			continue
+		}
+		existingMountPath := item.MountPath
+		if existingMountPath == "" && item.WebDAVSlug != "" {
+			existingMountPath = "/" + item.WebDAVSlug
+		}
+		if existingMountPath == "" {
+			continue
+		}
+		normalizedMountPath, normalizeErr := normalizeVirtualPath(existingMountPath)
+		if normalizeErr != nil {
+			return normalizeErr
+		}
+		if normalizedMountPath == mountPath {
+			return ErrSourceMountPathConflict
+		}
+	}
+
+	return nil
 }
 
 func (s *SourceService) validateSource(ctx context.Context, source *entity.StorageSource) error {

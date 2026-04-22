@@ -12,6 +12,7 @@ type StorageSource struct {
 	IsWebDAVExposed bool
 	WebDAVReadOnly  bool
 	WebDAVSlug      string
+	MountPath       string
 	RootPath        string
 	SortOrder       int
 	ConfigJSON      string

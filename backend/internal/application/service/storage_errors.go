@@ -9,6 +9,8 @@ var (
 	ErrConfigInvalid = errors.New("config invalid")
 	// ErrSourceNameConflict 表示存储源名称冲突。
 	ErrSourceNameConflict = errors.New("source name conflict")
+	// ErrSourceMountPathConflict 表示存储源挂载路径冲突。
+	ErrSourceMountPathConflict = errors.New("source mount path conflict")
 	// ErrSourceConnectionFailed 表示存储源连接测试失败。
 	ErrSourceConnectionFailed = errors.New("source connection failed")
 	// ErrSourceReadOnly 表示存储源只读。
