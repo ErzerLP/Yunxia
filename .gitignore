@@ -1,0 +1,40 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local agent / workspace metadata
+.claude/
+
+# Root local env / logs
+.env
+.env.local
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Backend local runtime artifacts
+backend/.env
+backend/data/
+backend/tmp/
+backend/bin/
+backend/dist/
+backend/coverage
+backend/coverage.*
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+backend/*.out
+
+# Frontend local runtime artifacts
+web/node_modules/
+web/dist/
+web/.env
+web/.env.local
+web/*.local
+
+# Known transient scratch files
+backend/internal/interfaces/http/share_workflow_test.go.3532149991208567473
