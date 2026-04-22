@@ -23,6 +23,14 @@ func splitParentName(input string) (string, string, error) {
 	return path.Dir(normalizedPath), path.Base(normalizedPath), nil
 }
 
+// joinVirtualPath 拼接虚拟路径。
+func joinVirtualPath(parentPath string, name string) string {
+	if parentPath == "/" {
+		return "/" + strings.TrimPrefix(name, "/")
+	}
+	return parentPath + "/" + strings.TrimPrefix(name, "/")
+}
+
 // isSubPath 判断 target 是否位于 base 之下，包含自身。
 func isSubPath(base string, target string) bool {
 	normalizedBase, err := normalizeVirtualPath(base)

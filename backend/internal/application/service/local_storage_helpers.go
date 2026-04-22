@@ -173,6 +173,64 @@ func buildStorageEntryItem(sourceID uint, entry StorageEntry) appdto.FileItem {
 	return item
 }
 
+func buildVFSItemFromLocal(sourceID uint, virtualPath string, entry fs.FileInfo) appdto.VFSItem {
+	fileItem := buildFileItem(sourceID, virtualPath, entry)
+	return buildVFSItemFromFileItem(fileItem, false, false)
+}
+
+func buildVFSItemFromStorageEntry(sourceID uint, entry StorageEntry) appdto.VFSItem {
+	fileItem := buildStorageEntryItem(sourceID, entry)
+	return buildVFSItemFromFileItem(fileItem, false, false)
+}
+
+func buildVirtualDirItem(pathValue string, isMountPoint bool) appdto.VFSItem {
+	parentPath := path.Dir(pathValue)
+	if parentPath == "." {
+		parentPath = "/"
+	}
+
+	return appdto.VFSItem{
+		Name:         path.Base(pathValue),
+		Path:         pathValue,
+		ParentPath:   parentPath,
+		EntryKind:    string(VirtualEntryKindDirectory),
+		IsVirtual:    true,
+		IsMountPoint: isMountPoint,
+		Size:         0,
+		MimeType:     "inode/directory",
+		Extension:    "",
+		CanPreview:   false,
+		CanDownload:  false,
+		CanDelete:    false,
+	}
+}
+
+func buildVFSItemFromFileItem(fileItem appdto.FileItem, isVirtual bool, isMountPoint bool) appdto.VFSItem {
+	entryKind := string(VirtualEntryKindFile)
+	if fileItem.IsDir {
+		entryKind = string(VirtualEntryKindDirectory)
+	}
+
+	return appdto.VFSItem{
+		Name:         fileItem.Name,
+		Path:         fileItem.Path,
+		ParentPath:   fileItem.ParentPath,
+		SourceID:     &fileItem.SourceID,
+		EntryKind:    entryKind,
+		IsVirtual:    isVirtual,
+		IsMountPoint: isMountPoint,
+		Size:         fileItem.Size,
+		MimeType:     fileItem.MimeType,
+		Extension:    fileItem.Extension,
+		ModifiedAt:   fileItem.ModifiedAt,
+		CreatedAt:    fileItem.CreatedAt,
+		Etag:         fileItem.Etag,
+		CanPreview:   fileItem.CanPreview,
+		CanDownload:  fileItem.CanDownload,
+		CanDelete:    fileItem.CanDelete,
+	}
+}
+
 func buildEtag(info fs.FileInfo) string {
 	return "mtime:" + info.ModTime().UTC().Format(time.RFC3339Nano)
 }
