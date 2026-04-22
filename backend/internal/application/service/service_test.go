@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -650,4 +651,76 @@ func (taskServiceTestDownloader) Resume(context.Context, string) error {
 
 func (taskServiceTestDownloader) Remove(context.Context, string) error {
 	return nil
+}
+
+func TestNormalizeMountPath(t *testing.T) {
+	got, err := normalizeMountPath("/docs//./team/../team/archive/")
+	if err != nil {
+		t.Fatalf("normalizeMountPath() error = %v", err)
+	}
+	if got != "/docs/team/archive" {
+		t.Fatalf("expected normalized mount path /docs/team/archive, got %s", got)
+	}
+
+	if _, err := normalizeMountPath("docs/team"); !errors.Is(err, ErrPathInvalid) {
+		t.Fatalf("expected ErrPathInvalid for relative mount path, got %v", err)
+	}
+}
+
+func TestResolveVirtualPathByLongestPrefix(t *testing.T) {
+	mounts := []MountEntry{
+		{
+			MountPath: "/docs",
+			Source:    &entity.StorageSource{ID: 1, Name: "文档库"},
+		},
+		{
+			MountPath: "/docs/team",
+			Source:    &entity.StorageSource{ID: 2, Name: "团队文档"},
+		},
+		{
+			MountPath: "/movies",
+			Source:    &entity.StorageSource{ID: 3, Name: "影视库"},
+		},
+	}
+
+	resolved, err := resolveVirtualPathByLongestPrefix("/docs/team/archive/2024/a.zip", mounts)
+	if err != nil {
+		t.Fatalf("resolveVirtualPathByLongestPrefix() error = %v", err)
+	}
+	if !resolved.IsRealMount || resolved.IsPureVirtual {
+		t.Fatalf("expected real mount match, got %+v", resolved)
+	}
+	if resolved.MatchedMountPath != "/docs/team" {
+		t.Fatalf("expected matched mount /docs/team, got %+v", resolved)
+	}
+	if resolved.InnerPath != "/archive/2024/a.zip" {
+		t.Fatalf("expected inner path /archive/2024/a.zip, got %+v", resolved)
+	}
+	if resolved.Source == nil || resolved.Source.ID != 2 {
+		t.Fatalf("expected matched source id 2, got %+v", resolved)
+	}
+}
+
+func TestResolveVirtualPathFallsBackToPureVirtualParent(t *testing.T) {
+	mounts := []MountEntry{
+		{
+			MountPath: "/movies/aliyun",
+			Source:    &entity.StorageSource{ID: 1, Name: "阿里云影视"},
+		},
+		{
+			MountPath: "/movies/local",
+			Source:    &entity.StorageSource{ID: 2, Name: "本地影视"},
+		},
+	}
+
+	resolved, err := resolveVirtualPathByLongestPrefix("/movies", mounts)
+	if err != nil {
+		t.Fatalf("resolveVirtualPathByLongestPrefix() error = %v", err)
+	}
+	if resolved.IsRealMount || !resolved.IsPureVirtual {
+		t.Fatalf("expected pure virtual directory, got %+v", resolved)
+	}
+	if resolved.MatchedMountPath != "" || resolved.InnerPath != "" || resolved.Source != nil {
+		t.Fatalf("expected pure virtual fallback without backing source, got %+v", resolved)
+	}
 }
