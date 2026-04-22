@@ -695,6 +695,26 @@ func (r mountRegistryTestRepo) Count(context.Context) (int64, error) {
 	return int64(len(r.sources)), nil
 }
 
+func newTestLocalSource(t *testing.T, id uint, name, mountPath string) *entity.StorageSource {
+	t.Helper()
+
+	configJSON, err := marshalLocalSourceConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+
+	return &entity.StorageSource{
+		ID:         id,
+		Name:       name,
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  mountPath,
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	got, err := normalizeMountPath("/docs//./team/../team/archive/")
 	if err != nil {
@@ -819,5 +839,44 @@ func TestProjectVirtualChildrenDeduplicatesNames(t *testing.T) {
 	expected := []string{"personal", "team"}
 	if !reflect.DeepEqual(children, expected) {
 		t.Fatalf("expected deduplicated projected children %v, got %v", expected, children)
+	}
+}
+
+func TestResolveWritableTargetAllowsMappedVirtualPath(t *testing.T) {
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		newTestLocalSource(t, 1, "文档库", "/docs"),
+		newTestLocalSource(t, 2, "团队文档", "/docs/team"),
+	}})
+
+	resolved, err := svc.ResolveWritableTarget(context.Background(), "/docs/team/report.txt")
+	if err != nil {
+		t.Fatalf("ResolveWritableTarget() error = %v", err)
+	}
+	if !resolved.IsRealMount || resolved.MatchedMountPath != "/docs/team" || resolved.InnerPath != "/report.txt" {
+		t.Fatalf("expected writable target on nested mount, got %+v", resolved)
+	}
+}
+
+func TestResolveWritableTargetRejectsPureVirtualParent(t *testing.T) {
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		newTestLocalSource(t, 1, "团队文档", "/docs/team"),
+		newTestLocalSource(t, 2, "个人文档", "/docs/personal"),
+	}})
+
+	_, err := svc.ResolveWritableTarget(context.Background(), "/docs/readme.md")
+	if !errors.Is(err, ErrNoBackingStorage) {
+		t.Fatalf("expected ErrNoBackingStorage, got %v", err)
+	}
+}
+
+func TestResolveWritableTargetRejectsNameConflictWithMount(t *testing.T) {
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		newTestLocalSource(t, 1, "文档库", "/docs"),
+		newTestLocalSource(t, 2, "团队归档", "/docs/team/archive"),
+	}})
+
+	_, err := svc.ResolveWritableTarget(context.Background(), "/docs/team")
+	if !errors.Is(err, ErrNameConflict) {
+		t.Fatalf("expected ErrNameConflict, got %v", err)
 	}
 }
