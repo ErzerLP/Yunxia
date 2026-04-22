@@ -87,6 +87,23 @@ func RegisterStorageRoutes(
 	api.GET("/files/download", fileHandler.Download)
 }
 
+// RegisterVFSRoutes 注册统一虚拟目录树 V2 路由。
+func RegisterVFSRoutes(
+	r *gin.Engine,
+	vfsHandler *handler.VFSHandler,
+	authMiddleware *middleware.AuthMiddleware,
+) {
+	api := r.Group("/api/v2")
+
+	authorized := api.Group("")
+	authorized.Use(authMiddleware.RequireAuth())
+	authorized.GET("/fs/list", vfsHandler.List)
+	authorized.GET("/fs/search", vfsHandler.Search)
+	authorized.POST("/fs/access-url", vfsHandler.AccessURL)
+
+	api.GET("/fs/download", vfsHandler.Download)
+}
+
 // RegisterUserRoutes 注册用户管理相关路由。
 func RegisterUserRoutes(
 	r *gin.Engine,
