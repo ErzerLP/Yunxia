@@ -27,3 +27,10 @@ type ResolvedPath struct {
 	IsRealMount      bool
 	IsPureVirtual    bool
 }
+
+// ProjectedVirtualDir 表示由挂载树投影出的虚拟目录节点。
+type ProjectedVirtualDir struct {
+	Name         string
+	Path         string
+	IsMountPoint bool
+}

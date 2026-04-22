@@ -69,6 +69,20 @@ func (r *MountRegistry) HasMountPathConflict(ctx context.Context, mountPath stri
 
 // ProjectVirtualChildren 返回 prefix 下应投影出的直接虚拟子目录名。
 func (r *MountRegistry) ProjectVirtualChildren(ctx context.Context, prefix string) ([]string, error) {
+	projected, err := r.ProjectVirtualDirs(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]string, 0, len(projected))
+	for _, item := range projected {
+		items = append(items, item.Name)
+	}
+	return items, nil
+}
+
+// ProjectVirtualDirs 返回 prefix 下应投影出的直接虚拟目录节点。
+func (r *MountRegistry) ProjectVirtualDirs(ctx context.Context, prefix string) ([]ProjectedVirtualDir, error) {
 	normalizedPrefix, err := normalizeVirtualPath(prefix)
 	if err != nil {
 		return nil, err
@@ -79,7 +93,7 @@ func (r *MountRegistry) ProjectVirtualChildren(ctx context.Context, prefix strin
 		return nil, err
 	}
 
-	children := make(map[string]struct{})
+	children := make(map[string]ProjectedVirtualDir)
 	for _, mount := range mounts {
 		if mount.MountPath == normalizedPrefix {
 			continue
@@ -98,14 +112,25 @@ func (r *MountRegistry) ProjectVirtualChildren(ctx context.Context, prefix strin
 		if name == "" {
 			continue
 		}
-		children[name] = struct{}{}
+		childPath := joinVirtualPath(normalizedPrefix, name)
+		existing, exists := children[name]
+		if exists && existing.IsMountPoint {
+			continue
+		}
+		children[name] = ProjectedVirtualDir{
+			Name:         name,
+			Path:         childPath,
+			IsMountPoint: childPath == mount.MountPath,
+		}
 	}
 
-	items := make([]string, 0, len(children))
-	for name := range children {
-		items = append(items, name)
+	items := make([]ProjectedVirtualDir, 0, len(children))
+	for _, item := range children {
+		items = append(items, item)
 	}
-	sort.Strings(items)
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
 
 	return items, nil
 }

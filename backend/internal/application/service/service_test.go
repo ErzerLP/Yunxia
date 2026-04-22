@@ -698,7 +698,15 @@ func (r mountRegistryTestRepo) Count(context.Context) (int64, error) {
 func newTestLocalSource(t *testing.T, id uint, name, mountPath string) *entity.StorageSource {
 	t.Helper()
 
-	configJSON, err := marshalLocalSourceConfig(t.TempDir())
+	source, _ := newTestLocalSourceWithBase(t, id, name, mountPath)
+	return source
+}
+
+func newTestLocalSourceWithBase(t *testing.T, id uint, name, mountPath string) (*entity.StorageSource, string) {
+	t.Helper()
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
 	if err != nil {
 		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
 	}
@@ -712,7 +720,28 @@ func newTestLocalSource(t *testing.T, id uint, name, mountPath string) *entity.S
 		MountPath:  mountPath,
 		RootPath:   "/",
 		ConfigJSON: configJSON,
+	}, basePath
+}
+
+func collectVFSNames(items []appdto.VFSItem) []string {
+	names := make([]string, 0, len(items))
+	for _, item := range items {
+		names = append(names, item.Name)
 	}
+	return names
+}
+
+func mustFindVFSItem(t *testing.T, items []appdto.VFSItem, name string) appdto.VFSItem {
+	t.Helper()
+
+	for _, item := range items {
+		if item.Name == name {
+			return item
+		}
+	}
+
+	t.Fatalf("expected vfs item %s in %+v", name, items)
+	return appdto.VFSItem{}
 }
 
 func TestNormalizeMountPath(t *testing.T) {
@@ -878,5 +907,89 @@ func TestResolveWritableTargetRejectsNameConflictWithMount(t *testing.T) {
 	_, err := svc.ResolveWritableTarget(context.Background(), "/docs/team")
 	if !errors.Is(err, ErrNameConflict) {
 		t.Fatalf("expected ErrNameConflict, got %v", err)
+	}
+}
+
+func TestVFSListRootReturnsProjectedMounts(t *testing.T) {
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		newTestLocalSource(t, 1, "影视库", "/movies"),
+		newTestLocalSource(t, 2, "团队文档", "/docs/team"),
+		newTestLocalSource(t, 3, "个人文档", "/docs/personal"),
+	}})
+
+	listed, err := svc.List(context.Background(), "/")
+	if err != nil {
+		t.Fatalf("List(/) error = %v", err)
+	}
+
+	expected := []string{"docs", "movies"}
+	if !reflect.DeepEqual(collectVFSNames(listed.Items), expected) {
+		t.Fatalf("expected root vfs names %v, got %v", expected, collectVFSNames(listed.Items))
+	}
+
+	moviesItem := mustFindVFSItem(t, listed.Items, "movies")
+	if !moviesItem.IsVirtual || !moviesItem.IsMountPoint {
+		t.Fatalf("expected /movies to be a virtual mount point, got %+v", moviesItem)
+	}
+	docsItem := mustFindVFSItem(t, listed.Items, "docs")
+	if !docsItem.IsVirtual || docsItem.IsMountPoint {
+		t.Fatalf("expected /docs to be a pure virtual directory, got %+v", docsItem)
+	}
+}
+
+func TestVFSListPureVirtualDirectoryReturnsOnlyProjectedChildren(t *testing.T) {
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		newTestLocalSource(t, 1, "团队文档", "/docs/team"),
+		newTestLocalSource(t, 2, "个人文档", "/docs/personal"),
+	}})
+
+	listed, err := svc.List(context.Background(), "/docs")
+	if err != nil {
+		t.Fatalf("List(/docs) error = %v", err)
+	}
+
+	expected := []string{"personal", "team"}
+	if !reflect.DeepEqual(collectVFSNames(listed.Items), expected) {
+		t.Fatalf("expected pure virtual children %v, got %v", expected, collectVFSNames(listed.Items))
+	}
+	for _, item := range listed.Items {
+		if !item.IsVirtual || !item.IsMountPoint {
+			t.Fatalf("expected projected child to be virtual mount point, got %+v", item)
+		}
+	}
+}
+
+func TestVFSListRealAndVirtualChildrenMergedWithMountPriority(t *testing.T) {
+	docsSource, docsBasePath := newTestLocalSourceWithBase(t, 1, "文档库", "/docs")
+	if err := os.MkdirAll(filepath.Join(docsBasePath, "team"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(team) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(docsBasePath, "notes"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(notes) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsBasePath, "readme.md"), []byte("readme"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(readme.md) error = %v", err)
+	}
+
+	svc := NewVFSService(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		docsSource,
+		newTestLocalSource(t, 2, "团队挂载", "/docs/team"),
+	}})
+
+	listed, err := svc.List(context.Background(), "/docs")
+	if err != nil {
+		t.Fatalf("List(/docs) error = %v", err)
+	}
+
+	expected := []string{"notes", "readme.md", "team"}
+	if !reflect.DeepEqual(collectVFSNames(listed.Items), expected) {
+		t.Fatalf("expected merged vfs names %v, got %v", expected, collectVFSNames(listed.Items))
+	}
+	teamItem := mustFindVFSItem(t, listed.Items, "team")
+	if !teamItem.IsVirtual || !teamItem.IsMountPoint {
+		t.Fatalf("expected mount-backed team item to win merge, got %+v", teamItem)
+	}
+	if collectVFSNames(listed.Items)[2] != "team" {
+		t.Fatalf("expected merged items to stay sorted, got %v", collectVFSNames(listed.Items))
 	}
 }
