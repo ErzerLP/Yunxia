@@ -417,29 +417,13 @@ func defaultSourceMountSlug(driverType string) string {
 }
 
 func (s *SourceService) ensureMountPathAvailable(ctx context.Context, mountPath string, excludeID uint) error {
-	sources, err := s.sourceRepo.ListAll(ctx)
+	registry := NewMountRegistry(s.sourceRepo)
+	conflict, err := registry.HasMountPathConflict(ctx, mountPath, excludeID)
 	if err != nil {
 		return err
 	}
-
-	for _, item := range sources {
-		if item.ID == excludeID {
-			continue
-		}
-		existingMountPath := item.MountPath
-		if existingMountPath == "" && item.WebDAVSlug != "" {
-			existingMountPath = "/" + item.WebDAVSlug
-		}
-		if existingMountPath == "" {
-			continue
-		}
-		normalizedMountPath, normalizeErr := normalizeVirtualPath(existingMountPath)
-		if normalizeErr != nil {
-			return normalizeErr
-		}
-		if normalizedMountPath == mountPath {
-			return ErrSourceMountPathConflict
-		}
+	if conflict {
+		return ErrSourceMountPathConflict
 	}
 
 	return nil

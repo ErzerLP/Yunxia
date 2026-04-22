@@ -653,6 +653,48 @@ func (taskServiceTestDownloader) Remove(context.Context, string) error {
 	return nil
 }
 
+type mountRegistryTestRepo struct {
+	sources []*entity.StorageSource
+}
+
+func (r mountRegistryTestRepo) Create(context.Context, *entity.StorageSource) error {
+	return nil
+}
+
+func (r mountRegistryTestRepo) Update(context.Context, *entity.StorageSource) error {
+	return nil
+}
+
+func (r mountRegistryTestRepo) Delete(context.Context, uint) error {
+	return nil
+}
+
+func (r mountRegistryTestRepo) FindByID(context.Context, uint) (*entity.StorageSource, error) {
+	return nil, nil
+}
+
+func (r mountRegistryTestRepo) ListAll(context.Context) ([]*entity.StorageSource, error) {
+	return r.sources, nil
+}
+
+func (r mountRegistryTestRepo) ListEnabled(context.Context) ([]*entity.StorageSource, error) {
+	items := make([]*entity.StorageSource, 0, len(r.sources))
+	for _, source := range r.sources {
+		if source.IsEnabled {
+			items = append(items, source)
+		}
+	}
+	return items, nil
+}
+
+func (r mountRegistryTestRepo) FindByName(context.Context, string) (*entity.StorageSource, error) {
+	return nil, nil
+}
+
+func (r mountRegistryTestRepo) Count(context.Context) (int64, error) {
+	return int64(len(r.sources)), nil
+}
+
 func TestNormalizeMountPath(t *testing.T) {
 	got, err := normalizeMountPath("/docs//./team/../team/archive/")
 	if err != nil {
@@ -722,5 +764,60 @@ func TestResolveVirtualPathFallsBackToPureVirtualParent(t *testing.T) {
 	}
 	if resolved.MatchedMountPath != "" || resolved.InnerPath != "" || resolved.Source != nil {
 		t.Fatalf("expected pure virtual fallback without backing source, got %+v", resolved)
+	}
+}
+
+func TestProjectVirtualChildrenForRoot(t *testing.T) {
+	registry := NewMountRegistry(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		{ID: 1, Name: "影视库", MountPath: "/movies", IsEnabled: true},
+		{ID: 2, Name: "团队文档", MountPath: "/docs/team", IsEnabled: true},
+		{ID: 3, Name: "个人文档", MountPath: "/docs/personal", IsEnabled: true},
+	}})
+
+	children, err := registry.ProjectVirtualChildren(context.Background(), "/")
+	if err != nil {
+		t.Fatalf("ProjectVirtualChildren(/) error = %v", err)
+	}
+
+	expected := []string{"docs", "movies"}
+	if !reflect.DeepEqual(children, expected) {
+		t.Fatalf("expected root projected children %v, got %v", expected, children)
+	}
+}
+
+func TestProjectVirtualChildrenForNestedPrefix(t *testing.T) {
+	registry := NewMountRegistry(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		{ID: 1, Name: "影视库", MountPath: "/movies", IsEnabled: true},
+		{ID: 2, Name: "团队文档", MountPath: "/docs/team", IsEnabled: true},
+		{ID: 3, Name: "个人文档", MountPath: "/docs/personal", IsEnabled: true},
+	}})
+
+	children, err := registry.ProjectVirtualChildren(context.Background(), "/docs")
+	if err != nil {
+		t.Fatalf("ProjectVirtualChildren(/docs) error = %v", err)
+	}
+
+	expected := []string{"personal", "team"}
+	if !reflect.DeepEqual(children, expected) {
+		t.Fatalf("expected nested projected children %v, got %v", expected, children)
+	}
+}
+
+func TestProjectVirtualChildrenDeduplicatesNames(t *testing.T) {
+	registry := NewMountRegistry(mountRegistryTestRepo{sources: []*entity.StorageSource{
+		{ID: 1, Name: "团队文档", MountPath: "/docs/team", IsEnabled: true},
+		{ID: 2, Name: "团队归档", MountPath: "/docs/team/archive", IsEnabled: true},
+		{ID: 3, Name: "团队报告", MountPath: "/docs/team/reports", IsEnabled: true},
+		{ID: 4, Name: "个人文档", MountPath: "/docs/personal", IsEnabled: true},
+	}})
+
+	children, err := registry.ProjectVirtualChildren(context.Background(), "/docs")
+	if err != nil {
+		t.Fatalf("ProjectVirtualChildren(/docs) error = %v", err)
+	}
+
+	expected := []string{"personal", "team"}
+	if !reflect.DeepEqual(children, expected) {
+		t.Fatalf("expected deduplicated projected children %v, got %v", expected, children)
 	}
 }
