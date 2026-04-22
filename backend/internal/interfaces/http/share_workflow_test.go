@@ -45,6 +45,11 @@ func TestShareFileLifecycle(t *testing.T) {
 	if link == "" {
 		t.Fatalf("expected share link, got %+v", created.Share)
 	}
+	if created.Share["target_virtual_path"] != "/local/docs/hello.txt" ||
+		int(created.Share["resolved_source_id"].(float64)) != sourceID ||
+		created.Share["resolved_inner_path"] != "/docs/hello.txt" {
+		t.Fatalf("expected share virtual snapshots, got %+v", created.Share)
+	}
 
 	listRec := performRequest(t, engine, http.MethodGet, "/api/v1/shares", nil, adminToken)
 	if listRec.Code != http.StatusOK {
@@ -56,6 +61,9 @@ func TestShareFileLifecycle(t *testing.T) {
 	}
 	if int(listed.Items[0]["id"].(float64)) != shareID {
 		t.Fatalf("expected listed share id=%d, got %+v", shareID, listed.Items)
+	}
+	if listed.Items[0]["target_virtual_path"] != "/local/docs/hello.txt" {
+		t.Fatalf("expected listed share virtual path, got %+v", listed.Items[0])
 	}
 
 	publicRec := performRequest(t, engine, http.MethodGet, link, nil, "")
@@ -112,6 +120,11 @@ func TestShareGetAndUpdateLifecycle(t *testing.T) {
 	got := decodeEnvelope[shareCreateData](t, getRec.Body.Bytes())
 	if int(got.Share["id"].(float64)) != shareID || got.Share["path"] != "/docs/draft.txt" {
 		t.Fatalf("unexpected share detail %+v", got.Share)
+	}
+	if got.Share["target_virtual_path"] != "/local/docs/draft.txt" ||
+		int(got.Share["resolved_source_id"].(float64)) != sourceID ||
+		got.Share["resolved_inner_path"] != "/docs/draft.txt" {
+		t.Fatalf("expected share detail virtual snapshots, got %+v", got.Share)
 	}
 	if got.Share["has_password"] != false {
 		t.Fatalf("expected initial share without password, got %+v", got.Share)

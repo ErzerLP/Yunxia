@@ -105,7 +105,8 @@ func (s *ACLService) buildRuleEntity(
 	permissions appdto.ACLPermissions,
 	inheritToChildren bool,
 ) (*entity.ACLRule, error) {
-	if _, err := s.sourceRepo.FindByID(ctx, sourceID); err != nil {
+	source, err := s.sourceRepo.FindByID(ctx, sourceID)
+	if err != nil {
 		return nil, err
 	}
 	normalizedPath, err := normalizeVirtualPath(pathValue)
@@ -126,10 +127,15 @@ func (s *ACLService) buildRuleEntity(
 	if !permissions.Read && !permissions.Write && !permissions.Delete && !permissions.Share {
 		return nil, ErrACLPermissionsInvalid
 	}
+	virtualPath := mergeMountAndInnerPath(source.MountPath, normalizedPath)
+	if virtualPath == "" {
+		virtualPath = normalizedPath
+	}
 
 	return &entity.ACLRule{
 		SourceID:          sourceID,
 		Path:              normalizedPath,
+		VirtualPath:       virtualPath,
 		SubjectType:       "user",
 		SubjectID:         subjectID,
 		Effect:            strings.TrimSpace(effect),
@@ -147,6 +153,7 @@ func toACLRuleView(rule *entity.ACLRule) appdto.ACLRuleView {
 		ID:          rule.ID,
 		SourceID:    rule.SourceID,
 		Path:        rule.Path,
+		VirtualPath: rule.VirtualPath,
 		SubjectType: rule.SubjectType,
 		SubjectID:   rule.SubjectID,
 		Effect:      rule.Effect,

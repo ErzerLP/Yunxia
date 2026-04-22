@@ -83,34 +83,45 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 	if source.DriverType != "local" {
 		return nil, ErrSourceDriverUnsupported
 	}
-	if err := s.authorizeTaskPath(ctx, req.SourceID, req.SavePath, ACLActionWrite); err != nil {
+	savePath, err := normalizeVirtualPath(req.SavePath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeTaskPath(ctx, req.SourceID, savePath, ACLActionWrite); err != nil {
 		return nil, err
 	}
 
-	externalID, err := s.downloader.AddURI(ctx, req.URL, req.SavePath)
+	externalID, err := s.downloader.AddURI(ctx, req.URL, savePath)
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
 	displayName := guessTaskDisplayName(req.URL)
+	saveVirtualPath := mergeMountAndInnerPath(source.MountPath, savePath)
+	if saveVirtualPath == "" {
+		saveVirtualPath = savePath
+	}
 	task := &entity.DownloadTask{
-		UserID:          s.currentTaskUserID(ctx),
-		Type:            req.Type,
-		Status:          "pending",
-		SourceID:        req.SourceID,
-		SavePath:        req.SavePath,
-		DisplayName:     displayName,
-		SourceURL:       req.URL,
-		ExternalID:      externalID,
-		Progress:        0,
-		DownloadedBytes: 0,
-		TotalBytes:      nil,
-		SpeedBytes:      0,
-		ETASeconds:      nil,
-		ErrorMessage:    nil,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		UserID:                s.currentTaskUserID(ctx),
+		Type:                  req.Type,
+		Status:                "pending",
+		SourceID:              req.SourceID,
+		SavePath:              savePath,
+		SaveVirtualPath:       saveVirtualPath,
+		ResolvedSourceID:      source.ID,
+		ResolvedInnerSavePath: savePath,
+		DisplayName:           displayName,
+		SourceURL:             req.URL,
+		ExternalID:            externalID,
+		Progress:              0,
+		DownloadedBytes:       0,
+		TotalBytes:            nil,
+		SpeedBytes:            0,
+		ETASeconds:            nil,
+		ErrorMessage:          nil,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 	if err := s.taskRepo.Create(ctx, task); err != nil {
 		return nil, err
@@ -249,22 +260,25 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 	}
 
 	return appdto.DownloadTaskView{
-		ID:              task.ID,
-		Type:            task.Type,
-		Status:          task.Status,
-		SourceID:        task.SourceID,
-		SavePath:        task.SavePath,
-		DisplayName:     task.DisplayName,
-		SourceURL:       task.SourceURL,
-		Progress:        task.Progress,
-		DownloadedBytes: task.DownloadedBytes,
-		TotalBytes:      task.TotalBytes,
-		SpeedBytes:      task.SpeedBytes,
-		ETASeconds:      task.ETASeconds,
-		ErrorMessage:    task.ErrorMessage,
-		CreatedAt:       task.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:       task.UpdatedAt.Format(time.RFC3339),
-		FinishedAt:      finishedAt,
+		ID:                    task.ID,
+		Type:                  task.Type,
+		Status:                task.Status,
+		SourceID:              task.SourceID,
+		SavePath:              task.SavePath,
+		SaveVirtualPath:       task.SaveVirtualPath,
+		ResolvedSourceID:      task.ResolvedSourceID,
+		ResolvedInnerSavePath: task.ResolvedInnerSavePath,
+		DisplayName:           task.DisplayName,
+		SourceURL:             task.SourceURL,
+		Progress:              task.Progress,
+		DownloadedBytes:       task.DownloadedBytes,
+		TotalBytes:            task.TotalBytes,
+		SpeedBytes:            task.SpeedBytes,
+		ETASeconds:            task.ETASeconds,
+		ErrorMessage:          task.ErrorMessage,
+		CreatedAt:             task.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:             task.UpdatedAt.Format(time.RFC3339),
+		FinishedAt:            finishedAt,
 	}
 }
 

@@ -96,9 +96,10 @@ func (s *TrashService) Restore(ctx context.Context, id uint) (*appdto.TrashResto
 		return nil, err
 	}
 	return &appdto.TrashRestoreResponse{
-		ID:           item.ID,
-		Restored:     true,
-		RestoredPath: item.OriginalPath,
+		ID:                  item.ID,
+		Restored:            true,
+		RestoredPath:        item.OriginalPath,
+		RestoredVirtualPath: item.OriginalVirtualPath,
 	}, nil
 }
 
@@ -284,13 +285,14 @@ func restoreDriverTrash(ctx context.Context, driver FileDriver, source *entity.S
 
 func toTrashItemView(item *entity.TrashItem) appdto.TrashItemView {
 	return appdto.TrashItemView{
-		ID:           item.ID,
-		SourceID:     item.SourceID,
-		OriginalPath: item.OriginalPath,
-		TrashPath:    item.TrashPath,
-		Name:         item.Name,
-		Size:         item.Size,
-		DeletedAt:    item.DeletedAt.Format(time.RFC3339),
-		ExpiresAt:    item.ExpiresAt.Format(time.RFC3339),
+		ID:                  item.ID,
+		SourceID:            item.SourceID,
+		OriginalPath:        item.OriginalPath,
+		OriginalVirtualPath: item.OriginalVirtualPath,
+		TrashPath:           item.TrashPath,
+		Name:                item.Name,
+		Size:                item.Size,
+		DeletedAt:           item.DeletedAt.Format(time.RFC3339),
+		ExpiresAt:           item.ExpiresAt.Format(time.RFC3339),
 	}
 }

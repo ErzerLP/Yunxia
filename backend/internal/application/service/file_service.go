@@ -532,7 +532,7 @@ func (s *FileService) deleteLocal(ctx context.Context, source *entity.StorageSou
 	if err := os.Rename(physicalPath, trashPhysical); err != nil {
 		return time.Time{}, err
 	}
-	if err := s.recordTrashItem(ctx, source.ID, virtualPath, trashVirtual, info.Name(), info.IsDir(), size, deletedAt); err != nil {
+	if err := s.recordTrashItem(ctx, source, virtualPath, trashVirtual, info.Name(), info.IsDir(), size, deletedAt); err != nil {
 		_ = os.MkdirAll(filepath.Dir(physicalPath), 0o755)
 		_ = os.Rename(trashPhysical, physicalPath)
 		return time.Time{}, err
@@ -1031,7 +1031,7 @@ func (s *FileService) deleteWithDriver(ctx context.Context, source *entity.Stora
 		}
 	}
 
-	if err := s.recordTrashItem(ctx, source.ID, virtualPath, trashVirtual, entry.Name, entry.IsDir, entry.Size, deletedAt); err != nil {
+	if err := s.recordTrashItem(ctx, source, virtualPath, trashVirtual, entry.Name, entry.IsDir, entry.Size, deletedAt); err != nil {
 		originalParent := path.Dir(virtualPath)
 		if originalParent == "." {
 			originalParent = "/"
@@ -1123,7 +1123,7 @@ func localEntrySize(physicalPath string, info os.FileInfo) (int64, error) {
 
 func (s *FileService) recordTrashItem(
 	ctx context.Context,
-	sourceID uint,
+	source *entity.StorageSource,
 	originalPath string,
 	trashPath string,
 	name string,
@@ -1131,19 +1131,25 @@ func (s *FileService) recordTrashItem(
 	size int64,
 	deletedAt time.Time,
 ) error {
-	if s.trashItemRepo == nil {
+	if s.trashItemRepo == nil || source == nil {
 		return nil
 	}
 
+	originalVirtualPath := mergeMountAndInnerPath(source.MountPath, originalPath)
+	if originalVirtualPath == "" {
+		originalVirtualPath = originalPath
+	}
+
 	return s.trashItemRepo.Create(ctx, &entity.TrashItem{
-		SourceID:     sourceID,
-		OriginalPath: originalPath,
-		TrashPath:    trashPath,
-		Name:         name,
-		IsDir:        isDir,
-		Size:         size,
-		DeletedAt:    deletedAt,
-		ExpiresAt:    deletedAt.Add(30 * 24 * time.Hour),
+		SourceID:            source.ID,
+		OriginalPath:        originalPath,
+		OriginalVirtualPath: originalVirtualPath,
+		TrashPath:           trashPath,
+		Name:                name,
+		IsDir:               isDir,
+		Size:                size,
+		DeletedAt:           deletedAt,
+		ExpiresAt:           deletedAt.Add(30 * 24 * time.Hour),
 	})
 }
 

@@ -372,6 +372,7 @@ func TestTaskServiceCreatePersistsOwnerID(t *testing.T) {
 		IsWebDAVExposed: false,
 		WebDAVReadOnly:  true,
 		WebDAVSlug:      "downloads",
+		MountPath:       "/tasks",
 		RootPath:        "/",
 		SortOrder:       0,
 		ConfigJSON:      configJSON,
@@ -395,14 +396,28 @@ func TestTaskServiceCreatePersistsOwnerID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	if resp.SaveVirtualPath != "/tasks/downloads" || resp.ResolvedSourceID != source.ID || resp.ResolvedInnerSavePath != "/downloads" {
+		t.Fatalf("expected task virtual snapshots to be persisted, got %+v", resp)
+	}
 
-	var storedUserID uint
-	row := db.WithContext(context.Background()).Raw("select user_id from download_task_models where id = ?", resp.ID).Row()
-	if err := row.Scan(&storedUserID); err != nil {
-		t.Fatalf("scan persisted task user_id error = %v", err)
+	var storedUserID, storedResolvedSourceID uint
+	var storedSaveVirtualPath, storedResolvedInnerSavePath string
+	row := db.WithContext(context.Background()).
+		Raw("select user_id, save_virtual_path, resolved_source_id, resolved_inner_save_path from download_task_models where id = ?", resp.ID).
+		Row()
+	if err := row.Scan(&storedUserID, &storedSaveVirtualPath, &storedResolvedSourceID, &storedResolvedInnerSavePath); err != nil {
+		t.Fatalf("scan persisted task snapshot error = %v", err)
 	}
 	if storedUserID != 42 {
 		t.Fatalf("expected stored task user_id=42, got %d", storedUserID)
+	}
+	if storedSaveVirtualPath != "/tasks/downloads" || storedResolvedSourceID != source.ID || storedResolvedInnerSavePath != "/downloads" {
+		t.Fatalf(
+			"expected persisted task snapshots, got save_virtual_path=%q resolved_source_id=%d resolved_inner_save_path=%q",
+			storedSaveVirtualPath,
+			storedResolvedSourceID,
+			storedResolvedInnerSavePath,
+		)
 	}
 
 	stored, err := taskRepo.FindByID(context.Background(), resp.ID)
@@ -558,6 +573,7 @@ func TestACLServiceManagementLifecycle(t *testing.T) {
 		t.Fatalf("expected default source after setup")
 	}
 	sourceID := sources[0].ID
+	expectedVirtualPath := mergeMountAndInnerPath(sources[0].MountPath, "/projects")
 
 	aclRepo := gorm.NewACLRuleRepository(db)
 	svc := NewACLService(sourceRepo, userRepo, aclRepo)
@@ -580,7 +596,7 @@ func TestACLServiceManagementLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if created.Path != "/projects" || created.SubjectType != "user" || !created.Permissions.Read || !created.Permissions.Write {
+	if created.Path != "/projects" || created.VirtualPath != expectedVirtualPath || created.SubjectType != "user" || !created.Permissions.Read || !created.Permissions.Write {
 		t.Fatalf("unexpected created acl rule = %+v", created)
 	}
 
@@ -593,6 +609,9 @@ func TestACLServiceManagementLifecycle(t *testing.T) {
 	}
 	if len(listed.Items) != 1 || listed.Items[0].ID != created.ID {
 		t.Fatalf("unexpected listed acl rules = %+v", listed.Items)
+	}
+	if listed.Items[0].VirtualPath != expectedVirtualPath {
+		t.Fatalf("expected listed acl virtual_path=%s, got %+v", expectedVirtualPath, listed.Items[0])
 	}
 
 	updated, err := svc.Update(context.Background(), created.ID, appdto.UpdateACLRuleRequest{
@@ -612,7 +631,7 @@ func TestACLServiceManagementLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if updated.Effect != "deny" || updated.Priority != 150 || updated.InheritToChildren {
+	if updated.Effect != "deny" || updated.Priority != 150 || updated.InheritToChildren || updated.VirtualPath != expectedVirtualPath {
 		t.Fatalf("unexpected updated acl rule = %+v", updated)
 	}
 
@@ -629,6 +648,75 @@ func TestACLServiceManagementLifecycle(t *testing.T) {
 	}
 	if len(listed.Items) != 0 {
 		t.Fatalf("expected empty acl rule list after delete, got %+v", listed.Items)
+	}
+}
+
+func TestACLAuthorizerPrefersVirtualPathRule(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	configRepo := gorm.NewSystemConfigRepository(db)
+	sourceRepo := gorm.NewSourceRepository(db)
+	aclRepo := gorm.NewACLRuleRepository(db)
+
+	configJSON, err := marshalLocalSourceConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+
+	source := &entity.StorageSource{
+		Name:            "挂载文档",
+		DriverType:      "local",
+		Status:          "online",
+		IsEnabled:       true,
+		IsWebDAVExposed: false,
+		WebDAVReadOnly:  true,
+		WebDAVSlug:      "mounted-docs",
+		MountPath:       "/mounted",
+		RootPath:        "/",
+		SortOrder:       0,
+		ConfigJSON:      configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	if err := configRepo.Upsert(context.Background(), &entity.SystemConfig{
+		SiteName:         "测试",
+		MultiUserEnabled: true,
+		MaxUploadSize:    1024,
+		DefaultChunkSize: 256,
+		WebDAVEnabled:    true,
+		WebDAVPrefix:     "/dav",
+		Theme:            "system",
+		Language:         "zh-CN",
+		TimeZone:         "Asia/Shanghai",
+	}); err != nil {
+		t.Fatalf("configRepo.Upsert() error = %v", err)
+	}
+
+	rule := &entity.ACLRule{
+		SourceID:          source.ID,
+		Path:              "/legacy-mismatch",
+		VirtualPath:       "/mounted/docs",
+		SubjectType:       "user",
+		SubjectID:         7,
+		Effect:            "allow",
+		Priority:          100,
+		Read:              true,
+		InheritToChildren: true,
+	}
+	if err := aclRepo.Create(context.Background(), rule); err != nil {
+		t.Fatalf("aclRepo.Create() error = %v", err)
+	}
+
+	authorizer := NewACLAuthorizer(configRepo, aclRepo, sourceRepo)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID: 7,
+		Role:   "normal",
+	})
+	if err := authorizer.AuthorizePath(ctx, source.ID, "/docs/spec.md", ACLActionRead); err != nil {
+		t.Fatalf("expected virtual_path rule to allow mounted path, got %v", err)
 	}
 }
 

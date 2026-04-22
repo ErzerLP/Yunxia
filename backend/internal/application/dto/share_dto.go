@@ -16,15 +16,18 @@ type UpdateShareRequest struct {
 
 // ShareView 表示分享链接视图。
 type ShareView struct {
-	ID          uint    `json:"id"`
-	SourceID    uint    `json:"source_id"`
-	Path        string  `json:"path"`
-	Name        string  `json:"name"`
-	IsDir       bool    `json:"is_dir"`
-	Link        string  `json:"link"`
-	HasPassword bool    `json:"has_password"`
-	ExpiresAt   *string `json:"expires_at"`
-	CreatedAt   string  `json:"created_at"`
+	ID                uint    `json:"id"`
+	SourceID          uint    `json:"source_id"`
+	Path              string  `json:"path"`
+	TargetVirtualPath string  `json:"target_virtual_path,omitempty"`
+	ResolvedSourceID  uint    `json:"resolved_source_id,omitempty"`
+	ResolvedInnerPath string  `json:"resolved_inner_path,omitempty"`
+	Name              string  `json:"name"`
+	IsDir             bool    `json:"is_dir"`
+	Link              string  `json:"link"`
+	HasPassword       bool    `json:"has_password"`
+	ExpiresAt         *string `json:"expires_at"`
+	CreatedAt         string  `json:"created_at"`
 }
 
 // ShareListResponse 表示分享列表响应。

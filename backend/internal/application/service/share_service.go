@@ -128,18 +128,25 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 		expireValue := now.Add(time.Duration(req.ExpiresIn) * time.Second)
 		expiresAt = &expireValue
 	}
+	targetVirtualPath := mergeMountAndInnerPath(source.MountPath, virtualPath)
+	if targetVirtualPath == "" {
+		targetVirtualPath = virtualPath
+	}
 
 	share := &entity.ShareLink{
-		UserID:       userID,
-		SourceID:     source.ID,
-		Path:         virtualPath,
-		Name:         name,
-		IsDir:        isDir,
-		Token:        uuid.NewString(),
-		PasswordHash: passwordHash,
-		ExpiresAt:    expiresAt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		UserID:            userID,
+		SourceID:          source.ID,
+		Path:              virtualPath,
+		TargetVirtualPath: targetVirtualPath,
+		ResolvedSourceID:  source.ID,
+		ResolvedInnerPath: virtualPath,
+		Name:              name,
+		IsDir:             isDir,
+		Token:             uuid.NewString(),
+		PasswordHash:      passwordHash,
+		ExpiresAt:         expiresAt,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := s.shareRepo.Create(ctx, share); err != nil {
 		return nil, err
@@ -424,15 +431,18 @@ func toShareView(share *entity.ShareLink) appdto.ShareView {
 	}
 
 	return appdto.ShareView{
-		ID:          share.ID,
-		SourceID:    share.SourceID,
-		Path:        share.Path,
-		Name:        share.Name,
-		IsDir:       share.IsDir,
-		Link:        path.Join("/s", share.Token),
-		HasPassword: share.PasswordHash != nil,
-		ExpiresAt:   expiresAt,
-		CreatedAt:   share.CreatedAt.Format(time.RFC3339),
+		ID:                share.ID,
+		SourceID:          share.SourceID,
+		Path:              share.Path,
+		TargetVirtualPath: share.TargetVirtualPath,
+		ResolvedSourceID:  share.ResolvedSourceID,
+		ResolvedInnerPath: share.ResolvedInnerPath,
+		Name:              share.Name,
+		IsDir:             share.IsDir,
+		Link:              path.Join("/s", share.Token),
+		HasPassword:       share.PasswordHash != nil,
+		ExpiresAt:         expiresAt,
+		CreatedAt:         share.CreatedAt.Format(time.RFC3339),
 	}
 }
 

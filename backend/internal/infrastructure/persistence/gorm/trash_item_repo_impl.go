@@ -73,32 +73,34 @@ func (r *TrashItemRepository) Delete(ctx context.Context, id uint) error {
 
 func trashItemModelFromEntity(item *entity.TrashItem) *TrashItemModel {
 	return &TrashItemModel{
-		ID:           item.ID,
-		SourceID:     item.SourceID,
-		OriginalPath: item.OriginalPath,
-		TrashPath:    item.TrashPath,
-		Name:         item.Name,
-		IsDir:        item.IsDir,
-		Size:         item.Size,
-		DeletedAt:    item.DeletedAt,
-		ExpiresAt:    item.ExpiresAt,
-		CreatedAt:    item.CreatedAt,
-		UpdatedAt:    item.UpdatedAt,
+		ID:                  item.ID,
+		SourceID:            item.SourceID,
+		OriginalPath:        item.OriginalPath,
+		OriginalVirtualPath: item.OriginalVirtualPath,
+		TrashPath:           item.TrashPath,
+		Name:                item.Name,
+		IsDir:               item.IsDir,
+		Size:                item.Size,
+		DeletedAt:           item.DeletedAt,
+		ExpiresAt:           item.ExpiresAt,
+		CreatedAt:           item.CreatedAt,
+		UpdatedAt:           item.UpdatedAt,
 	}
 }
 
 func trashItemEntityFromModel(model *TrashItemModel) *entity.TrashItem {
 	return &entity.TrashItem{
-		ID:           model.ID,
-		SourceID:     model.SourceID,
-		OriginalPath: model.OriginalPath,
-		TrashPath:    model.TrashPath,
-		Name:         model.Name,
-		IsDir:        model.IsDir,
-		Size:         model.Size,
-		DeletedAt:    model.DeletedAt,
-		ExpiresAt:    model.ExpiresAt,
-		CreatedAt:    model.CreatedAt,
-		UpdatedAt:    model.UpdatedAt,
+		ID:                  model.ID,
+		SourceID:            model.SourceID,
+		OriginalPath:        model.OriginalPath,
+		OriginalVirtualPath: model.OriginalVirtualPath,
+		TrashPath:           model.TrashPath,
+		Name:                model.Name,
+		IsDir:               model.IsDir,
+		Size:                model.Size,
+		DeletedAt:           model.DeletedAt,
+		ExpiresAt:           model.ExpiresAt,
+		CreatedAt:           model.CreatedAt,
+		UpdatedAt:           model.UpdatedAt,
 	}
 }

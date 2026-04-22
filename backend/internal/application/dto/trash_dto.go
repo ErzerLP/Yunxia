@@ -9,14 +9,15 @@ type TrashListQuery struct {
 
 // TrashItemView 表示回收站项。
 type TrashItemView struct {
-	ID           uint   `json:"id"`
-	SourceID     uint   `json:"source_id"`
-	OriginalPath string `json:"original_path"`
-	TrashPath    string `json:"trash_path"`
-	Name         string `json:"name"`
-	Size         int64  `json:"size"`
-	DeletedAt    string `json:"deleted_at"`
-	ExpiresAt    string `json:"expires_at"`
+	ID                  uint   `json:"id"`
+	SourceID            uint   `json:"source_id"`
+	OriginalPath        string `json:"original_path"`
+	OriginalVirtualPath string `json:"original_virtual_path,omitempty"`
+	TrashPath           string `json:"trash_path"`
+	Name                string `json:"name"`
+	Size                int64  `json:"size"`
+	DeletedAt           string `json:"deleted_at"`
+	ExpiresAt           string `json:"expires_at"`
 }
 
 // TrashListResponse 表示回收站列表响应。
@@ -26,9 +27,10 @@ type TrashListResponse struct {
 
 // TrashRestoreResponse 表示回收站恢复响应。
 type TrashRestoreResponse struct {
-	ID           uint   `json:"id"`
-	Restored     bool   `json:"restored"`
-	RestoredPath string `json:"restored_path"`
+	ID                  uint   `json:"id"`
+	Restored            bool   `json:"restored"`
+	RestoredPath        string `json:"restored_path"`
+	RestoredVirtualPath string `json:"restored_virtual_path,omitempty"`
 }
 
 // TrashDeleteResponse 表示回收站删除响应。

@@ -25,13 +25,19 @@ const (
 type ACLAuthorizer struct {
 	systemConfigRepo domainrepo.SystemConfigRepository
 	aclRepo          domainrepo.ACLRuleRepository
+	sourceRepo       domainrepo.SourceRepository
 }
 
 // NewACLAuthorizer 创建 ACL 判定器。
-func NewACLAuthorizer(systemConfigRepo domainrepo.SystemConfigRepository, aclRepo domainrepo.ACLRuleRepository) *ACLAuthorizer {
+func NewACLAuthorizer(
+	systemConfigRepo domainrepo.SystemConfigRepository,
+	aclRepo domainrepo.ACLRuleRepository,
+	sourceRepo domainrepo.SourceRepository,
+) *ACLAuthorizer {
 	return &ACLAuthorizer{
 		systemConfigRepo: systemConfigRepo,
 		aclRepo:          aclRepo,
+		sourceRepo:       sourceRepo,
 	}
 }
 
@@ -105,9 +111,10 @@ func (a *ACLAuthorizer) CanSeeSource(ctx context.Context, sourceID uint) (bool, 
 }
 
 type aclEvaluator struct {
-	bypass bool
-	userID uint
-	rules  []*entity.ACLRule
+	bypass    bool
+	userID    uint
+	rules     []*entity.ACLRule
+	mountPath string
 }
 
 func (a *ACLAuthorizer) newEvaluator(ctx context.Context, sourceID uint) (*aclEvaluator, error) {
@@ -135,9 +142,20 @@ func (a *ACLAuthorizer) newEvaluator(ctx context.Context, sourceID uint) (*aclEv
 	if err != nil {
 		return nil, err
 	}
+	mountPath := "/"
+	if a.sourceRepo != nil {
+		source, err := a.sourceRepo.FindByID(ctx, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		if source.MountPath != "" {
+			mountPath = source.MountPath
+		}
+	}
 	return &aclEvaluator{
-		userID: auth.UserID,
-		rules:  rules,
+		userID:    auth.UserID,
+		rules:     rules,
+		mountPath: mountPath,
 	}, nil
 }
 
@@ -149,11 +167,15 @@ func (e *aclEvaluator) allowPath(pathValue string, action ACLAction) (bool, erro
 	if err != nil {
 		return false, ErrPathInvalid
 	}
+	targetVirtualPath := mergeMountAndInnerPath(e.mountPath, normalizedPath)
+	if targetVirtualPath == "" {
+		targetVirtualPath = normalizedPath
+	}
 	for _, rule := range e.rules {
 		if rule.SubjectType != "user" || rule.SubjectID != e.userID {
 			continue
 		}
-		if !ruleMatchesPath(rule, normalizedPath) {
+		if !ruleMatchesPath(rule, normalizedPath, targetVirtualPath) {
 			continue
 		}
 		if !ruleContainsAction(rule, action) {
@@ -164,21 +186,25 @@ func (e *aclEvaluator) allowPath(pathValue string, action ACLAction) (bool, erro
 	return false, nil
 }
 
-func ruleMatchesPath(rule *entity.ACLRule, targetPath string) bool {
+func ruleMatchesPath(rule *entity.ACLRule, targetPath string, targetVirtualPath string) bool {
 	if rule == nil {
 		return false
 	}
-	rulePath := strings.TrimSpace(rule.Path)
-	if rulePath == targetPath {
+	rulePath := strings.TrimSpace(rule.VirtualPath)
+	if rulePath == "" {
+		rulePath = strings.TrimSpace(rule.Path)
+		targetVirtualPath = targetPath
+	}
+	if rulePath == targetVirtualPath {
 		return true
 	}
 	if !rule.InheritToChildren {
 		return false
 	}
 	if rulePath == "/" {
-		return strings.HasPrefix(targetPath, "/")
+		return strings.HasPrefix(targetVirtualPath, "/")
 	}
-	return strings.HasPrefix(targetPath, strings.TrimSuffix(rulePath, "/")+"/")
+	return strings.HasPrefix(targetVirtualPath, strings.TrimSuffix(rulePath, "/")+"/")
 }
 
 func ruleContainsAction(rule *entity.ACLRule, action ACLAction) bool {
