@@ -31,3 +31,22 @@ func TestLoadAppliesDefaultsAndEnvOverrides(t *testing.T) {
         t.Fatalf("expected storage data dir override, got %q", cfg.Storage.DataDir)
     }
 }
+
+func TestLoadIncludesLoggingDefaults(t *testing.T) {
+    t.Setenv("YUNXIA_LOGGING_LEVEL", "debug")
+
+    cfg, err := Load()
+    if err != nil {
+        t.Fatalf("Load() error = %v", err)
+    }
+
+    if cfg.Logging.Level != "debug" {
+        t.Fatalf("expected logging level override, got %q", cfg.Logging.Level)
+    }
+    if cfg.Logging.Format != "json" {
+        t.Fatalf("expected default logging format json, got %q", cfg.Logging.Format)
+    }
+    if !cfg.Logging.AccessLogEnabled {
+        t.Fatalf("expected access log enabled by default")
+    }
+}

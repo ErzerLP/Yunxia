@@ -16,6 +16,7 @@ type Config struct {
     WebDAV   WebDAVConfig
     Aria2    Aria2Config
     Security SecurityConfig
+    Logging  LoggingConfig
 }
 
 // ServerConfig 表示 HTTP 服务配置。
@@ -62,6 +63,14 @@ type SecurityConfig struct {
     BcryptCost        int
     LoginMaxAttempts  int
     LoginLockDuration time.Duration
+}
+
+// LoggingConfig 表示运行日志配置。
+type LoggingConfig struct {
+    Level            string
+    Format           string
+    AddSource        bool
+    AccessLogEnabled bool
 }
 
 // Load 读取默认值并应用环境变量覆盖。
@@ -119,6 +128,12 @@ func Load() (Config, error) {
             LoginMaxAttempts:  v.GetInt("security.login_max_attempts"),
             LoginLockDuration: lockDuration,
         },
+        Logging: LoggingConfig{
+            Level:            v.GetString("logging.level"),
+            Format:           v.GetString("logging.format"),
+            AddSource:        v.GetBool("logging.add_source"),
+            AccessLogEnabled: v.GetBool("logging.access_log_enabled"),
+        },
     }
 
     return cfg, nil
@@ -143,4 +158,8 @@ func setDefaults(v *viper.Viper) {
     v.SetDefault("security.bcrypt_cost", 12)
     v.SetDefault("security.login_max_attempts", 5)
     v.SetDefault("security.login_lock_duration", "15m")
+    v.SetDefault("logging.level", "info")
+    v.SetDefault("logging.format", "json")
+    v.SetDefault("logging.add_source", false)
+    v.SetDefault("logging.access_log_enabled", true)
 }
