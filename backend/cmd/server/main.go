@@ -72,6 +72,7 @@ func main() {
 	tokenSvc := security.NewJWTTokenService(cfg.JWT.Secret, cfg.JWT.AccessTokenExpire, cfg.JWT.RefreshTokenExpire)
 	fileAccessSvc := security.NewFileAccessTokenService(cfg.JWT.Secret)
 	auditRecorder := appaudit.NewRecorder(auditRepo, appLog.Component(rootLogger, "audit.recorder"))
+	auditQuerySvc := appaudit.NewQueryService(auditRepo)
 	downloadSvc := downloader.NewAria2Client(cfg.Aria2.RPCURL, cfg.Aria2.RPCSecret)
 	s3Driver := infraStorage.NewS3Driver(infraStorage.NewS3ClientFactory())
 
@@ -162,6 +163,7 @@ func main() {
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
 	authHandler := httphandler.NewAuthHandler(authSvc)
 	systemHandler := httphandler.NewSystemHandler(systemSvc, "dev", "local", "", "")
+	auditHandler := httphandler.NewAuditHandler(auditQuerySvc)
 	sourceHandler := httphandler.NewSourceHandler(sourceSvc)
 	userHandler := httphandler.NewUserHandler(userSvc)
 	aclHandler := httphandler.NewACLHandler(aclSvc)
@@ -178,6 +180,7 @@ func main() {
 	httpiface.RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterUserRoutes(engine, userHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterACLRoutes(engine, aclHandler, authMW, auditRecorder, rootLogger)
+	httpiface.RegisterAuditRoutes(engine, auditHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterTaskRoutes(engine, taskHandler, authMW)
 	httpiface.RegisterShareRoutes(engine, shareHandler, authMW)
 	httpiface.RegisterVFSRoutes(engine, vfsHandler, authMW)

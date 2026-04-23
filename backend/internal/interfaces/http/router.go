@@ -204,6 +204,28 @@ func RegisterACLRoutes(
 	aclDelete.DELETE("/acl/rules/:id", aclHandler.Delete)
 }
 
+// RegisterAuditRoutes 注册审计查询路由。
+func RegisterAuditRoutes(
+	r *gin.Engine,
+	auditHandler *handler.AuditHandler,
+	authMiddleware *middleware.AuthMiddleware,
+	auditRecorder *appaudit.Recorder,
+	rootLogger *slog.Logger,
+) {
+	api := r.Group("/api/v1")
+
+	authorized := api.Group("")
+	authorized.Use(authMiddleware.RequireAuth())
+
+	auditRead := authorized.Group("")
+	auditRead.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "audit_log", "list", permission.CapabilityAuditRead))
+	auditRead.GET("/audit/logs", auditHandler.List)
+
+	auditDetail := authorized.Group("")
+	auditDetail.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "audit_log", "get", permission.CapabilityAuditRead))
+	auditDetail.GET("/audit/logs/:id", auditHandler.Get)
+}
+
 // RegisterTaskRoutes 注册离线任务相关路由。
 func RegisterTaskRoutes(
 	r *gin.Engine,

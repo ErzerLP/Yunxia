@@ -23,10 +23,12 @@ const (
 	CapabilitySourceDelete     = "source.delete"
 	CapabilitySourceSecretRead = "source.secret.read"
 
-	CapabilityTaskReadAll    = "task.read_all"
-	CapabilityTaskManageAll  = "task.manage_all"
-	CapabilityShareReadAll   = "share.read_all"
-	CapabilityShareManageAll = "share.manage_all"
+	CapabilityTaskReadAll        = "task.read_all"
+	CapabilityTaskManageAll      = "task.manage_all"
+	CapabilityShareReadAll       = "share.read_all"
+	CapabilityShareManageAll     = "share.manage_all"
+	CapabilityAuditRead          = "audit.read"
+	CapabilityAuditReadSensitive = "audit.read_sensitive"
 )
 
 var allCapabilities = []string{
@@ -52,6 +54,8 @@ var allCapabilities = []string{
 	CapabilityTaskManageAll,
 	CapabilityShareReadAll,
 	CapabilityShareManageAll,
+	CapabilityAuditRead,
+	CapabilityAuditReadSensitive,
 }
 
 func AllCapabilities() []string {

@@ -29,6 +29,7 @@ func ResolveCapabilities(roleKey string) ([]string, error) {
 			CapabilityTaskManageAll,
 			CapabilityShareReadAll,
 			CapabilityShareManageAll,
+			CapabilityAuditRead,
 		}, nil
 	case RoleOperator:
 		return []string{
