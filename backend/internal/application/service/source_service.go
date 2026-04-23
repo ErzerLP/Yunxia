@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -23,6 +25,8 @@ type SourceService struct {
 	systemConfigRepo domainrepo.SystemConfigRepository
 	aclAuthorizer    *ACLAuthorizer
 	driverProbes     map[string]SourceDriverProbe
+	logger           *slog.Logger
+	auditRecorder    *appaudit.Recorder
 }
 
 // NewSourceService 创建存储源服务。
@@ -31,6 +35,7 @@ func NewSourceService(sourceRepo domainrepo.SourceRepository, systemConfigRepo d
 		sourceRepo:       sourceRepo,
 		systemConfigRepo: systemConfigRepo,
 		driverProbes:     make(map[string]SourceDriverProbe),
+		logger:           newServiceLogger("service.source"),
 	}
 	for _, option := range options {
 		option(service)
@@ -118,65 +123,153 @@ func (s *SourceService) Test(ctx context.Context, req appdto.SourceUpsertRequest
 	start := time.Now()
 	source, err := s.buildSourceEntity(req, nil)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "test",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+		})
 		return nil, err
 	}
 	if err := s.validateSource(ctx, source); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "test",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+			Detail:       sourceTestDetail(source, time.Since(start).Milliseconds(), false),
+		})
 		return nil, err
 	}
 
 	checkedAt := time.Now()
-	return &appdto.SourceTestResponse{
+	resp := &appdto.SourceTestResponse{
 		Reachable: true,
 		Status:    "online",
 		LatencyMS: time.Since(start).Milliseconds(),
 		CheckedAt: checkedAt.Format(time.RFC3339),
 		Warnings:  []string{},
-	}, nil
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "storage_source",
+		Action:       "test",
+		Result:       appaudit.ResultSuccess,
+		Detail:       sourceTestDetail(source, resp.LatencyMS, true),
+	})
+	return resp, nil
 }
 
 // Retest 重新测试已保存存储源。
 func (s *SourceService) Retest(ctx context.Context, id uint) (*appdto.SourceTestResponse, error) {
 	source, err := s.sourceRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "test",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.validateSource(ctx, source); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "test",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+			ResourceID:   encodeUintID(id),
+			Detail:       sourceTestDetail(source, 0, false),
+		})
 		return nil, err
 	}
 
 	checkedAt := time.Now()
-	return &appdto.SourceTestResponse{
+	resp := &appdto.SourceTestResponse{
 		Reachable: true,
 		Status:    "online",
 		LatencyMS: 0,
 		CheckedAt: checkedAt.Format(time.RFC3339),
 		Warnings:  []string{},
-	}, nil
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "storage_source",
+		Action:       "test",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Detail:       sourceTestDetail(source, 0, true),
+	})
+	return resp, nil
 }
 
 // Create 创建存储源。
 func (s *SourceService) Create(ctx context.Context, req appdto.SourceUpsertRequest) (*appdto.StorageSourceView, error) {
 	if _, err := s.sourceRepo.FindByName(ctx, req.Name); err == nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NAME_CONFLICT",
+		})
 		return nil, ErrSourceNameConflict
 	} else if !errors.Is(err, domainrepo.ErrNotFound) {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 
 	source, err := s.buildSourceEntity(req, nil)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+		})
 		return nil, err
 	}
 	if err := s.ensureMountPathAvailable(ctx, source.MountPath, 0); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+		})
 		return nil, err
 	}
 	if err := s.validateSource(ctx, source); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+		})
 		return nil, err
 	}
 	if err := s.sourceRepo.Create(ctx, source); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 
 	view := s.toSourceView(source)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "storage_source",
+		Action:       "create",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(source.ID),
+		SourceID:     &source.ID,
+		VirtualPath:  source.MountPath,
+		After:        sourceAuditView(source),
+	})
 	return &view, nil
 }
 
@@ -184,18 +277,50 @@ func (s *SourceService) Create(ctx context.Context, req appdto.SourceUpsertReque
 func (s *SourceService) Update(ctx context.Context, id uint, req appdto.SourceUpsertRequest) (*appdto.StorageSourceView, error) {
 	existing, err := s.sourceRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
+	before := sourceAuditView(existing)
 	req.DriverType = existing.DriverType
 
 	source, err := s.buildSourceEntity(req, existing)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	if err := s.ensureMountPathAvailable(ctx, source.MountPath, existing.ID); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	if err := s.validateSource(ctx, source); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    sourceErrorCode(err),
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	source.ID = existing.ID
@@ -203,24 +328,91 @@ func (s *SourceService) Update(ctx context.Context, id uint, req appdto.SourceUp
 	source.WebDAVSlug = existing.WebDAVSlug
 
 	if err := s.sourceRepo.Update(ctx, source); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 
 	view := s.toSourceView(source)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "storage_source",
+		Action:       "update",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &source.ID,
+		VirtualPath:  source.MountPath,
+		Before:       before,
+		After:        sourceAuditView(source),
+	})
 	return &view, nil
 }
 
 // Delete 删除存储源。
 func (s *SourceService) Delete(ctx context.Context, id uint) error {
+	source, err := s.sourceRepo.FindByID(ctx, id)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
+		return err
+	}
+	before := sourceAuditView(source)
+
 	cfg, err := s.systemConfigRepo.Get(ctx)
 	if err == nil && cfg.DefaultSourceID != nil && *cfg.DefaultSourceID == id {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_IN_USE",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return ErrSourceInUse
 	}
 	if err != nil && !errors.Is(err, domainrepo.ErrNotFound) {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return err
 	}
 
-	return s.sourceRepo.Delete(ctx, id)
+	if err := s.sourceRepo.Delete(ctx, id); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
+		return err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "storage_source",
+		Action:       "delete",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &source.ID,
+		VirtualPath:  source.MountPath,
+		Before:       before,
+	})
+	return nil
 }
 
 func (s *SourceService) buildSourceEntity(req appdto.SourceUpsertRequest, existing *entity.StorageSource) (*entity.StorageSource, error) {

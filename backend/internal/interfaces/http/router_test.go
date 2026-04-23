@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "yunxia/internal/application/audit"
 	appsvc "yunxia/internal/application/service"
 	"yunxia/internal/domain/entity"
 	appLog "yunxia/internal/infrastructure/observability/logging"
@@ -474,6 +476,20 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		_ = sqlDB.Close()
 	})
 
+	infoBuf := &bytes.Buffer{}
+	errBuf := &bytes.Buffer{}
+	rootLogger := appLog.NewRootLogger(
+		appLog.Options{Level: "debug", Format: "json"},
+		appLog.AppMeta{Service: "yunxia-backend", Env: "test", Version: "test"},
+		infoBuf,
+		errBuf,
+	)
+	previousDefaultLogger := slog.Default()
+	slog.SetDefault(rootLogger)
+	t.Cleanup(func() {
+		slog.SetDefault(previousDefaultLogger)
+	})
+
 	userRepo := gormrepo.NewUserRepository(db)
 	refreshRepo := gormrepo.NewRefreshTokenRepository(db)
 	configRepo := gormrepo.NewSystemConfigRepository(db)
@@ -482,20 +498,32 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	trashRepo := gormrepo.NewTrashItemRepository(db)
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
+	auditRepo := gormrepo.NewAuditLogRepository(db)
 	hasher := security.NewBcryptHasher(4)
 	tokenSvc := security.NewJWTTokenService("router-secret", 15*time.Minute, 7*24*time.Hour)
 	fileAccessSvc := security.NewFileAccessTokenService("router-secret")
+	auditRecorder := appaudit.NewRecorder(auditRepo, appLog.Component(rootLogger, "audit.recorder"))
 	options := appsvc.DefaultSystemOptions()
 	root := t.TempDir()
 	options.StorageDataDir = filepath.Join(root, "storage")
 	options.TempDir = filepath.Join(root, "temp")
 
 	fakeS3 := newFakeS3Driver()
-	setupSvc := appsvc.NewSetupService(userRepo, refreshRepo, configRepo, sourceRepo, hasher, tokenSvc, options)
+	setupSvc := appsvc.NewSetupService(
+		userRepo,
+		refreshRepo,
+		configRepo,
+		sourceRepo,
+		hasher,
+		tokenSvc,
+		options,
+		appsvc.WithSetupAuditRecorder(auditRecorder),
+	)
 	authSvc := appsvc.NewAuthService(userRepo, refreshRepo, hasher, tokenSvc)
 	systemSvc := appsvc.NewSystemService(
 		configRepo,
 		options,
+		appsvc.WithSystemAuditRecorder(auditRecorder),
 		appsvc.WithSystemStatsDependencies(userRepo, sourceRepo, gormrepo.NewTaskRepository(db)),
 		appsvc.WithSystemStatsFileDriver("s3", fakeS3),
 	)
@@ -503,11 +531,12 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	sourceSvc := appsvc.NewSourceService(
 		sourceRepo,
 		configRepo,
+		appsvc.WithSourceAuditRecorder(auditRecorder),
 		appsvc.WithSourceACLAuthorizer(aclAuthorizer),
 		appsvc.WithSourceDriverProbe("s3", fakeS3),
 	)
-	userSvc := appsvc.NewUserService(userRepo, hasher)
-	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo)
+	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
+	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
 	fileSvc := appsvc.NewFileService(
 		sourceRepo,
 		fileAccessSvc,
@@ -565,16 +594,20 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
 	webdavHandler := httphandler.NewWebDAVHandler("/dav", sourceRepo, configRepo, userRepo, aclAuthorizer, hasher)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
-	rootLogger := appLog.NewRootLogger(appLog.Options{Level: "debug", Format: "json"}, appLog.AppMeta{Service: "yunxia-backend", Env: "test", Version: "test"}, &bytes.Buffer{}, &bytes.Buffer{})
 
 	engine := NewRouter(setupHandler, authHandler, systemHandler, authMW, rootLogger, "/dav", true)
-	RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW)
-	RegisterUserRoutes(engine, userHandler, authMW)
-	RegisterACLRoutes(engine, aclHandler, authMW)
+	RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW, auditRecorder, rootLogger)
+	RegisterUserRoutes(engine, userHandler, authMW, auditRecorder, rootLogger)
+	RegisterACLRoutes(engine, aclHandler, authMW, auditRecorder, rootLogger)
 	RegisterTaskRoutes(engine, taskHandler, authMW)
 	RegisterShareRoutes(engine, shareHandler, authMW)
 	RegisterVFSRoutes(engine, vfsHandler, authMW)
 	RegisterWebDAVRoutes(engine, "/dav", webdavHandler)
+	registerTestRouterHarness(engine, &testRouterHarness{
+		AuditRepo: auditRepo,
+		InfoBuf:   infoBuf,
+		ErrBuf:    errBuf,
+	})
 	return engine
 }
 

@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	domainrepo "yunxia/internal/domain/repository"
@@ -11,9 +13,11 @@ import (
 
 // ACLService 负责 ACL 规则管理。
 type ACLService struct {
-	sourceRepo domainrepo.SourceRepository
-	userRepo   domainrepo.UserRepository
-	aclRepo    domainrepo.ACLRuleRepository
+	sourceRepo    domainrepo.SourceRepository
+	userRepo      domainrepo.UserRepository
+	aclRepo       domainrepo.ACLRuleRepository
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 // NewACLService 创建 ACL 服务。
@@ -21,12 +25,18 @@ func NewACLService(
 	sourceRepo domainrepo.SourceRepository,
 	userRepo domainrepo.UserRepository,
 	aclRepo domainrepo.ACLRuleRepository,
+	options ...ACLServiceOption,
 ) *ACLService {
-	return &ACLService{
+	service := &ACLService{
 		sourceRepo: sourceRepo,
 		userRepo:   userRepo,
 		aclRepo:    aclRepo,
+		logger:     newServiceLogger("service.acl"),
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 // List 返回 ACL 规则列表。
@@ -61,12 +71,33 @@ func (s *ACLService) List(ctx context.Context, query appdto.ACLRuleListQuery) (*
 func (s *ACLService) Create(ctx context.Context, req appdto.CreateACLRuleRequest) (*appdto.ACLRuleView, error) {
 	rule, err := s.buildRuleEntity(ctx, req.SourceID, req.Path, req.SubjectType, req.SubjectID, req.Effect, req.Priority, req.Permissions, req.InheritToChildren)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    aclErrorCode(err),
+		})
 		return nil, err
 	}
 	if err := s.aclRepo.Create(ctx, rule); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 	view := toACLRuleView(rule)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "acl_rule",
+		Action:       "create",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(rule.ID),
+		SourceID:     &rule.SourceID,
+		VirtualPath:  rule.VirtualPath,
+		After:        aclRuleAuditView(rule),
+	})
 	return &view, nil
 }
 
@@ -74,24 +105,90 @@ func (s *ACLService) Create(ctx context.Context, req appdto.CreateACLRuleRequest
 func (s *ACLService) Update(ctx context.Context, id uint, req appdto.UpdateACLRuleRequest) (*appdto.ACLRuleView, error) {
 	current, err := s.aclRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "ACL_RULE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
+	before := aclRuleAuditView(current)
 	rule, err := s.buildRuleEntity(ctx, current.SourceID, req.Path, req.SubjectType, req.SubjectID, req.Effect, req.Priority, req.Permissions, req.InheritToChildren)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    aclErrorCode(err),
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	rule.ID = current.ID
 	rule.CreatedAt = current.CreatedAt
 	if err := s.aclRepo.Update(ctx, rule); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	view := toACLRuleView(rule)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "acl_rule",
+		Action:       "update",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &rule.SourceID,
+		VirtualPath:  rule.VirtualPath,
+		Before:       before,
+		After:        aclRuleAuditView(rule),
+	})
 	return &view, nil
 }
 
 // Delete 删除 ACL 规则。
 func (s *ACLService) Delete(ctx context.Context, id uint) error {
-	return s.aclRepo.Delete(ctx, id)
+	current, err := s.aclRepo.FindByID(ctx, id)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "ACL_RULE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
+		return err
+	}
+	before := aclRuleAuditView(current)
+	if err := s.aclRepo.Delete(ctx, id); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "acl_rule",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
+		return err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "acl_rule",
+		Action:       "delete",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &current.SourceID,
+		VirtualPath:  current.VirtualPath,
+		Before:       before,
+	})
+	return nil
 }
 
 func (s *ACLService) buildRuleEntity(

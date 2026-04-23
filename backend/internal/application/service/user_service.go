@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -15,16 +17,23 @@ import (
 
 // UserService 负责管理员用户管理。
 type UserService struct {
-	userRepo domainrepo.UserRepository
-	hasher   passwordHasher
+	userRepo      domainrepo.UserRepository
+	hasher        passwordHasher
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 // NewUserService 创建用户管理服务。
-func NewUserService(userRepo domainrepo.UserRepository, hasher passwordHasher) *UserService {
-	return &UserService{
+func NewUserService(userRepo domainrepo.UserRepository, hasher passwordHasher, options ...UserServiceOption) *UserService {
+	service := &UserService{
 		userRepo: userRepo,
 		hasher:   hasher,
+		logger:   newServiceLogger("service.user"),
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 // List 返回用户列表。
@@ -57,19 +66,52 @@ func (s *UserService) Create(ctx context.Context, req appdto.CreateUserRequest) 
 	}
 	roleKey, err := normalizeInputRoleKey(req.RoleKey)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_ROLE_INVALID",
+		})
 		return nil, err
 	}
 	if !permission.CanAssignRole(actor.RoleKey, roleKey) {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "create",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ROLE_ASSIGNMENT_FORBIDDEN",
+			Detail: map[string]any{
+				"target_role_key": roleKey,
+			},
+		})
 		return nil, ErrRoleAssignmentForbidden
 	}
 	if _, err := s.userRepo.FindByUsername(ctx, req.Username); err == nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_NAME_CONFLICT",
+		})
 		return nil, ErrUserNameConflict
 	} else if !errors.Is(err, domainrepo.ErrNotFound) {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 
 	passwordHash, err := s.hasher.Hash(req.Password)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 	user := &entity.User{
@@ -81,10 +123,23 @@ func (s *UserService) Create(ctx context.Context, req appdto.CreateUserRequest) 
 		TokenVersion: 0,
 	}
 	if err := s.userRepo.Create(ctx, user); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 
 	view := toUserAdminView(user)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "user",
+		Action:       "create",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(user.ID),
+		After:        userAuditView(user),
+	})
 	return &view, nil
 }
 
@@ -96,18 +151,54 @@ func (s *UserService) Update(ctx context.Context, id uint, req appdto.UpdateUser
 	}
 	user, err := s.userRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
+	before := userAuditView(user)
 
 	nextRoleKey, err := normalizeInputRoleKey(req.RoleKey)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_ROLE_INVALID",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	nextStatus, err := normalizeInputStatus(req.Status)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_STATUS_INVALID",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 	if !permission.CanManageTargetRole(actor.RoleKey, user.RoleKey) || !permission.CanAssignRole(actor.RoleKey, nextRoleKey) {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "update",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ROLE_ASSIGNMENT_FORBIDDEN",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+			Detail: map[string]any{
+				"target_role_key": nextRoleKey,
+				"target_status":   nextStatus,
+			},
+		})
 		return nil, ErrRoleAssignmentForbidden
 	}
 	if user.RoleKey == permission.RoleSuperAdmin && (nextRoleKey != permission.RoleSuperAdmin || nextStatus == permission.StatusLocked) {
@@ -116,6 +207,18 @@ func (s *UserService) Update(ctx context.Context, id uint, req appdto.UpdateUser
 			return nil, err
 		}
 		if activeSuperAdmins == 1 {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "user",
+				Action:       "update",
+				Result:       appaudit.ResultDenied,
+				ErrorCode:    "LAST_SUPER_ADMIN_FORBIDDEN",
+				ResourceID:   encodeUintID(id),
+				Before:       before,
+				Detail: map[string]any{
+					"target_role_key": nextRoleKey,
+					"target_status":   nextStatus,
+				},
+			})
 			return nil, ErrLastSuperAdminForbidden
 		}
 	}
@@ -128,10 +231,26 @@ func (s *UserService) Update(ctx context.Context, id uint, req appdto.UpdateUser
 		user.TokenVersion++
 	}
 	if err := s.userRepo.Update(ctx, user); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
 
 	view := toUserAdminView(user)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "user",
+		Action:       "update",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Before:       before,
+		After:        userAuditView(user),
+	})
 	return &view, nil
 }
 
@@ -139,26 +258,84 @@ func (s *UserService) Update(ctx context.Context, id uint, req appdto.UpdateUser
 func (s *UserService) ResetPassword(ctx context.Context, id uint, req appdto.ResetUserPasswordRequest) error {
 	user, err := s.userRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "reset_password",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return err
 	}
 
 	passwordHash, err := s.hasher.Hash(req.NewPassword)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "reset_password",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+		})
 		return err
 	}
 	user.PasswordHash = passwordHash
-	return s.userRepo.Update(ctx, user)
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "reset_password",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+		})
+		return err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "user",
+		Action:       "reset_password",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Detail: map[string]any{
+			"target_user_id":   id,
+			"password_changed": true,
+		},
+	})
+	return nil
 }
 
 // RevokeTokens 撤销用户所有访问令牌。
 func (s *UserService) RevokeTokens(ctx context.Context, id uint) (*appdto.RevokeUserTokensResponse, error) {
 	user, err := s.userRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "revoke_tokens",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "USER_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.userRepo.UpdateTokenVersion(ctx, id, user.TokenVersion+1); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "user",
+			Action:       "revoke_tokens",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "user",
+		Action:       "revoke_tokens",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Detail: map[string]any{
+			"target_user_id": id,
+			"revoked":        true,
+		},
+	})
 	return &appdto.RevokeUserTokensResponse{
 		ID:      id,
 		Revoked: true,

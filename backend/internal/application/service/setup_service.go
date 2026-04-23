@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"time"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -81,6 +83,8 @@ type SetupService struct {
 	hasher           passwordHasher
 	tokens           tokenService
 	options          SystemOptions
+	logger           *slog.Logger
+	auditRecorder    *appaudit.Recorder
 }
 
 // NewSetupService 创建初始化服务。
@@ -92,8 +96,9 @@ func NewSetupService(
 	hasher passwordHasher,
 	tokens tokenService,
 	options SystemOptions,
+	serviceOptions ...SetupServiceOption,
 ) *SetupService {
-	return &SetupService{
+	service := &SetupService{
 		userRepo:         userRepo,
 		refreshTokenRepo: refreshTokenRepo,
 		systemConfigRepo: systemConfigRepo,
@@ -101,7 +106,12 @@ func NewSetupService(
 		hasher:           hasher,
 		tokens:           tokens,
 		options:          options,
+		logger:           newServiceLogger("service.setup"),
 	}
+	for _, option := range serviceOptions {
+		option(service)
+	}
+	return service
 }
 
 // Status 返回初始化状态。
@@ -161,6 +171,23 @@ func (s *SetupService) Init(ctx context.Context, req appdto.SetupInitRequest) (*
 	if err != nil {
 		return nil, err
 	}
+
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "setup",
+		Action:       "init",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(user.ID),
+		After: map[string]any{
+			"user": map[string]any{
+				"id":       user.ID,
+				"username": user.Username,
+				"email":    user.Email,
+				"role_key": user.RoleKey,
+				"status":   user.Status,
+			},
+			"default_source_id": defaultSource.ID,
+		},
+	})
 
 	return &appdto.SetupInitResponse{
 		User:   toUserSummary(user),
@@ -285,6 +312,8 @@ type SystemService struct {
 	statsSourceRepo  systemStatsSourceRepository
 	statsTaskRepo    systemStatsTaskRepository
 	fileDrivers      map[string]FileDriver
+	logger           *slog.Logger
+	auditRecorder    *appaudit.Recorder
 }
 
 // NewSystemService 创建系统服务。
@@ -292,6 +321,7 @@ func NewSystemService(systemConfigRepo domainrepo.SystemConfigRepository, option
 	service := &SystemService{
 		systemConfigRepo: systemConfigRepo,
 		options:          options,
+		logger:           newServiceLogger("service.system"),
 	}
 	for _, option := range serviceOptions {
 		option(service)
@@ -319,11 +349,18 @@ func (s *SystemService) GetConfig(ctx context.Context) (*appdto.SystemConfigPubl
 func (s *SystemService) UpdateConfig(ctx context.Context, req appdto.UpdateSystemConfigRequest) (*appdto.SystemConfigPublic, error) {
 	current, err := s.systemConfigRepo.Get(ctx)
 	if err != nil && !errors.Is(err, domainrepo.ErrNotFound) {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "system_config",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
 		return nil, err
 	}
 	if errors.Is(err, domainrepo.ErrNotFound) {
 		current = defaultSystemConfigEntity(s.options)
 	}
+	before := systemConfigAuditView(current)
 
 	current.SiteName = req.SiteName
 	current.MultiUserEnabled = req.MultiUserEnabled
@@ -337,8 +374,25 @@ func (s *SystemService) UpdateConfig(ctx context.Context, req appdto.UpdateSyste
 	current.TimeZone = req.TimeZone
 
 	if err := s.systemConfigRepo.Upsert(ctx, current); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "system_config",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			Before:       before,
+		})
 		return nil, err
 	}
+
+	after := systemConfigAuditView(current)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "system_config",
+		Action:       "update",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(current.ID),
+		Before:       before,
+		After:        after,
+	})
 
 	dto := toSystemConfigPublic(current)
 	return &dto, nil

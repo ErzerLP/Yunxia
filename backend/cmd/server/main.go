@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "yunxia/internal/application/audit"
 	appsvc "yunxia/internal/application/service"
 	appcfg "yunxia/internal/infrastructure/config"
 	"yunxia/internal/infrastructure/downloader"
@@ -65,10 +66,12 @@ func main() {
 	trashRepo := gormrepo.NewTrashItemRepository(db)
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
+	auditRepo := gormrepo.NewAuditLogRepository(db)
 
 	hasher := security.NewBcryptHasher(cfg.Security.BcryptCost)
 	tokenSvc := security.NewJWTTokenService(cfg.JWT.Secret, cfg.JWT.AccessTokenExpire, cfg.JWT.RefreshTokenExpire)
 	fileAccessSvc := security.NewFileAccessTokenService(cfg.JWT.Secret)
+	auditRecorder := appaudit.NewRecorder(auditRepo, appLog.Component(rootLogger, "audit.recorder"))
 	downloadSvc := downloader.NewAria2Client(cfg.Aria2.RPCURL, cfg.Aria2.RPCSecret)
 	s3Driver := infraStorage.NewS3Driver(infraStorage.NewS3ClientFactory())
 
@@ -80,11 +83,21 @@ func main() {
 	options.WebDAVEnabled = cfg.WebDAV.Enabled
 	options.WebDAVPrefix = cfg.WebDAV.Prefix
 
-	setupSvc := appsvc.NewSetupService(userRepo, refreshRepo, systemConfigRepo, sourceRepo, hasher, tokenSvc, options)
+	setupSvc := appsvc.NewSetupService(
+		userRepo,
+		refreshRepo,
+		systemConfigRepo,
+		sourceRepo,
+		hasher,
+		tokenSvc,
+		options,
+		appsvc.WithSetupAuditRecorder(auditRecorder),
+	)
 	authSvc := appsvc.NewAuthService(userRepo, refreshRepo, hasher, tokenSvc)
 	systemSvc := appsvc.NewSystemService(
 		systemConfigRepo,
 		options,
+		appsvc.WithSystemAuditRecorder(auditRecorder),
 		appsvc.WithSystemStatsDependencies(userRepo, sourceRepo, taskRepo),
 		appsvc.WithSystemStatsFileDriver("s3", s3Driver),
 	)
@@ -92,11 +105,12 @@ func main() {
 	sourceSvc := appsvc.NewSourceService(
 		sourceRepo,
 		systemConfigRepo,
+		appsvc.WithSourceAuditRecorder(auditRecorder),
 		appsvc.WithSourceACLAuthorizer(aclAuthorizer),
 		appsvc.WithSourceDriverProbe("s3", s3Driver),
 	)
-	userSvc := appsvc.NewUserService(userRepo, hasher)
-	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo)
+	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
+	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
 	fileSvc := appsvc.NewFileService(
 		sourceRepo,
 		fileAccessSvc,
@@ -151,9 +165,9 @@ func main() {
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
 
 	engine := httpiface.NewRouter(setupHandler, authHandler, systemHandler, authMW, rootLogger, cfg.WebDAV.Prefix, cfg.Logging.AccessLogEnabled)
-	httpiface.RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW)
-	httpiface.RegisterUserRoutes(engine, userHandler, authMW)
-	httpiface.RegisterACLRoutes(engine, aclHandler, authMW)
+	httpiface.RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW, auditRecorder, rootLogger)
+	httpiface.RegisterUserRoutes(engine, userHandler, authMW, auditRecorder, rootLogger)
+	httpiface.RegisterACLRoutes(engine, aclHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterTaskRoutes(engine, taskHandler, authMW)
 	httpiface.RegisterShareRoutes(engine, shareHandler, authMW)
 	httpiface.RegisterVFSRoutes(engine, vfsHandler, authMW)

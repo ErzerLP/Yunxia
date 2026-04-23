@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	appaudit "yunxia/internal/application/audit"
 	"yunxia/internal/domain/permission"
 	"yunxia/internal/interfaces/http/handler"
 	"yunxia/internal/interfaces/middleware"
@@ -67,6 +68,8 @@ func RegisterStorageRoutes(
 	trashHandler *handler.TrashHandler,
 	uploadHandler *handler.UploadHandler,
 	authMiddleware *middleware.AuthMiddleware,
+	auditRecorder *appaudit.Recorder,
+	rootLogger *slog.Logger,
 ) {
 	api := r.Group("/api/v1")
 
@@ -96,20 +99,20 @@ func RegisterStorageRoutes(
 	sourceRead.GET("/sources/:id", sourceHandler.Get)
 
 	sourceTest := authorized.Group("")
-	sourceTest.Use(middleware.RequireCapability(permission.CapabilitySourceTest))
+	sourceTest.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "storage_source", "test", permission.CapabilitySourceTest))
 	sourceTest.POST("/sources/test", sourceHandler.Test)
 	sourceTest.POST("/sources/:id/test", sourceHandler.Retest)
 
 	sourceCreate := authorized.Group("")
-	sourceCreate.Use(middleware.RequireCapability(permission.CapabilitySourceCreate))
+	sourceCreate.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "storage_source", "create", permission.CapabilitySourceCreate))
 	sourceCreate.POST("/sources", sourceHandler.Create)
 
 	sourceUpdate := authorized.Group("")
-	sourceUpdate.Use(middleware.RequireCapability(permission.CapabilitySourceUpdate))
+	sourceUpdate.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "storage_source", "update", permission.CapabilitySourceUpdate))
 	sourceUpdate.PUT("/sources/:id", sourceHandler.Update)
 
 	sourceDelete := authorized.Group("")
-	sourceDelete.Use(middleware.RequireCapability(permission.CapabilitySourceDelete))
+	sourceDelete.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "storage_source", "delete", permission.CapabilitySourceDelete))
 	sourceDelete.DELETE("/sources/:id", sourceHandler.Delete)
 
 	api.GET("/files/download", fileHandler.Download)
@@ -142,6 +145,8 @@ func RegisterUserRoutes(
 	r *gin.Engine,
 	userHandler *handler.UserHandler,
 	authMiddleware *middleware.AuthMiddleware,
+	auditRecorder *appaudit.Recorder,
+	rootLogger *slog.Logger,
 ) {
 	api := r.Group("/api/v1")
 
@@ -153,26 +158,19 @@ func RegisterUserRoutes(
 	userRead.GET("/users", userHandler.List)
 
 	userCreate := authorized.Group("")
-	userCreate.Use(
-		middleware.RequireCapability(permission.CapabilityUserCreate),
-		middleware.RequireCapability(permission.CapabilityUserRoleAssign),
-	)
+	userCreate.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "user", "create", permission.CapabilityUserCreate, permission.CapabilityUserRoleAssign))
 	userCreate.POST("/users", userHandler.Create)
 
 	userUpdate := authorized.Group("")
-	userUpdate.Use(
-		middleware.RequireCapability(permission.CapabilityUserUpdate),
-		middleware.RequireCapability(permission.CapabilityUserRoleAssign),
-		middleware.RequireCapability(permission.CapabilityUserLock),
-	)
+	userUpdate.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "user", "update", permission.CapabilityUserUpdate, permission.CapabilityUserRoleAssign, permission.CapabilityUserLock))
 	userUpdate.PUT("/users/:id", userHandler.Update)
 
 	userReset := authorized.Group("")
-	userReset.Use(middleware.RequireCapability(permission.CapabilityUserPasswordReset))
+	userReset.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "user", "reset_password", permission.CapabilityUserPasswordReset))
 	userReset.POST("/users/:id/reset-password", userHandler.ResetPassword)
 
 	userRevoke := authorized.Group("")
-	userRevoke.Use(middleware.RequireCapability(permission.CapabilityUserTokensRevoke))
+	userRevoke.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "user", "revoke_tokens", permission.CapabilityUserTokensRevoke))
 	userRevoke.POST("/users/:id/revoke-tokens", userHandler.RevokeTokens)
 }
 
@@ -181,6 +179,8 @@ func RegisterACLRoutes(
 	r *gin.Engine,
 	aclHandler *handler.ACLHandler,
 	authMiddleware *middleware.AuthMiddleware,
+	auditRecorder *appaudit.Recorder,
+	rootLogger *slog.Logger,
 ) {
 	api := r.Group("/api/v1")
 
@@ -191,11 +191,17 @@ func RegisterACLRoutes(
 	aclRead.Use(middleware.RequireCapability(permission.CapabilityACLRead))
 	aclRead.GET("/acl/rules", aclHandler.List)
 
-	aclManage := authorized.Group("")
-	aclManage.Use(middleware.RequireCapability(permission.CapabilityACLManage))
-	aclManage.POST("/acl/rules", aclHandler.Create)
-	aclManage.PUT("/acl/rules/:id", aclHandler.Update)
-	aclManage.DELETE("/acl/rules/:id", aclHandler.Delete)
+	aclCreate := authorized.Group("")
+	aclCreate.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "acl_rule", "create", permission.CapabilityACLManage))
+	aclCreate.POST("/acl/rules", aclHandler.Create)
+
+	aclUpdate := authorized.Group("")
+	aclUpdate.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "acl_rule", "update", permission.CapabilityACLManage))
+	aclUpdate.PUT("/acl/rules/:id", aclHandler.Update)
+
+	aclDelete := authorized.Group("")
+	aclDelete.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "acl_rule", "delete", permission.CapabilityACLManage))
+	aclDelete.DELETE("/acl/rules/:id", aclHandler.Delete)
 }
 
 // RegisterTaskRoutes 注册离线任务相关路由。
