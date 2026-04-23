@@ -6,6 +6,7 @@ Thumbs.db
 
 # Local agent / workspace metadata
 .claude/
+.worktrees/
 
 # Root local env / logs
 .env

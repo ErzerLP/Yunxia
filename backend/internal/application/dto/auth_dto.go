@@ -4,7 +4,7 @@ package dto
 type SetupStatusResponse struct {
 	IsInitialized bool `json:"is_initialized"`
 	SetupRequired bool `json:"setup_required"`
-	HasAdmin      bool `json:"has_admin"`
+	HasSuperAdmin bool `json:"has_super_admin"`
 }
 
 // SetupInitRequest 表示初始化请求。
@@ -35,9 +35,15 @@ type UserSummary struct {
 	ID        uint   `json:"id"`
 	Username  string `json:"username"`
 	Email     string `json:"email"`
-	Role      string `json:"role"`
-	IsLocked  bool   `json:"is_locked"`
+	RoleKey   string `json:"role_key"`
+	Status    string `json:"status"`
 	CreatedAt string `json:"created_at"`
+}
+
+// CurrentUserResponse 表示当前登录用户及能力集合。
+type CurrentUserResponse struct {
+	User         UserSummary `json:"user"`
+	Capabilities []string    `json:"capabilities"`
 }
 
 // TokenPair 表示前端使用的令牌对。

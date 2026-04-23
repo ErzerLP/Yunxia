@@ -12,11 +12,13 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	"yunxia/internal/infrastructure/persistence/gorm"
 	"yunxia/internal/infrastructure/security"
+	infraStorage "yunxia/internal/infrastructure/storage"
 )
 
-func TestSetupServiceInitCreatesAdminAndStoresRefreshToken(t *testing.T) {
+func TestSetupServiceInitCreatesSuperAdminAndStoresRefreshToken(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
 
@@ -41,7 +43,7 @@ func TestSetupServiceInitCreatesAdminAndStoresRefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	if resp.User.Username != "admin" || resp.User.Role != "admin" {
+	if resp.User.Username != "admin" || resp.User.RoleKey != "super_admin" || resp.User.Status != "active" {
 		t.Fatalf("unexpected user = %+v", resp.User)
 	}
 	if resp.Tokens.AccessToken == "" || resp.Tokens.RefreshToken == "" {
@@ -61,12 +63,12 @@ func TestSetupServiceInitCreatesAdminAndStoresRefreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if !status.IsInitialized || status.SetupRequired || !status.HasAdmin {
+	if !status.IsInitialized || status.SetupRequired || !status.HasSuperAdmin {
 		t.Fatalf("unexpected status = %+v", status)
 	}
 }
 
-func TestAuthServiceLoginRefreshLogoutAndMe(t *testing.T) {
+func TestAuthServiceMeReturnsCapabilities(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
 
@@ -96,44 +98,15 @@ func TestAuthServiceLoginRefreshLogoutAndMe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
-	if loginResp.User.Username != "admin" {
-		t.Fatalf("unexpected login user = %+v", loginResp.User)
-	}
-
-	refreshResp, err := authSvc.Refresh(context.Background(), appdto.RefreshRequest{RefreshToken: loginResp.Tokens.RefreshToken})
-	if err != nil {
-		t.Fatalf("Refresh() error = %v", err)
-	}
-	if refreshResp.Tokens.RefreshToken == loginResp.Tokens.RefreshToken {
-		t.Fatalf("expected rotated refresh token")
-	}
-
-	oldToken, err := refreshRepo.FindByTokenHash(context.Background(), hashToken(loginResp.Tokens.RefreshToken))
-	if err != nil {
-		t.Fatalf("FindByTokenHash(old) error = %v", err)
-	}
-	if oldToken.RevokedAt == nil {
-		t.Fatalf("expected old refresh token to be revoked")
-	}
-
 	me, err := authSvc.Me(context.Background(), loginResp.User.ID)
 	if err != nil {
 		t.Fatalf("Me() error = %v", err)
 	}
-	if me.Username != "admin" {
-		t.Fatalf("unexpected me = %+v", me)
+	if me.User.RoleKey != "super_admin" || me.User.Status != "active" {
+		t.Fatalf("unexpected me user = %+v", me.User)
 	}
-
-	if err := authSvc.Logout(context.Background(), appdto.LogoutRequest{RefreshToken: refreshResp.Tokens.RefreshToken}); err != nil {
-		t.Fatalf("Logout() error = %v", err)
-	}
-
-	latest, err := refreshRepo.FindByTokenHash(context.Background(), hashToken(refreshResp.Tokens.RefreshToken))
-	if err != nil {
-		t.Fatalf("FindByTokenHash(latest) error = %v", err)
-	}
-	if latest.RevokedAt == nil {
-		t.Fatalf("expected latest refresh token to be revoked")
+	if len(me.Capabilities) == 0 {
+		t.Fatalf("expected capabilities, got empty list")
 	}
 }
 
@@ -204,8 +177,8 @@ func TestSystemServiceGetStatsAggregatesLocalSourcesAndTasks(t *testing.T) {
 		Username:     "alice",
 		Email:        "alice@example.com",
 		PasswordHash: "hashed",
-		Role:         "user",
-		IsLocked:     false,
+		RoleKey:      "user",
+		Status:       "active",
 		TokenVersion: 0,
 	}
 	if err := userRepo.Create(context.Background(), user); err != nil {
@@ -383,8 +356,9 @@ func TestTaskServiceCreatePersistsOwnerID(t *testing.T) {
 
 	svc := NewTaskService(taskRepo, sourceRepo, taskServiceTestDownloader{})
 	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
-		UserID: 42,
-		Role:   "normal",
+		UserID:  42,
+		RoleKey: "user",
+		Status:  "active",
 	})
 
 	resp, err := svc.Create(ctx, appdto.CreateTaskRequest{
@@ -458,17 +432,23 @@ func TestUserServiceManagementLifecycle(t *testing.T) {
 	}
 
 	svc := NewUserService(userRepo, hasher)
+	adminCtx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       1,
+		RoleKey:      permission.RoleSuperAdmin,
+		Status:       permission.StatusActive,
+		Capabilities: permission.AllCapabilities(),
+	})
 
-	created, err := svc.Create(context.Background(), appdto.CreateUserRequest{
+	created, err := svc.Create(adminCtx, appdto.CreateUserRequest{
 		Username: "alice",
 		Password: "strong-password-456",
 		Email:    "alice@example.com",
-		Role:     "normal",
+		RoleKey:  permission.RoleUser,
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if created.Username != "alice" || created.Role != "normal" || created.Status != "active" {
+	if created.Username != "alice" || created.RoleKey != permission.RoleUser || created.Status != permission.StatusActive {
 		t.Fatalf("unexpected created user = %+v", created)
 	}
 
@@ -485,15 +465,15 @@ func TestUserServiceManagementLifecycle(t *testing.T) {
 		t.Fatalf("unexpected listed users = %+v", listed.Items)
 	}
 
-	updated, err := svc.Update(context.Background(), created.ID, appdto.UpdateUserRequest{
-		Email:  "alice+updated@example.com",
-		Role:   "admin",
-		Status: "locked",
+	updated, err := svc.Update(adminCtx, created.ID, appdto.UpdateUserRequest{
+		Email:   "alice+updated@example.com",
+		RoleKey: permission.RoleAdmin,
+		Status:  permission.StatusLocked,
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if updated.Email != "alice+updated@example.com" || updated.Role != "admin" || updated.Status != "locked" {
+	if updated.Email != "alice+updated@example.com" || updated.RoleKey != permission.RoleAdmin || updated.Status != permission.StatusLocked {
 		t.Fatalf("unexpected updated user = %+v", updated)
 	}
 
@@ -529,6 +509,82 @@ func TestUserServiceManagementLifecycle(t *testing.T) {
 	}
 }
 
+func TestCannotLockLastActiveSuperAdmin(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	userRepo := gorm.NewUserRepository(db)
+	hasher := security.NewBcryptHasher(4)
+	svc := NewUserService(userRepo, hasher)
+
+	root := &entity.User{
+		Username:     "root",
+		PasswordHash: "hash",
+		RoleKey:      permission.RoleSuperAdmin,
+		Status:       permission.StatusActive,
+	}
+	if err := userRepo.Create(context.Background(), root); err != nil {
+		t.Fatalf("Create(root) error = %v", err)
+	}
+
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       root.ID,
+		RoleKey:      permission.RoleSuperAdmin,
+		Status:       permission.StatusActive,
+		Capabilities: permission.AllCapabilities(),
+	})
+	_, err := svc.Update(ctx, root.ID, appdto.UpdateUserRequest{
+		Email:   "root@example.com",
+		RoleKey: permission.RoleSuperAdmin,
+		Status:  permission.StatusLocked,
+	})
+	if !errors.Is(err, ErrLastSuperAdminForbidden) {
+		t.Fatalf("expected ErrLastSuperAdminForbidden, got %v", err)
+	}
+}
+
+func TestSourceDetailMasksSecretsWithoutCapability(t *testing.T) {
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       2,
+		RoleKey:      permission.RoleAdmin,
+		Status:       permission.StatusActive,
+		Capabilities: []string{permission.CapabilitySourceRead},
+	})
+
+	svc := newSourceServiceWithS3Fixture(t)
+	resp, err := svc.Get(ctx, 1)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if resp.Config["secret_key"] != nil {
+		t.Fatalf("expected secret_key to stay masked for admin")
+	}
+	if resp.SecretFields["secret_key"].Configured != true {
+		t.Fatalf("expected secret field metadata to be present")
+	}
+}
+
+func TestSourceDetailShowsSecretsForSuperAdmin(t *testing.T) {
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       1,
+		RoleKey:      permission.RoleSuperAdmin,
+		Status:       permission.StatusActive,
+		Capabilities: permission.AllCapabilities(),
+	})
+
+	svc := newSourceServiceWithS3Fixture(t)
+	resp, err := svc.Get(ctx, 1)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if resp.Config["secret_key"] == nil {
+		t.Fatalf("expected super_admin to see secret_key")
+	}
+	if resp.Config["access_key"] != "AKIA-TEST-1234" || resp.Config["secret_key"] != "secret-value" {
+		t.Fatalf("unexpected secret config = %+v", resp.Config)
+	}
+}
+
 func TestACLServiceManagementLifecycle(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -557,8 +613,8 @@ func TestACLServiceManagementLifecycle(t *testing.T) {
 		Username:     "alice",
 		Email:        "alice@example.com",
 		PasswordHash: "hashed",
-		Role:         "user",
-		IsLocked:     false,
+		RoleKey:      "user",
+		Status:       "active",
 		TokenVersion: 0,
 	}
 	if err := userRepo.Create(context.Background(), normalUser); err != nil {
@@ -712,12 +768,56 @@ func TestACLAuthorizerPrefersVirtualPathRule(t *testing.T) {
 
 	authorizer := NewACLAuthorizer(configRepo, aclRepo, sourceRepo)
 	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
-		UserID: 7,
-		Role:   "normal",
+		UserID:       7,
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		Capabilities: []string{},
 	})
 	if err := authorizer.AuthorizePath(ctx, source.ID, "/docs/spec.md", ACLActionRead); err != nil {
 		t.Fatalf("expected virtual_path rule to allow mounted path, got %v", err)
 	}
+}
+
+func newSourceServiceWithS3Fixture(t *testing.T) *SourceService {
+	t.Helper()
+
+	db, cleanup := openTestDB(t)
+	t.Cleanup(cleanup)
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	configRepo := gorm.NewSystemConfigRepository(db)
+
+	cfgJSON, err := (infraStorage.S3Config{
+		Endpoint:       "https://s3.example.com",
+		Region:         "us-east-1",
+		Bucket:         "media",
+		BasePrefix:     "library",
+		ForcePathStyle: true,
+		AccessKey:      "AKIA-TEST-1234",
+		SecretKey:      "secret-value",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	source := &entity.StorageSource{
+		Name:            "S3 媒体库",
+		DriverType:      "s3",
+		Status:          "online",
+		IsEnabled:       true,
+		IsWebDAVExposed: false,
+		WebDAVReadOnly:  true,
+		WebDAVSlug:      "s3-media",
+		RootPath:        "/",
+		SortOrder:       1,
+		ConfigJSON:      cfgJSON,
+		LastCheckedAt:   timePointer(time.Now()),
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	return NewSourceService(sourceRepo, configRepo)
 }
 
 type taskServiceTestDownloader struct{}

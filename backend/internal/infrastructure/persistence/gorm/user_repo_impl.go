@@ -59,11 +59,8 @@ func (r *UserRepository) List(ctx context.Context, filter domainrepo.UserListFil
 		like := "%" + keyword + "%"
 		query = query.Where("username LIKE ? OR email LIKE ?", like, like)
 	}
-	switch strings.TrimSpace(filter.Status) {
-	case "active":
-		query = query.Where("is_locked = ?", false)
-	case "locked":
-		query = query.Where("is_locked = ?", true)
+	if status := strings.TrimSpace(filter.Status); status != "" {
+		query = query.Where("status = ?", status)
 	}
 
 	var models []UserModel
@@ -132,8 +129,8 @@ func userModelFromEntity(user *entity.User) *UserModel {
 		Username:     user.Username,
 		Email:        user.Email,
 		PasswordHash: user.PasswordHash,
-		Role:         user.Role,
-		IsLocked:     user.IsLocked,
+		RoleKey:      user.RoleKey,
+		Status:       user.Status,
 		TokenVersion: user.TokenVersion,
 		CreatedAt:    user.CreatedAt,
 		UpdatedAt:    user.UpdatedAt,
@@ -146,8 +143,8 @@ func userEntityFromModel(model *UserModel) *entity.User {
 		Username:     model.Username,
 		Email:        model.Email,
 		PasswordHash: model.PasswordHash,
-		Role:         model.Role,
-		IsLocked:     model.IsLocked,
+		RoleKey:      model.RoleKey,
+		Status:       model.Status,
 		TokenVersion: model.TokenVersion,
 		CreatedAt:    model.CreatedAt,
 		UpdatedAt:    model.UpdatedAt,

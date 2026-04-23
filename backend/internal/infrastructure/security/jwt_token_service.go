@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // TokenType 表示令牌类型。
@@ -24,7 +24,7 @@ var errUnexpectedTokenType = errors.New("unexpected token type")
 // Claims 表示 Yunxia JWT Claims。
 type Claims struct {
 	UserID       uint      `json:"user_id"`
-	Role         string    `json:"role"`
+	RoleKey      string    `json:"role_key"`
 	TokenVersion int       `json:"token_version"`
 	TokenType    TokenType `json:"token_type"`
 	jwt.RegisteredClaims
@@ -49,13 +49,13 @@ func NewJWTTokenService(secret string, accessTTL, refreshTTL time.Duration) *JWT
 }
 
 // IssueAccessToken 签发访问令牌。
-func (s *JWTTokenService) IssueAccessToken(userID uint, role string, tokenVersion int) (string, error) {
-	return s.issueToken(userID, role, tokenVersion, TokenTypeAccess, s.accessTTL)
+func (s *JWTTokenService) IssueAccessToken(userID uint, roleKey string, tokenVersion int) (string, error) {
+	return s.issueToken(userID, roleKey, tokenVersion, TokenTypeAccess, s.accessTTL)
 }
 
 // IssueRefreshToken 签发刷新令牌。
-func (s *JWTTokenService) IssueRefreshToken(userID uint, role string, tokenVersion int) (string, error) {
-	return s.issueToken(userID, role, tokenVersion, TokenTypeRefresh, s.refreshTTL)
+func (s *JWTTokenService) IssueRefreshToken(userID uint, roleKey string, tokenVersion int) (string, error) {
+	return s.issueToken(userID, roleKey, tokenVersion, TokenTypeRefresh, s.refreshTTL)
 }
 
 // ValidateAccessToken 校验访问令牌。
@@ -78,11 +78,11 @@ func (s *JWTTokenService) RefreshTokenTTL() time.Duration {
 	return s.refreshTTL
 }
 
-func (s *JWTTokenService) issueToken(userID uint, role string, tokenVersion int, tokenType TokenType, ttl time.Duration) (string, error) {
+func (s *JWTTokenService) issueToken(userID uint, roleKey string, tokenVersion int, tokenType TokenType, ttl time.Duration) (string, error) {
 	now := s.now()
 	claims := Claims{
 		UserID:       userID,
-		Role:         role,
+		RoleKey:      roleKey,
 		TokenVersion: tokenVersion,
 		TokenType:    tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{

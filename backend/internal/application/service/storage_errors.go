@@ -55,6 +55,10 @@ var (
 	ErrUserRoleInvalid = errors.New("user role invalid")
 	// ErrUserStatusInvalid 表示用户状态非法。
 	ErrUserStatusInvalid = errors.New("user status invalid")
+	// ErrRoleAssignmentForbidden 表示角色分配越权。
+	ErrRoleAssignmentForbidden = errors.New("role assignment forbidden")
+	// ErrLastSuperAdminForbidden 表示禁止移除最后一个激活的 super admin。
+	ErrLastSuperAdminForbidden = errors.New("last super admin forbidden")
 	// ErrACLSubjectTypeInvalid 表示 ACL 规则主体类型非法。
 	ErrACLSubjectTypeInvalid = errors.New("acl subject type invalid")
 	// ErrACLEffectInvalid 表示 ACL 规则 effect 非法。

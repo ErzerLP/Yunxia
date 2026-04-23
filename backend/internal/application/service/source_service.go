@@ -11,7 +11,9 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
+	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
 )
 
@@ -85,6 +87,16 @@ func (s *SourceService) Get(ctx context.Context, id uint) (*appdto.SourceDetailR
 	config, secretFields, err := s.sourceDetailConfig(source)
 	if err != nil {
 		return nil, err
+	}
+	if auth, ok := security.RequestAuthFromContext(ctx); ok &&
+		permission.HasCapability(auth.Capabilities, permission.CapabilitySourceSecretRead) &&
+		source.DriverType == "s3" {
+		s3cfg, err := infraStorage.ParseS3ConfigJSON(source.ConfigJSON)
+		if err != nil {
+			return nil, err
+		}
+		config["access_key"] = s3cfg.AccessKey
+		config["secret_key"] = s3cfg.SecretKey
 	}
 
 	var lastCheckedAt *string

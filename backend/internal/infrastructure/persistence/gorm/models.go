@@ -8,8 +8,8 @@ type UserModel struct {
 	Username     string    `gorm:"uniqueIndex;size:64;not null"`
 	Email        string    `gorm:"size:128"`
 	PasswordHash string    `gorm:"size:255;not null"`
-	Role         string    `gorm:"size:16;not null"`
-	IsLocked     bool      `gorm:"not null;default:false"`
+	RoleKey      string    `gorm:"column:role_key;size:32;not null"`
+	Status       string    `gorm:"column:status;size:16;not null"`
 	TokenVersion int       `gorm:"not null;default:0"`
 	CreatedAt    time.Time `gorm:"not null"`
 	UpdatedAt    time.Time `gorm:"not null"`

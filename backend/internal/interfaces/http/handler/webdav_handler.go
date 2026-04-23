@@ -16,6 +16,7 @@ import (
 
 	appsvc "yunxia/internal/application/service"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 )
@@ -113,8 +114,10 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 	}
 
 	requestCtx := security.WithRequestAuth(c.Request.Context(), security.RequestAuth{
-		UserID: user.ID,
-		Role:   user.Role,
+		UserID:       user.ID,
+		RoleKey:      user.RoleKey,
+		Status:       user.Status,
+		Capabilities: capabilitiesForRole(user.RoleKey),
 	})
 
 	req := cloneRequest(c.Request.WithContext(requestCtx))
@@ -164,10 +167,18 @@ func (h *WebDAVHandler) authenticate(req *http.Request) (*entity.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	if user.IsLocked || !h.hasher.Compare(user.PasswordHash, password) {
+	if user.Status == permission.StatusLocked || !h.hasher.Compare(user.PasswordHash, password) {
 		return nil, domainrepo.ErrNotFound
 	}
 	return user, nil
+}
+
+func capabilitiesForRole(roleKey string) []string {
+	capabilities, err := permission.ResolveCapabilities(roleKey)
+	if err != nil {
+		return nil
+	}
+	return capabilities
 }
 
 func (h *WebDAVHandler) authorizeRequest(ctx context.Context, sourceID uint, method string, requestPath string, destination string) error {

@@ -8,6 +8,7 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 )
@@ -60,9 +61,10 @@ func (s *TaskService) List(ctx context.Context) (*appdto.TaskListResponse, error
 		return nil, err
 	}
 
+	auth, _ := security.RequestAuthFromContext(ctx)
 	result := make([]appdto.DownloadTaskView, 0, len(items))
 	for _, item := range items {
-		if !s.canAccessTask(ctx, item) {
+		if !permission.CanReadTask(auth.UserID, item.UserID, auth.Capabilities) {
 			continue
 		}
 		_ = s.refreshTask(ctx, item)
@@ -137,7 +139,7 @@ func (s *TaskService) Get(ctx context.Context, id uint) (*appdto.DownloadTaskVie
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeTaskOwnership(ctx, task); err != nil {
+	if err := s.authorizeTaskOwnership(ctx, task, false); err != nil {
 		return nil, err
 	}
 	_ = s.refreshTask(ctx, task)
@@ -151,7 +153,7 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeTaskOwnership(ctx, task); err != nil {
+	if err := s.authorizeTaskOwnership(ctx, task, true); err != nil {
 		return nil, err
 	}
 	if s.downloader == nil {
@@ -178,7 +180,7 @@ func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionRes
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeTaskOwnership(ctx, task); err != nil {
+	if err := s.authorizeTaskOwnership(ctx, task, true); err != nil {
 		return nil, err
 	}
 	if s.downloader == nil {
@@ -204,7 +206,7 @@ func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionRe
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeTaskOwnership(ctx, task); err != nil {
+	if err := s.authorizeTaskOwnership(ctx, task, true); err != nil {
 		return nil, err
 	}
 	if s.downloader == nil {
@@ -309,17 +311,17 @@ func (s *TaskService) currentTaskUserID(ctx context.Context) uint {
 	return auth.UserID
 }
 
-func (s *TaskService) canAccessTask(ctx context.Context, task *entity.DownloadTask) bool {
+func (s *TaskService) authorizeTaskOwnership(ctx context.Context, task *entity.DownloadTask, manage bool) error {
 	auth, ok := security.RequestAuthFromContext(ctx)
-	if !ok || auth.Role == "admin" {
-		return true
+	if !ok {
+		return ErrPermissionDenied
 	}
-	return task.UserID == auth.UserID
-}
-
-func (s *TaskService) authorizeTaskOwnership(ctx context.Context, task *entity.DownloadTask) error {
-	if s.canAccessTask(ctx, task) {
-		return nil
+	allowed := permission.CanReadTask(auth.UserID, task.UserID, auth.Capabilities)
+	if manage {
+		allowed = permission.CanManageTask(auth.UserID, task.UserID, auth.Capabilities)
 	}
-	return ErrPermissionDenied
+	if !allowed {
+		return ErrPermissionDenied
+	}
+	return nil
 }

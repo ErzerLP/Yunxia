@@ -586,7 +586,7 @@ func (s *UploadService) authorizePath(ctx context.Context, sourceID uint, pathVa
 
 func (s *UploadService) authorizeUploadSession(ctx context.Context, session *entity.UploadSession) error {
 	auth, ok := security.RequestAuthFromContext(ctx)
-	if ok && auth.Role != "admin" && auth.UserID != session.UserID {
+	if !ok || auth.UserID != session.UserID {
 		return ErrPermissionDenied
 	}
 	return s.authorizePath(ctx, session.SourceID, session.Path, ACLActionWrite)

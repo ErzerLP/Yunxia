@@ -81,6 +81,15 @@ func TestSetupAndAuthLifecycle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("auth me with token expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
+	mePayload := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
+	meUser := mePayload["user"].(map[string]any)
+	if meUser["role_key"] != "super_admin" || meUser["status"] != "active" {
+		t.Fatalf("unexpected me payload = %+v", mePayload)
+	}
+	caps := mePayload["capabilities"].([]any)
+	if len(caps) == 0 {
+		t.Fatalf("expected capabilities in me payload, got %+v", mePayload)
+	}
 
 	rec = performRequest(t, engine, http.MethodPost, "/api/v1/auth/refresh", map[string]any{
 		"refresh_token": initPayload.Tokens.RefreshToken,
@@ -159,7 +168,7 @@ func TestSystemEndpointsRequireAuthAndPersistConfig(t *testing.T) {
 	}
 }
 
-func TestSystemStatsRequireAdminAndReturnAggregates(t *testing.T) {
+func TestSystemStatsRequireCapabilityAndReturnAggregates(t *testing.T) {
 	engine := newTestRouter(t)
 
 	rec := performRequest(t, engine, http.MethodGet, "/api/v1/system/stats", nil, "")
@@ -198,7 +207,7 @@ func TestSystemStatsRequireAdminAndReturnAggregates(t *testing.T) {
 	}
 }
 
-func TestUserManagementRequireAdminAndLifecycle(t *testing.T) {
+func TestUserManagementRequireCapabilityAndLifecycle(t *testing.T) {
 	engine := newTestRouter(t)
 
 	rec := performRequest(t, engine, http.MethodGet, "/api/v1/users?page=1&page_size=20", nil, "")
@@ -220,7 +229,7 @@ func TestUserManagementRequireAdminAndLifecycle(t *testing.T) {
 		"username": "alice",
 		"password": "strong-password-456",
 		"email":    "alice@example.com",
-		"role":     "normal",
+		"role_key": "user",
 	}, initPayload.Tokens.AccessToken)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create user expected 201, got %d body=%s", rec.Code, rec.Body.String())
@@ -228,7 +237,7 @@ func TestUserManagementRequireAdminAndLifecycle(t *testing.T) {
 	created := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
 	user := created["user"].(map[string]any)
 	userID := int(user["id"].(float64))
-	if user["username"] != "alice" || user["role"] != "normal" || user["status"] != "active" {
+	if user["username"] != "alice" || user["role_key"] != "user" || user["status"] != "active" {
 		t.Fatalf("unexpected created user payload = %+v", created)
 	}
 
@@ -243,16 +252,16 @@ func TestUserManagementRequireAdminAndLifecycle(t *testing.T) {
 	}
 
 	rec = performRequest(t, engine, http.MethodPut, fmt.Sprintf("/api/v1/users/%d", userID), map[string]any{
-		"email":  "alice+updated@example.com",
-		"role":   "admin",
-		"status": "locked",
+		"email":    "alice+updated@example.com",
+		"role_key": "admin",
+		"status":   "locked",
 	}, initPayload.Tokens.AccessToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update user expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	updated := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
 	updatedUser := updated["user"].(map[string]any)
-	if updatedUser["email"] != "alice+updated@example.com" || updatedUser["role"] != "admin" || updatedUser["status"] != "locked" {
+	if updatedUser["email"] != "alice+updated@example.com" || updatedUser["role_key"] != "admin" || updatedUser["status"] != "locked" {
 		t.Fatalf("unexpected updated user payload = %+v", updated)
 	}
 
@@ -273,7 +282,7 @@ func TestUserManagementRequireAdminAndLifecycle(t *testing.T) {
 	}
 }
 
-func TestACLManagementRequireAdminAndLifecycle(t *testing.T) {
+func TestACLManagementRequireCapabilityAndLifecycle(t *testing.T) {
 	engine := newTestRouter(t)
 
 	rec := performRequest(t, engine, http.MethodGet, "/api/v1/acl/rules?source_id=1&path=/projects", nil, "")
@@ -295,7 +304,7 @@ func TestACLManagementRequireAdminAndLifecycle(t *testing.T) {
 		"username": "alice",
 		"password": "strong-password-456",
 		"email":    "alice@example.com",
-		"role":     "normal",
+		"role_key": "user",
 	}, initPayload.Tokens.AccessToken)
 	if createUserRec.Code != http.StatusCreated {
 		t.Fatalf("create user expected 201, got %d body=%s", createUserRec.Code, createUserRec.Body.String())
@@ -385,6 +394,67 @@ func TestACLManagementRequireAdminAndLifecycle(t *testing.T) {
 	if len(items) != 0 {
 		t.Fatalf("expected empty acl rules after delete, got %+v", listed)
 	}
+}
+
+func TestGovernanceRoutesUseCapabilities(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	superToken, _ := bootstrapAdmin(t, engine)
+	enableMultiUserForTest(t, engine, superToken)
+
+	adminToken := createUserWithRoleAndLoginForTest(t, engine, superToken, "alice", "strong-password-123", "admin")
+	operatorToken := createUserWithRoleAndLoginForTest(t, engine, superToken, "ops", "strong-password-123", "operator")
+	userToken := createUserWithRoleAndLoginForTest(t, engine, superToken, "bob", "strong-password-123", "user")
+
+	rec := performRequest(t, engine, http.MethodGet, "/api/v1/system/config", nil, adminToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin get system config expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v1/system/stats", nil, operatorToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("operator get stats expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v1/system/config", nil, operatorToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("operator get config expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "CAPABILITY_DENIED")
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v1/system/stats", nil, userToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("user get stats expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "CAPABILITY_DENIED")
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v1/sources?view=navigation", nil, operatorToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("operator list sources expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v1/users?page=1&page_size=20", nil, userToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("user list users expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "CAPABILITY_DENIED")
+}
+
+func TestAdminCannotCreateAnotherAdmin(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	superToken, _ := bootstrapAdmin(t, engine)
+	enableMultiUserForTest(t, engine, superToken)
+	aliceAdminToken := createUserWithRoleAndLoginForTest(t, engine, superToken, "alice", "strong-password-123", "admin")
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v1/users", map[string]any{
+		"username": "mallory",
+		"password": "strong-password-123",
+		"email":    "mallory@example.com",
+		"role_key": "admin",
+	}, aliceAdminToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "ROLE_ASSIGNMENT_FORBIDDEN")
 }
 
 func newTestRouter(t *testing.T) *gin.Engine {

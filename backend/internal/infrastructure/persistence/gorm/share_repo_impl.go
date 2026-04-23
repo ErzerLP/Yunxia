@@ -55,6 +55,19 @@ func (r *ShareRepository) FindByToken(ctx context.Context, token string) (*entit
 }
 
 // ListByUser 返回当前用户创建的分享链接。
+func (r *ShareRepository) ListAll(ctx context.Context) ([]*entity.ShareLink, error) {
+	var models []ShareLinkModel
+	if err := r.db.WithContext(ctx).Order("created_at desc, id desc").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	items := make([]*entity.ShareLink, 0, len(models))
+	for i := range models {
+		items = append(items, shareEntityFromModel(&models[i]))
+	}
+	return items, nil
+}
+
+// ListByUser 返回当前用户创建的分享链接。
 func (r *ShareRepository) ListByUser(ctx context.Context, userID uint) ([]*entity.ShareLink, error) {
 	var models []ShareLinkModel
 	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("created_at desc, id desc").Find(&models).Error; err != nil {
