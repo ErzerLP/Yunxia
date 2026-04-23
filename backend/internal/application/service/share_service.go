@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -28,8 +30,10 @@ type ShareService struct {
 	fileAccessTokens interface {
 		Issue(sourceID uint, path, purpose, disposition string, ttl time.Duration) (string, time.Time, error)
 	}
-	fileDrivers map[string]FileDriver
-	now         func() time.Time
+	fileDrivers   map[string]FileDriver
+	now           func() time.Time
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 // ShareOpenResult 表示公开分享访问结果。
@@ -55,6 +59,7 @@ func NewShareService(
 		fileAccessTokens: fileAccessTokens,
 		fileDrivers:      make(map[string]FileDriver),
 		now:              time.Now,
+		logger:           newServiceLogger("service.share"),
 	}
 	for _, option := range options {
 		option(service)
@@ -103,19 +108,50 @@ func (s *ShareService) Get(ctx context.Context, id uint) (*appdto.ShareView, err
 func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest) (*appdto.ShareView, error) {
 	source, err := s.sourceRepo.FindByID(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return nil, err
 	}
 	if err := s.authorizeSharePath(ctx, source.ID, req.Path); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
 		return nil, err
 	}
 
 	virtualPath, name, isDir, err := s.inspectTarget(ctx, source, req.Path)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    shareErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
 		return nil, err
 	}
 
 	userID, err := s.currentUserID(ctx)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, virtualPath),
+		})
 		return nil, err
 	}
 
@@ -123,6 +159,14 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 	if req.Password != "" {
 		hashed, hashErr := s.hasher.Hash(req.Password)
 		if hashErr != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "share",
+				Action:       "create",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    "INTERNAL_ERROR",
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, virtualPath),
+			})
 			return nil, hashErr
 		}
 		passwordHash = &hashed
@@ -155,10 +199,28 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 		UpdatedAt:         now,
 	}
 	if err := s.shareRepo.Create(ctx, share); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(share.ID),
+			SourceID:     &source.ID,
+			VirtualPath:  targetVirtualPath,
+		})
 		return nil, err
 	}
 
 	view := toShareView(share)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "share",
+		Action:       "create",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(share.ID),
+		SourceID:     &source.ID,
+		VirtualPath:  targetVirtualPath,
+		After:        shareAuditView(share),
+	})
 	return &view, nil
 }
 
@@ -166,12 +228,30 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 func (s *ShareService) Update(ctx context.Context, id uint, req appdto.UpdateShareRequest) (*appdto.ShareView, error) {
 	share, err := s.shareRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "update",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SHARE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.authorizeShareOwnership(ctx, share, true); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "update",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			ResourceID:   encodeUintID(id),
+			SourceID:     &share.SourceID,
+			VirtualPath:  share.TargetVirtualPath,
+			Before:       shareAuditView(share),
+		})
 		return nil, err
 	}
 
+	before := shareAuditView(share)
 	changed := false
 	if req.Password != nil {
 		if *req.Password == "" {
@@ -179,6 +259,16 @@ func (s *ShareService) Update(ctx context.Context, id uint, req appdto.UpdateSha
 		} else {
 			hashed, hashErr := s.hasher.Hash(*req.Password)
 			if hashErr != nil {
+				recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+					ResourceType: "share",
+					Action:       "update",
+					Result:       appaudit.ResultFailed,
+					ErrorCode:    "INTERNAL_ERROR",
+					ResourceID:   encodeUintID(id),
+					SourceID:     &share.SourceID,
+					VirtualPath:  share.TargetVirtualPath,
+					Before:       before,
+				})
 				return nil, hashErr
 			}
 			share.PasswordHash = &hashed
@@ -197,11 +287,31 @@ func (s *ShareService) Update(ctx context.Context, id uint, req appdto.UpdateSha
 	if changed {
 		share.UpdatedAt = s.now()
 		if err := s.shareRepo.Update(ctx, share); err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "share",
+				Action:       "update",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    "INTERNAL_ERROR",
+				ResourceID:   encodeUintID(id),
+				SourceID:     &share.SourceID,
+				VirtualPath:  share.TargetVirtualPath,
+				Before:       before,
+			})
 			return nil, err
 		}
 	}
 
 	view := toShareView(share)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "share",
+		Action:       "update",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &share.SourceID,
+		VirtualPath:  share.TargetVirtualPath,
+		Before:       before,
+		After:        shareAuditView(share),
+	})
 	return &view, nil
 }
 
@@ -209,14 +319,50 @@ func (s *ShareService) Update(ctx context.Context, id uint, req appdto.UpdateSha
 func (s *ShareService) Delete(ctx context.Context, id uint) (*appdto.DeleteShareResponse, error) {
 	share, err := s.shareRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SHARE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.authorizeShareOwnership(ctx, share, true); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "delete",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			ResourceID:   encodeUintID(id),
+			SourceID:     &share.SourceID,
+			VirtualPath:  share.TargetVirtualPath,
+			Before:       shareAuditView(share),
+		})
 		return nil, err
 	}
 	if err := s.shareRepo.Delete(ctx, id); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			SourceID:     &share.SourceID,
+			VirtualPath:  share.TargetVirtualPath,
+			Before:       shareAuditView(share),
+		})
 		return nil, err
 	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "share",
+		Action:       "delete",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &share.SourceID,
+		VirtualPath:  share.TargetVirtualPath,
+		Before:       shareAuditView(share),
+	})
 	return &appdto.DeleteShareResponse{
 		ID:      id,
 		Deleted: true,

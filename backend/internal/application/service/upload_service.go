@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"mime"
 	"os"
 	"path"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	domainrepo "yunxia/internal/domain/repository"
@@ -31,6 +33,8 @@ type UploadService struct {
 	vfsResolver   interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 type resolvedUploadInitTarget struct {
@@ -48,6 +52,7 @@ func NewUploadService(sourceRepo domainrepo.SourceRepository, uploadRepo domainr
 		uploadRepo:    uploadRepo,
 		options:       options,
 		uploadDrivers: make(map[string]UploadDriver),
+		logger:        newServiceLogger("service.upload"),
 	}
 	for _, option := range serviceOptions {
 		option(service)
@@ -300,21 +305,105 @@ func (s *UploadService) Finish(ctx context.Context, req appdto.UploadFinishReque
 	session, err := s.uploadRepo.FindByID(ctx, req.UploadID)
 	if err != nil {
 		if errors.Is(err, domainrepo.ErrNotFound) {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "upload_finish",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    "UPLOAD_SESSION_NOT_FOUND",
+				ResourceID:   req.UploadID,
+			})
 			return nil, ErrUploadSessionNotFound
 		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "upload_finish",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   req.UploadID,
+		})
 		return nil, err
 	}
 	if err := s.authorizeUploadSession(ctx, session); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "upload_finish",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			ResourceID:   req.UploadID,
+			SourceID:     &session.SourceID,
+			VirtualPath:  uploadSessionTargetVirtualPath(session),
+		})
 		return nil, err
 	}
 	source, err := s.sourceRepo.FindByID(ctx, session.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "upload_finish",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			ResourceID:   req.UploadID,
+			SourceID:     &session.SourceID,
+			VirtualPath:  uploadSessionTargetVirtualPath(session),
+		})
 		return nil, err
 	}
 	if source.DriverType != "local" {
-		return s.finishWithUploadDriver(ctx, source, session, req)
+		resp, err := s.finishWithUploadDriver(ctx, source, session, req)
+		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "upload_finish",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				ResourceID:   req.UploadID,
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, respOrSessionPath(resp, session)),
+			})
+			return nil, err
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "upload_finish",
+			Result:       appaudit.ResultSuccess,
+			ResourceID:   req.UploadID,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, resp.File.Path),
+			After: map[string]any{
+				"virtual_path": mergeMountAndInnerPath(source.MountPath, resp.File.Path),
+				"name":         resp.File.Name,
+				"size":         resp.File.Size,
+			},
+		})
+		return resp, nil
 	}
-	return s.finishLocal(ctx, source, session)
+	resp, err := s.finishLocal(ctx, source, session)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "upload_finish",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    mapFileErrorCode(err),
+			ResourceID:   req.UploadID,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, joinVirtualPath(session.Path, session.Filename)),
+		})
+		return nil, err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "upload_finish",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   req.UploadID,
+		SourceID:     &source.ID,
+		VirtualPath:  mergeMountAndInnerPath(source.MountPath, resp.File.Path),
+		After: map[string]any{
+			"virtual_path": mergeMountAndInnerPath(source.MountPath, resp.File.Path),
+			"name":         resp.File.Name,
+			"size":         resp.File.Size,
+		},
+	})
+	return resp, nil
 }
 
 func (s *UploadService) finishLocal(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession) (*appdto.UploadFinishResponse, error) {
@@ -455,6 +544,20 @@ func (s *UploadService) sessionTempDir(uploadID string) string {
 
 func (s *UploadService) chunkFilePath(uploadID string, index int) string {
 	return filepath.Join(s.sessionTempDir(uploadID), fmt.Sprintf("chunk-%06d.part", index))
+}
+
+func uploadSessionTargetVirtualPath(session *entity.UploadSession) string {
+	if session == nil {
+		return ""
+	}
+	return joinVirtualPath(session.Path, session.Filename)
+}
+
+func respOrSessionPath(resp *appdto.UploadFinishResponse, session *entity.UploadSession) string {
+	if resp != nil && resp.File.Path != "" {
+		return resp.File.Path
+	}
+	return uploadSessionTargetVirtualPath(session)
 }
 
 func toUploadSessionView(session *entity.UploadSession) appdto.UploadSessionView {

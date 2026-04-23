@@ -21,6 +21,12 @@ type UserServiceOption func(*UserService)
 // ACLServiceOption 定义 ACLService 的可选配置。
 type ACLServiceOption func(*ACLService)
 
+// FileServiceOption 已在 storage_driver.go 定义。
+// TrashServiceOption 已在 storage_driver.go 定义。
+// UploadServiceOption 已在 storage_driver.go 定义。
+// TaskServiceOption 已在 storage_driver.go 定义。
+// ShareServiceOption 已在 storage_driver.go 定义。
+
 // WithSetupAuditRecorder 为 SetupService 注入审计记录器。
 func WithSetupAuditRecorder(recorder *appaudit.Recorder) SetupServiceOption {
 	return func(s *SetupService) {
@@ -52,6 +58,41 @@ func WithSystemAuditRecorder(recorder *appaudit.Recorder) SystemServiceOption {
 // WithSourceAuditRecorder 为 SourceService 注入审计记录器。
 func WithSourceAuditRecorder(recorder *appaudit.Recorder) SourceServiceOption {
 	return func(s *SourceService) {
+		s.auditRecorder = recorder
+	}
+}
+
+// WithFileAuditRecorder 为 FileService 注入审计记录器。
+func WithFileAuditRecorder(recorder *appaudit.Recorder) FileServiceOption {
+	return func(s *FileService) {
+		s.auditRecorder = recorder
+	}
+}
+
+// WithTrashAuditRecorder 为 TrashService 注入审计记录器。
+func WithTrashAuditRecorder(recorder *appaudit.Recorder) TrashServiceOption {
+	return func(s *TrashService) {
+		s.auditRecorder = recorder
+	}
+}
+
+// WithUploadAuditRecorder 为 UploadService 注入审计记录器。
+func WithUploadAuditRecorder(recorder *appaudit.Recorder) UploadServiceOption {
+	return func(s *UploadService) {
+		s.auditRecorder = recorder
+	}
+}
+
+// WithTaskAuditRecorder 为 TaskService 注入审计记录器。
+func WithTaskAuditRecorder(recorder *appaudit.Recorder) TaskServiceOption {
+	return func(s *TaskService) {
+		s.auditRecorder = recorder
+	}
+}
+
+// WithShareAuditRecorder 为 ShareService 注入审计记录器。
+func WithShareAuditRecorder(recorder *appaudit.Recorder) ShareServiceOption {
+	return func(s *ShareService) {
 		s.auditRecorder = recorder
 	}
 }
@@ -99,6 +140,44 @@ func systemConfigAuditView(cfg *entity.SystemConfig) map[string]any {
 		"theme":              cfg.Theme,
 		"language":           cfg.Language,
 		"time_zone":          cfg.TimeZone,
+	}
+}
+
+func shareAuditView(share *entity.ShareLink) map[string]any {
+	if share == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                  share.ID,
+		"user_id":             share.UserID,
+		"source_id":           share.SourceID,
+		"path":                share.Path,
+		"target_virtual_path": share.TargetVirtualPath,
+		"resolved_source_id":  share.ResolvedSourceID,
+		"resolved_inner_path": share.ResolvedInnerPath,
+		"name":                share.Name,
+		"is_dir":              share.IsDir,
+		"has_password":        share.PasswordHash != nil,
+		"expires_at":          share.ExpiresAt,
+	}
+}
+
+func taskAuditView(task *entity.DownloadTask) map[string]any {
+	if task == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                       task.ID,
+		"user_id":                  task.UserID,
+		"type":                     task.Type,
+		"status":                   task.Status,
+		"source_id":                task.SourceID,
+		"save_path":                task.SavePath,
+		"save_virtual_path":        task.SaveVirtualPath,
+		"resolved_source_id":       task.ResolvedSourceID,
+		"resolved_inner_save_path": task.ResolvedInnerSavePath,
+		"display_name":             task.DisplayName,
+		"source_url":               task.SourceURL,
 	}
 }
 
@@ -203,6 +282,77 @@ func aclErrorCode(err error) string {
 		return "ACL_EFFECT_INVALID"
 	case errors.Is(err, ErrACLPermissionsInvalid):
 		return "ACL_PERMISSIONS_INVALID"
+	case errors.Is(err, ErrPathInvalid):
+		return "PATH_INVALID"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
+func mapFileErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrFileNotFound):
+		return "FILE_NOT_FOUND"
+	case errors.Is(err, ErrFileAlreadyExists):
+		return "FILE_ALREADY_EXISTS"
+	case errors.Is(err, ErrFileNameInvalid):
+		return "FILE_NAME_INVALID"
+	case errors.Is(err, ErrFileIsDirectory):
+		return "FILE_IS_DIRECTORY"
+	case errors.Is(err, ErrFileMoveConflict):
+		return "FILE_MOVE_CONFLICT"
+	case errors.Is(err, ErrFileCopyConflict):
+		return "FILE_COPY_CONFLICT"
+	case errors.Is(err, ErrUploadSessionNotFound):
+		return "UPLOAD_SESSION_NOT_FOUND"
+	case errors.Is(err, ErrUploadChunkConflict):
+		return "UPLOAD_CHUNK_CONFLICT"
+	case errors.Is(err, ErrUploadFinishIncomplete):
+		return "UPLOAD_FINISH_INCOMPLETE"
+	case errors.Is(err, ErrUploadHashMismatch):
+		return "UPLOAD_HASH_MISMATCH"
+	case errors.Is(err, ErrUploadInvalidState):
+		return "UPLOAD_INVALID_STATE"
+	case errors.Is(err, ErrUploadTooLarge):
+		return "UPLOAD_TOO_LARGE"
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrPathInvalid):
+		return "PATH_INVALID"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
+func taskErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrPermissionDenied):
+		return "PERMISSION_DENIED"
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrTaskInvalidState):
+		return "TASK_INVALID_STATE"
+	case errors.Is(err, ErrPathInvalid):
+		return "PATH_INVALID"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
+func shareErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrPermissionDenied):
+		return "PERMISSION_DENIED"
+	case errors.Is(err, ErrFileNotFound):
+		return "FILE_NOT_FOUND"
+	case errors.Is(err, ErrShareExpired):
+		return "SHARE_EXPIRED"
+	case errors.Is(err, ErrSharePasswordRequired):
+		return "SHARE_PASSWORD_REQUIRED"
+	case errors.Is(err, ErrSharePasswordInvalid):
+		return "SHARE_PASSWORD_INVALID"
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "SOURCE_DRIVER_UNSUPPORTED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:

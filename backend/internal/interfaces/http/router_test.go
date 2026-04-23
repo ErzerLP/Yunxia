@@ -542,6 +542,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		fileAccessSvc,
 		tokenSvc,
 		userRepo,
+		appsvc.WithFileAuditRecorder(auditRecorder),
 		appsvc.WithFileACLAuthorizer(aclAuthorizer),
 		appsvc.WithFileDriver("s3", fakeS3),
 		appsvc.WithTrashItemRepository(trashRepo),
@@ -549,6 +550,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	trashSvc := appsvc.NewTrashService(
 		sourceRepo,
 		trashRepo,
+		appsvc.WithTrashAuditRecorder(auditRecorder),
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashFileDriver("s3", fakeS3),
 	)
@@ -561,6 +563,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		sourceRepo,
 		uploadRepo,
 		options,
+		appsvc.WithUploadAuditRecorder(auditRecorder),
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadDriver("s3", fakeS3),
 		appsvc.WithUploadVFSResolver(vfsSvc),
@@ -569,6 +572,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		gormrepo.NewTaskRepository(db),
 		sourceRepo,
 		newFakeDownloader(),
+		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
 	)
 	shareSvc := appsvc.NewShareService(
@@ -576,6 +580,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		sourceRepo,
 		hasher,
 		fileAccessSvc,
+		appsvc.WithShareAuditRecorder(auditRecorder),
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", fakeS3),
 	)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
 	"time"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	domainrepo "yunxia/internal/domain/repository"
@@ -20,6 +22,8 @@ type TrashService struct {
 	trashItemRepo domainrepo.TrashItemRepository
 	aclAuthorizer *ACLAuthorizer
 	fileDrivers   map[string]FileDriver
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 // NewTrashService 创建回收站服务。
@@ -32,6 +36,7 @@ func NewTrashService(
 		sourceRepo:    sourceRepo,
 		trashItemRepo: trashItemRepo,
 		fileDrivers:   make(map[string]FileDriver),
+		logger:        newServiceLogger("service.trash"),
 	}
 	for _, option := range options {
 		option(service)
@@ -68,33 +73,111 @@ func (s *TrashService) List(ctx context.Context, query appdto.TrashListQuery) (*
 func (s *TrashService) Restore(ctx context.Context, id uint) (*appdto.TrashRestoreResponse, error) {
 	item, err := s.trashItemRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "restore",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "TRASH_ITEM_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.authorizeTrashRestore(ctx, item); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "restore",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			ResourceID:   encodeUintID(id),
+			SourceID:     &item.SourceID,
+			VirtualPath:  item.OriginalVirtualPath,
+			Before: map[string]any{
+				"trash_path": item.TrashPath,
+			},
+		})
 		return nil, err
 	}
 	source, err := s.sourceRepo.FindByID(ctx, item.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "restore",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+			SourceID:     &item.SourceID,
+			VirtualPath:  item.OriginalVirtualPath,
+		})
 		return nil, err
 	}
 
 	if source.DriverType == "local" {
 		if err := restoreLocalTrash(source, item); err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "restore",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				ResourceID:   encodeUintID(id),
+				SourceID:     &item.SourceID,
+				VirtualPath:  item.OriginalVirtualPath,
+			})
 			return nil, err
 		}
 	} else {
 		driver, err := s.getFileDriver(source.DriverType)
 		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "restore",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				ResourceID:   encodeUintID(id),
+				SourceID:     &item.SourceID,
+				VirtualPath:  item.OriginalVirtualPath,
+			})
 			return nil, err
 		}
 		if err := restoreDriverTrash(ctx, driver, source, item); err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "restore",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				ResourceID:   encodeUintID(id),
+				SourceID:     &item.SourceID,
+				VirtualPath:  item.OriginalVirtualPath,
+			})
 			return nil, err
 		}
 	}
 
 	if err := s.trashItemRepo.Delete(ctx, item.ID); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "restore",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			SourceID:     &item.SourceID,
+			VirtualPath:  item.OriginalVirtualPath,
+		})
 		return nil, err
 	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "restore",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		SourceID:     &item.SourceID,
+		VirtualPath:  item.OriginalVirtualPath,
+		Before: map[string]any{
+			"trash_path": item.TrashPath,
+		},
+		After: map[string]any{
+			"virtual_path": item.OriginalVirtualPath,
+		},
+	})
 	return &appdto.TrashRestoreResponse{
 		ID:                  item.ID,
 		Restored:            true,

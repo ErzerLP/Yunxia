@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"mime"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -35,6 +37,8 @@ type FileService struct {
 	userRepo      domainrepo.UserRepository
 	fileDrivers   map[string]FileDriver
 	trashItemRepo domainrepo.TrashItemRepository
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 // NewFileService 创建文件服务。
@@ -56,6 +60,7 @@ func NewFileService(
 		authTokens:       authTokens,
 		userRepo:         userRepo,
 		fileDrivers:      make(map[string]FileDriver),
+		logger:           newServiceLogger("service.file"),
 	}
 	for _, option := range options {
 		option(service)
@@ -206,16 +211,79 @@ func (s *FileService) Search(ctx context.Context, query appdto.FileSearchQuery) 
 func (s *FileService) Mkdir(ctx context.Context, req appdto.MkdirRequest) (*appdto.FileItem, error) {
 	source, err := s.getSource(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "mkdir",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return nil, err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.ParentPath, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "mkdir",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.ParentPath),
+		})
 		return nil, err
 	}
 	if source.DriverType != "local" {
-		return s.mkdirWithDriver(ctx, source, req)
+		item, err := s.mkdirWithDriver(ctx, source, req)
+		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "mkdir",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.ParentPath),
+			})
+			return nil, err
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "mkdir",
+			Result:       appaudit.ResultSuccess,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, item.Path),
+			After: map[string]any{
+				"virtual_path": mergeMountAndInnerPath(source.MountPath, item.Path),
+				"name":         item.Name,
+				"is_dir":       item.IsDir,
+			},
+		})
+		return item, nil
 	}
 
-	return s.mkdirLocal(source, req)
+	item, err := s.mkdirLocal(source, req)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "mkdir",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    mapFileErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.ParentPath),
+		})
+		return nil, err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "mkdir",
+		Result:       appaudit.ResultSuccess,
+		SourceID:     &source.ID,
+		VirtualPath:  mergeMountAndInnerPath(source.MountPath, item.Path),
+		After: map[string]any{
+			"virtual_path": mergeMountAndInnerPath(source.MountPath, item.Path),
+			"name":         item.Name,
+			"is_dir":       item.IsDir,
+		},
+	})
+	return item, nil
 }
 
 func (s *FileService) mkdirLocal(source *entity.StorageSource, req appdto.MkdirRequest) (*appdto.FileItem, error) {
@@ -290,16 +358,81 @@ func (s *FileService) mkdirWithDriver(ctx context.Context, source *entity.Storag
 func (s *FileService) Rename(ctx context.Context, req appdto.RenameRequest) (string, string, *appdto.FileItem, error) {
 	source, err := s.getSource(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "rename",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return "", "", nil, err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.Path, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "rename",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
 		return "", "", nil, err
 	}
 	if source.DriverType != "local" {
-		return s.renameWithDriver(ctx, source, req)
+		oldPath, newPath, item, err := s.renameWithDriver(ctx, source, req)
+		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "rename",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+			})
+			return "", "", nil, err
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "rename",
+			Result:       appaudit.ResultSuccess,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, newPath),
+			Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, oldPath)},
+			After: map[string]any{
+				"virtual_path": mergeMountAndInnerPath(source.MountPath, newPath),
+				"name":         item.Name,
+				"is_dir":       item.IsDir,
+			},
+		})
+		return oldPath, newPath, item, nil
 	}
 
-	return s.renameLocal(source, req)
+	oldPath, newPath, item, err := s.renameLocal(source, req)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "rename",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    mapFileErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
+		return "", "", nil, err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "rename",
+		Result:       appaudit.ResultSuccess,
+		SourceID:     &source.ID,
+		VirtualPath:  mergeMountAndInnerPath(source.MountPath, newPath),
+		Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, oldPath)},
+		After: map[string]any{
+			"virtual_path": mergeMountAndInnerPath(source.MountPath, newPath),
+			"name":         item.Name,
+			"is_dir":       item.IsDir,
+		},
+	})
+	return oldPath, newPath, item, nil
 }
 
 func (s *FileService) renameLocal(source *entity.StorageSource, req appdto.RenameRequest) (string, string, *appdto.FileItem, error) {
@@ -346,19 +479,84 @@ func (s *FileService) renameLocal(source *entity.StorageSource, req appdto.Renam
 func (s *FileService) Move(ctx context.Context, req appdto.MoveCopyRequest) (string, string, error) {
 	source, err := s.getSource(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "move",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return "", "", err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.Path, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "move",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
 		return "", "", err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.TargetPath, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "move",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.TargetPath),
+		})
 		return "", "", err
 	}
 	if source.DriverType != "local" {
-		return s.moveWithDriver(ctx, source, req)
+		oldPath, newPath, err := s.moveWithDriver(ctx, source, req)
+		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "move",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+			})
+			return "", "", err
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "move",
+			Result:       appaudit.ResultSuccess,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, newPath),
+			Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, oldPath)},
+			After:        map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, newPath)},
+		})
+		return oldPath, newPath, nil
 	}
 
-	return s.moveLocal(source, req)
+	oldPath, newPath, err := s.moveLocal(source, req)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "move",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    mapFileErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
+		return "", "", err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "move",
+		Result:       appaudit.ResultSuccess,
+		SourceID:     &source.ID,
+		VirtualPath:  mergeMountAndInnerPath(source.MountPath, newPath),
+		Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, oldPath)},
+		After:        map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, newPath)},
+	})
+	return oldPath, newPath, nil
 }
 
 func (s *FileService) moveLocal(source *entity.StorageSource, req appdto.MoveCopyRequest) (string, string, error) {
@@ -410,19 +608,84 @@ func (s *FileService) moveLocal(source *entity.StorageSource, req appdto.MoveCop
 func (s *FileService) Copy(ctx context.Context, req appdto.MoveCopyRequest) (string, string, error) {
 	source, err := s.getSource(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "copy",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return "", "", err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.Path, ACLActionRead); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "copy",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
 		return "", "", err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.TargetPath, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "copy",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.TargetPath),
+		})
 		return "", "", err
 	}
 	if source.DriverType != "local" {
-		return s.copyWithDriver(ctx, source, req)
+		oldPath, newPath, err := s.copyWithDriver(ctx, source, req)
+		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "copy",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+			})
+			return "", "", err
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "copy",
+			Result:       appaudit.ResultSuccess,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, newPath),
+			Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, oldPath)},
+			After:        map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, newPath)},
+		})
+		return oldPath, newPath, nil
 	}
 
-	return s.copyLocal(source, req)
+	oldPath, newPath, err := s.copyLocal(source, req)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "copy",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    mapFileErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
+		return "", "", err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "copy",
+		Result:       appaudit.ResultSuccess,
+		SourceID:     &source.ID,
+		VirtualPath:  mergeMountAndInnerPath(source.MountPath, newPath),
+		Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, oldPath)},
+		After:        map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, newPath)},
+	})
+	return oldPath, newPath, nil
 }
 
 func (s *FileService) copyLocal(source *entity.StorageSource, req appdto.MoveCopyRequest) (string, string, error) {
@@ -481,16 +744,79 @@ func (s *FileService) copyLocal(source *entity.StorageSource, req appdto.MoveCop
 func (s *FileService) Delete(ctx context.Context, req appdto.DeleteFileRequest) (time.Time, error) {
 	source, err := s.getSource(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return time.Time{}, err
 	}
 	if err := s.authorizePath(ctx, source.ID, req.Path, ACLActionDelete); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "delete",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
 		return time.Time{}, err
 	}
 	if source.DriverType != "local" {
-		return s.deleteWithDriver(ctx, source, req)
+		deletedAt, err := s.deleteWithDriver(ctx, source, req)
+		if err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "file",
+				Action:       "delete",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    mapFileErrorCode(err),
+				SourceID:     &source.ID,
+				VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+			})
+			return time.Time{}, err
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "delete",
+			Result:       appaudit.ResultSuccess,
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+			Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, req.Path)},
+			Detail: map[string]any{
+				"delete_mode": req.DeleteMode,
+				"deleted_at":  deletedAt.Format(time.RFC3339),
+			},
+		})
+		return deletedAt, nil
 	}
 
-	return s.deleteLocal(ctx, source, req)
+	deletedAt, err := s.deleteLocal(ctx, source, req)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "file",
+			Action:       "delete",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    mapFileErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		})
+		return time.Time{}, err
+	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "file",
+		Action:       "delete",
+		Result:       appaudit.ResultSuccess,
+		SourceID:     &source.ID,
+		VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+		Before:       map[string]any{"virtual_path": mergeMountAndInnerPath(source.MountPath, req.Path)},
+		Detail: map[string]any{
+			"delete_mode": req.DeleteMode,
+			"deleted_at":  deletedAt.Format(time.RFC3339),
+		},
+	})
+	return deletedAt, nil
 }
 
 func (s *FileService) deleteLocal(ctx context.Context, source *entity.StorageSource, req appdto.DeleteFileRequest) (time.Time, error) {

@@ -116,6 +116,7 @@ func main() {
 		fileAccessSvc,
 		tokenSvc,
 		userRepo,
+		appsvc.WithFileAuditRecorder(auditRecorder),
 		appsvc.WithFileACLAuthorizer(aclAuthorizer),
 		appsvc.WithFileDriver("s3", s3Driver),
 		appsvc.WithTrashItemRepository(trashRepo),
@@ -123,6 +124,7 @@ func main() {
 	trashSvc := appsvc.NewTrashService(
 		sourceRepo,
 		trashRepo,
+		appsvc.WithTrashAuditRecorder(auditRecorder),
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashFileDriver("s3", s3Driver),
 	)
@@ -135,16 +137,24 @@ func main() {
 		sourceRepo,
 		uploadRepo,
 		options,
+		appsvc.WithUploadAuditRecorder(auditRecorder),
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadDriver("s3", s3Driver),
 		appsvc.WithUploadVFSResolver(vfsSvc),
 	)
-	taskSvc := appsvc.NewTaskService(taskRepo, sourceRepo, downloadSvc, appsvc.WithTaskACLAuthorizer(aclAuthorizer))
+	taskSvc := appsvc.NewTaskService(
+		taskRepo,
+		sourceRepo,
+		downloadSvc,
+		appsvc.WithTaskAuditRecorder(auditRecorder),
+		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
+	)
 	shareSvc := appsvc.NewShareService(
 		shareRepo,
 		sourceRepo,
 		hasher,
 		fileAccessSvc,
+		appsvc.WithShareAuditRecorder(auditRecorder),
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", s3Driver),
 	)

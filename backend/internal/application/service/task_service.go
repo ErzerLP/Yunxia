@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"net/url"
 	"path"
 	"time"
 
+	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -39,6 +41,8 @@ type TaskService struct {
 	sourceRepo    domainrepo.SourceRepository
 	aclAuthorizer *ACLAuthorizer
 	downloader    Downloader
+	logger        *slog.Logger
+	auditRecorder *appaudit.Recorder
 }
 
 // NewTaskService 创建任务服务。
@@ -47,6 +51,7 @@ func NewTaskService(taskRepo domainrepo.TaskRepository, sourceRepo domainrepo.So
 		taskRepo:   taskRepo,
 		sourceRepo: sourceRepo,
 		downloader: downloader,
+		logger:     newServiceLogger("service.task"),
 	}
 	for _, option := range options {
 		option(service)
@@ -76,25 +81,69 @@ func (s *TaskService) List(ctx context.Context) (*appdto.TaskListResponse, error
 // Create 创建任务。
 func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) (*appdto.DownloadTaskView, error) {
 	if s.downloader == nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+			SourceID:     &req.SourceID,
+		})
 		return nil, ErrSourceDriverUnsupported
 	}
 	source, err := s.sourceRepo.FindByID(ctx, req.SourceID)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_NOT_FOUND",
+			SourceID:     &req.SourceID,
+		})
 		return nil, err
 	}
 	if source.DriverType != "local" {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+			SourceID:     &source.ID,
+		})
 		return nil, ErrSourceDriverUnsupported
 	}
 	savePath, err := normalizeVirtualPath(req.SavePath)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    taskErrorCode(err),
+			SourceID:     &source.ID,
+		})
 		return nil, err
 	}
 	if err := s.authorizeTaskPath(ctx, req.SourceID, savePath, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, savePath),
+		})
 		return nil, err
 	}
 
 	externalID, err := s.downloader.AddURI(ctx, req.URL, savePath)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			SourceID:     &source.ID,
+			VirtualPath:  mergeMountAndInnerPath(source.MountPath, savePath),
+		})
 		return nil, err
 	}
 
@@ -126,10 +175,27 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		UpdatedAt:             now,
 	}
 	if err := s.taskRepo.Create(ctx, task); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			SourceID:     &source.ID,
+			VirtualPath:  saveVirtualPath,
+		})
 		return nil, err
 	}
 
 	view := toTaskView(task)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "task",
+		Action:       "create",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(task.ID),
+		SourceID:     &source.ID,
+		VirtualPath:  saveVirtualPath,
+		After:        taskAuditView(task),
+	})
 	return &view, nil
 }
 
@@ -151,26 +217,75 @@ func (s *TaskService) Get(ctx context.Context, id uint) (*appdto.DownloadTaskVie
 func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*appdto.CancelTaskResponse, error) {
 	task, err := s.taskRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "cancel",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "TASK_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.authorizeTaskOwnership(ctx, task, true); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "cancel",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, err
 	}
 	if s.downloader == nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "cancel",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, ErrSourceDriverUnsupported
 	}
 	if task.ExternalID != "" {
 		if err := s.downloader.Remove(ctx, task.ExternalID); err != nil {
+			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+				ResourceType: "task",
+				Action:       "cancel",
+				Result:       appaudit.ResultFailed,
+				ErrorCode:    "INTERNAL_ERROR",
+				ResourceID:   encodeUintID(id),
+				Before:       taskAuditView(task),
+			})
 			return nil, err
 		}
 	}
 	now := time.Now()
+	before := taskAuditView(task)
 	task.Status = "canceled"
 	task.FinishedAt = &now
 	task.UpdatedAt = now
 	if err := s.taskRepo.Update(ctx, task); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "cancel",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "task",
+		Action:       "cancel",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Before:       before,
+		After:        taskAuditView(task),
+		Detail:       map[string]any{"delete_file": deleteFile},
+	})
 	return &appdto.CancelTaskResponse{ID: id, Canceled: true, DeleteFile: deleteFile}, nil
 }
 
@@ -178,25 +293,81 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionResponse, error) {
 	task, err := s.taskRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "pause",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "TASK_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.authorizeTaskOwnership(ctx, task, true); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "pause",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, err
 	}
 	if s.downloader == nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "pause",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, ErrSourceDriverUnsupported
 	}
 	if task.Status != "pending" && task.Status != "running" {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "pause",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "TASK_INVALID_STATE",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, ErrTaskInvalidState
 	}
 	if err := s.downloader.Pause(ctx, task.ExternalID); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "pause",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, err
 	}
+	before := taskAuditView(task)
 	task.Status = "paused"
 	task.UpdatedAt = time.Now()
 	if err := s.taskRepo.Update(ctx, task); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "pause",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "task",
+		Action:       "pause",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Before:       before,
+		After:        taskAuditView(task),
+	})
 	return &appdto.TaskActionResponse{ID: task.ID, Status: task.Status}, nil
 }
 
@@ -204,25 +375,81 @@ func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionRes
 func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionResponse, error) {
 	task, err := s.taskRepo.FindByID(ctx, id)
 	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "resume",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "TASK_NOT_FOUND",
+			ResourceID:   encodeUintID(id),
+		})
 		return nil, err
 	}
 	if err := s.authorizeTaskOwnership(ctx, task, true); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "resume",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, err
 	}
 	if s.downloader == nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "resume",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, ErrSourceDriverUnsupported
 	}
 	if task.Status != "paused" {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "resume",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "TASK_INVALID_STATE",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, ErrTaskInvalidState
 	}
 	if err := s.downloader.Resume(ctx, task.ExternalID); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "resume",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       taskAuditView(task),
+		})
 		return nil, err
 	}
+	before := taskAuditView(task)
 	task.Status = "running"
 	task.UpdatedAt = time.Now()
 	if err := s.taskRepo.Update(ctx, task); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "resume",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			ResourceID:   encodeUintID(id),
+			Before:       before,
+		})
 		return nil, err
 	}
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "task",
+		Action:       "resume",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(id),
+		Before:       before,
+		After:        taskAuditView(task),
+	})
 	return &appdto.TaskActionResponse{ID: task.ID, Status: task.Status}, nil
 }
 
