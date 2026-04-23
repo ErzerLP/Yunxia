@@ -18,7 +18,7 @@ type AuthHandler struct {
 		Login(ctx context.Context, req appdto.LoginRequest) (*appdto.LoginResponse, error)
 		Refresh(ctx context.Context, req appdto.RefreshRequest) (*appdto.RefreshResponse, error)
 		Logout(ctx context.Context, req appdto.LogoutRequest) error
-		Me(ctx context.Context, userID uint) (*appdto.UserSummary, error)
+		Me(ctx context.Context, userID uint) (*appdto.CurrentUserResponse, error)
 	}
 }
 
@@ -27,7 +27,7 @@ func NewAuthHandler(service interface {
 	Login(ctx context.Context, req appdto.LoginRequest) (*appdto.LoginResponse, error)
 	Refresh(ctx context.Context, req appdto.RefreshRequest) (*appdto.RefreshResponse, error)
 	Logout(ctx context.Context, req appdto.LogoutRequest) error
-	Me(ctx context.Context, userID uint) (*appdto.UserSummary, error)
+	Me(ctx context.Context, userID uint) (*appdto.CurrentUserResponse, error)
 }) *AuthHandler {
 	return &AuthHandler{service: service}
 }

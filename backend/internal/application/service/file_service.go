@@ -16,6 +16,7 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 )
@@ -790,12 +791,18 @@ func (s *FileService) AuthenticateBearerToken(ctx context.Context, raw string) (
 	if err != nil {
 		return nil, err
 	}
-	if user.TokenVersion != claims.TokenVersion || user.IsLocked {
+	if user.TokenVersion != claims.TokenVersion || user.Status == permission.StatusLocked {
+		return nil, ErrInvalidCredentials
+	}
+	capabilities, err := permission.ResolveCapabilities(user.RoleKey)
+	if err != nil {
 		return nil, ErrInvalidCredentials
 	}
 	return &security.RequestAuth{
-		UserID: user.ID,
-		Role:   user.Role,
+		UserID:       user.ID,
+		RoleKey:      user.RoleKey,
+		Status:       user.Status,
+		Capabilities: capabilities,
 	}, nil
 }
 

@@ -10,7 +10,9 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	appsvc "yunxia/internal/application/service"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
+	"yunxia/internal/infrastructure/security"
 	httpresp "yunxia/internal/interfaces/http/response"
 )
 
@@ -43,9 +45,16 @@ func NewSourceHandler(service interface {
 // List 返回存储源列表。
 func (h *SourceHandler) List(c *gin.Context) {
 	view := c.DefaultQuery("view", "navigation")
-	if view == "admin" && c.GetString("user_role") != "admin" {
-		httpresp.Error(c, http.StatusForbidden, "ROLE_FORBIDDEN", "admin role required", nil)
-		return
+	if view == "admin" {
+		auth, ok := security.RequestAuthFromContext(c.Request.Context())
+		if !ok {
+			httpresp.Error(c, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "missing auth context", nil)
+			return
+		}
+		if !permission.HasCapability(auth.Capabilities, permission.CapabilitySourceRead) {
+			httpresp.Error(c, http.StatusForbidden, "CAPABILITY_DENIED", "capability denied", nil)
+			return
+		}
 	}
 	resp, err := h.service.List(c.Request.Context(), view)
 	if err != nil {

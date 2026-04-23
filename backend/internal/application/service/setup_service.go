@@ -9,6 +9,7 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 )
@@ -64,8 +65,8 @@ type passwordHasher interface {
 }
 
 type tokenService interface {
-	IssueAccessToken(userID uint, role string, tokenVersion int) (string, error)
-	IssueRefreshToken(userID uint, role string, tokenVersion int) (string, error)
+	IssueAccessToken(userID uint, roleKey string, tokenVersion int) (string, error)
+	IssueRefreshToken(userID uint, roleKey string, tokenVersion int) (string, error)
 	ValidateRefreshToken(token string) (*security.Claims, error)
 	AccessTokenTTL() time.Duration
 	RefreshTokenTTL() time.Duration
@@ -110,11 +111,11 @@ func (s *SetupService) Status(ctx context.Context) (*appdto.SetupStatusResponse,
 		return nil, err
 	}
 
-	hasAdmin := count > 0
+	hasSuperAdmin := count > 0
 	return &appdto.SetupStatusResponse{
-		IsInitialized: hasAdmin,
-		SetupRequired: !hasAdmin,
-		HasAdmin:      hasAdmin,
+		IsInitialized: hasSuperAdmin,
+		SetupRequired: !hasSuperAdmin,
+		HasSuperAdmin: hasSuperAdmin,
 	}, nil
 }
 
@@ -137,8 +138,8 @@ func (s *SetupService) Init(ctx context.Context, req appdto.SetupInitRequest) (*
 		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: passwordHash,
-		Role:         "admin",
-		IsLocked:     false,
+		RoleKey:      permission.RoleSuperAdmin,
+		Status:       permission.StatusActive,
 		TokenVersion: 0,
 	}
 	if err := s.userRepo.Create(ctx, user); err != nil {
@@ -199,7 +200,7 @@ func (s *AuthService) Login(ctx context.Context, req appdto.LoginRequest) (*appd
 		}
 		return nil, err
 	}
-	if user.IsLocked {
+	if user.Status == permission.StatusLocked {
 		return nil, ErrAccountLocked
 	}
 	if !s.hasher.Compare(user.PasswordHash, req.Password) {
@@ -239,7 +240,7 @@ func (s *AuthService) Refresh(ctx context.Context, req appdto.RefreshRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	if user.IsLocked || user.TokenVersion != claims.TokenVersion {
+	if user.Status == permission.StatusLocked || user.TokenVersion != claims.TokenVersion {
 		return nil, ErrRefreshTokenInvalid
 	}
 
@@ -261,14 +262,19 @@ func (s *AuthService) Logout(ctx context.Context, req appdto.LogoutRequest) erro
 }
 
 // Me 获取当前用户摘要。
-func (s *AuthService) Me(ctx context.Context, userID uint) (*appdto.UserSummary, error) {
+func (s *AuthService) Me(ctx context.Context, userID uint) (*appdto.CurrentUserResponse, error) {
 	user, err := s.userRepo.FindByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-
-	summary := toUserSummary(user)
-	return &summary, nil
+	capabilities, err := permission.ResolveCapabilities(user.RoleKey)
+	if err != nil {
+		return nil, err
+	}
+	return &appdto.CurrentUserResponse{
+		User:         toUserSummary(user),
+		Capabilities: capabilities,
+	}, nil
 }
 
 // SystemService 负责系统配置读取和更新。
@@ -360,11 +366,11 @@ func issueAndStoreTokenPair(
 	refreshRepo domainrepo.RefreshTokenRepository,
 	tokens tokenService,
 ) (appdto.TokenPair, error) {
-	accessToken, err := tokens.IssueAccessToken(user.ID, user.Role, user.TokenVersion)
+	accessToken, err := tokens.IssueAccessToken(user.ID, user.RoleKey, user.TokenVersion)
 	if err != nil {
 		return appdto.TokenPair{}, err
 	}
-	refreshToken, err := tokens.IssueRefreshToken(user.ID, user.Role, user.TokenVersion)
+	refreshToken, err := tokens.IssueRefreshToken(user.ID, user.RoleKey, user.TokenVersion)
 	if err != nil {
 		return appdto.TokenPair{}, err
 	}
@@ -391,8 +397,8 @@ func toUserSummary(user *entity.User) appdto.UserSummary {
 		ID:        user.ID,
 		Username:  user.Username,
 		Email:     user.Email,
-		Role:      user.Role,
-		IsLocked:  user.IsLocked,
+		RoleKey:   user.RoleKey,
+		Status:    user.Status,
 		CreatedAt: user.CreatedAt.Format(time.RFC3339),
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 )
@@ -118,7 +119,7 @@ func (a *ACLAuthorizer) newEvaluator(ctx context.Context, sourceID uint) (*aclEv
 	if !ok {
 		return &aclEvaluator{bypass: true}, nil
 	}
-	if auth.Role == "admin" {
+	if auth.RoleKey == permission.RoleSuperAdmin {
 		return &aclEvaluator{bypass: true}, nil
 	}
 	cfg, err := a.systemConfigRepo.Get(ctx)

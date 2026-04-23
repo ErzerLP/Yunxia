@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"yunxia/internal/domain/permission"
 	"yunxia/internal/interfaces/http/handler"
 	"yunxia/internal/interfaces/middleware"
 )
@@ -34,11 +35,17 @@ func NewRouter(
 	authorized.POST("/auth/logout", authHandler.Logout)
 	authorized.GET("/system/version", systemHandler.Version)
 
-	adminOnly := authorized.Group("")
-	adminOnly.Use(middleware.RequireAdmin())
-	adminOnly.GET("/system/config", systemHandler.GetConfig)
-	adminOnly.GET("/system/stats", systemHandler.Stats)
-	adminOnly.PUT("/system/config", systemHandler.UpdateConfig)
+	statsGroup := authorized.Group("")
+	statsGroup.Use(middleware.RequireCapability(permission.CapabilitySystemStatsRead))
+	statsGroup.GET("/system/stats", systemHandler.Stats)
+
+	configRead := authorized.Group("")
+	configRead.Use(middleware.RequireCapability(permission.CapabilitySystemConfigRead))
+	configRead.GET("/system/config", systemHandler.GetConfig)
+
+	configWrite := authorized.Group("")
+	configWrite.Use(middleware.RequireCapability(permission.CapabilitySystemConfigWrite))
+	configWrite.PUT("/system/config", systemHandler.UpdateConfig)
 
 	return r
 }
@@ -75,14 +82,26 @@ func RegisterStorageRoutes(
 	authorized.GET("/upload/sessions", uploadHandler.ListSessions)
 	authorized.DELETE("/upload/sessions/:upload_id", uploadHandler.Cancel)
 
-	adminOnly := authorized.Group("")
-	adminOnly.Use(middleware.RequireAdmin())
-	adminOnly.GET("/sources/:id", sourceHandler.Get)
-	adminOnly.POST("/sources/test", sourceHandler.Test)
-	adminOnly.POST("/sources", sourceHandler.Create)
-	adminOnly.PUT("/sources/:id", sourceHandler.Update)
-	adminOnly.DELETE("/sources/:id", sourceHandler.Delete)
-	adminOnly.POST("/sources/:id/test", sourceHandler.Retest)
+	sourceRead := authorized.Group("")
+	sourceRead.Use(middleware.RequireCapability(permission.CapabilitySourceRead))
+	sourceRead.GET("/sources/:id", sourceHandler.Get)
+
+	sourceTest := authorized.Group("")
+	sourceTest.Use(middleware.RequireCapability(permission.CapabilitySourceTest))
+	sourceTest.POST("/sources/test", sourceHandler.Test)
+	sourceTest.POST("/sources/:id/test", sourceHandler.Retest)
+
+	sourceCreate := authorized.Group("")
+	sourceCreate.Use(middleware.RequireCapability(permission.CapabilitySourceCreate))
+	sourceCreate.POST("/sources", sourceHandler.Create)
+
+	sourceUpdate := authorized.Group("")
+	sourceUpdate.Use(middleware.RequireCapability(permission.CapabilitySourceUpdate))
+	sourceUpdate.PUT("/sources/:id", sourceHandler.Update)
+
+	sourceDelete := authorized.Group("")
+	sourceDelete.Use(middleware.RequireCapability(permission.CapabilitySourceDelete))
+	sourceDelete.DELETE("/sources/:id", sourceHandler.Delete)
 
 	api.GET("/files/download", fileHandler.Download)
 }
@@ -98,13 +117,32 @@ func RegisterUserRoutes(
 	authorized := api.Group("")
 	authorized.Use(authMiddleware.RequireAuth())
 
-	adminOnly := authorized.Group("")
-	adminOnly.Use(middleware.RequireAdmin())
-	adminOnly.GET("/users", userHandler.List)
-	adminOnly.POST("/users", userHandler.Create)
-	adminOnly.PUT("/users/:id", userHandler.Update)
-	adminOnly.POST("/users/:id/reset-password", userHandler.ResetPassword)
-	adminOnly.POST("/users/:id/revoke-tokens", userHandler.RevokeTokens)
+	userRead := authorized.Group("")
+	userRead.Use(middleware.RequireCapability(permission.CapabilityUserRead))
+	userRead.GET("/users", userHandler.List)
+
+	userCreate := authorized.Group("")
+	userCreate.Use(
+		middleware.RequireCapability(permission.CapabilityUserCreate),
+		middleware.RequireCapability(permission.CapabilityUserRoleAssign),
+	)
+	userCreate.POST("/users", userHandler.Create)
+
+	userUpdate := authorized.Group("")
+	userUpdate.Use(
+		middleware.RequireCapability(permission.CapabilityUserUpdate),
+		middleware.RequireCapability(permission.CapabilityUserRoleAssign),
+		middleware.RequireCapability(permission.CapabilityUserLock),
+	)
+	userUpdate.PUT("/users/:id", userHandler.Update)
+
+	userReset := authorized.Group("")
+	userReset.Use(middleware.RequireCapability(permission.CapabilityUserPasswordReset))
+	userReset.POST("/users/:id/reset-password", userHandler.ResetPassword)
+
+	userRevoke := authorized.Group("")
+	userRevoke.Use(middleware.RequireCapability(permission.CapabilityUserTokensRevoke))
+	userRevoke.POST("/users/:id/revoke-tokens", userHandler.RevokeTokens)
 }
 
 // RegisterACLRoutes 注册 ACL 管理相关路由。
@@ -118,12 +156,15 @@ func RegisterACLRoutes(
 	authorized := api.Group("")
 	authorized.Use(authMiddleware.RequireAuth())
 
-	adminOnly := authorized.Group("")
-	adminOnly.Use(middleware.RequireAdmin())
-	adminOnly.GET("/acl/rules", aclHandler.List)
-	adminOnly.POST("/acl/rules", aclHandler.Create)
-	adminOnly.PUT("/acl/rules/:id", aclHandler.Update)
-	adminOnly.DELETE("/acl/rules/:id", aclHandler.Delete)
+	aclRead := authorized.Group("")
+	aclRead.Use(middleware.RequireCapability(permission.CapabilityACLRead))
+	aclRead.GET("/acl/rules", aclHandler.List)
+
+	aclManage := authorized.Group("")
+	aclManage.Use(middleware.RequireCapability(permission.CapabilityACLManage))
+	aclManage.POST("/acl/rules", aclHandler.Create)
+	aclManage.PUT("/acl/rules/:id", aclHandler.Update)
+	aclManage.DELETE("/acl/rules/:id", aclHandler.Delete)
 }
 
 // RegisterTaskRoutes 注册离线任务相关路由。

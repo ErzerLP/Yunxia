@@ -14,6 +14,7 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 )
@@ -63,12 +64,17 @@ func NewShareService(
 
 // List 返回当前用户创建的分享链接。
 func (s *ShareService) List(ctx context.Context) (*appdto.ShareListResponse, error) {
-	userID, err := s.currentUserID(ctx)
-	if err != nil {
-		return nil, err
+	auth, ok := security.RequestAuthFromContext(ctx)
+	if !ok {
+		return nil, ErrPermissionDenied
 	}
-
-	items, err := s.shareRepo.ListByUser(ctx, userID)
+	var items []*entity.ShareLink
+	var err error
+	if permission.HasCapability(auth.Capabilities, permission.CapabilityShareReadAll) {
+		items, err = s.shareRepo.ListAll(ctx)
+	} else {
+		items, err = s.shareRepo.ListByUser(ctx, auth.UserID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +92,7 @@ func (s *ShareService) Get(ctx context.Context, id uint) (*appdto.ShareView, err
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeShareOwnership(ctx, share); err != nil {
+	if err := s.authorizeShareOwnership(ctx, share, false); err != nil {
 		return nil, err
 	}
 	view := toShareView(share)
@@ -155,7 +161,7 @@ func (s *ShareService) Update(ctx context.Context, id uint, req appdto.UpdateSha
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeShareOwnership(ctx, share); err != nil {
+	if err := s.authorizeShareOwnership(ctx, share, true); err != nil {
 		return nil, err
 	}
 
@@ -198,7 +204,7 @@ func (s *ShareService) Delete(ctx context.Context, id uint) (*appdto.DeleteShare
 	if err != nil {
 		return nil, err
 	}
-	if err := s.authorizeShareOwnership(ctx, share); err != nil {
+	if err := s.authorizeShareOwnership(ctx, share, true); err != nil {
 		return nil, err
 	}
 	if err := s.shareRepo.Delete(ctx, id); err != nil {
@@ -389,12 +395,16 @@ func (s *ShareService) authorizeSharePath(ctx context.Context, sourceID uint, pa
 	return s.aclAuthorizer.AuthorizePath(ctx, sourceID, pathValue, ACLActionShare)
 }
 
-func (s *ShareService) authorizeShareOwnership(ctx context.Context, share *entity.ShareLink) error {
+func (s *ShareService) authorizeShareOwnership(ctx context.Context, share *entity.ShareLink, manage bool) error {
 	auth, ok := security.RequestAuthFromContext(ctx)
-	if !ok || auth.Role == "admin" {
-		return nil
+	if !ok {
+		return ErrPermissionDenied
 	}
-	if share.UserID != auth.UserID {
+	allowed := permission.CanReadShare(auth.UserID, share.UserID, auth.Capabilities)
+	if manage {
+		allowed = permission.CanManageShare(auth.UserID, share.UserID, auth.Capabilities)
+	}
+	if !allowed {
 		return ErrPermissionDenied
 	}
 	return nil

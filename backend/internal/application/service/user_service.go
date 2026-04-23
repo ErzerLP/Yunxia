@@ -8,7 +8,9 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
+	"yunxia/internal/infrastructure/security"
 )
 
 // UserService 负责管理员用户管理。
@@ -27,7 +29,7 @@ func NewUserService(userRepo domainrepo.UserRepository, hasher passwordHasher) *
 
 // List 返回用户列表。
 func (s *UserService) List(ctx context.Context, query appdto.UserListQuery) (*appdto.UserListResponse, error) {
-	if query.Status != "" && query.Status != "active" && query.Status != "locked" {
+	if query.Status != "" && !permission.IsValidStatus(strings.TrimSpace(query.Status)) {
 		return nil, ErrUserStatusInvalid
 	}
 
@@ -49,9 +51,16 @@ func (s *UserService) List(ctx context.Context, query appdto.UserListQuery) (*ap
 
 // Create 创建用户。
 func (s *UserService) Create(ctx context.Context, req appdto.CreateUserRequest) (*appdto.UserAdminView, error) {
-	role, err := normalizeInputRole(req.Role)
+	actor, err := currentRequestAuth(ctx)
+	if err != nil {
+		return nil, ErrPermissionDenied
+	}
+	roleKey, err := normalizeInputRoleKey(req.RoleKey)
 	if err != nil {
 		return nil, err
+	}
+	if !permission.CanAssignRole(actor.RoleKey, roleKey) {
+		return nil, ErrRoleAssignmentForbidden
 	}
 	if _, err := s.userRepo.FindByUsername(ctx, req.Username); err == nil {
 		return nil, ErrUserNameConflict
@@ -67,8 +76,8 @@ func (s *UserService) Create(ctx context.Context, req appdto.CreateUserRequest) 
 		Username:     req.Username,
 		Email:        req.Email,
 		PasswordHash: passwordHash,
-		Role:         role,
-		IsLocked:     false,
+		RoleKey:      roleKey,
+		Status:       permission.StatusActive,
 		TokenVersion: 0,
 	}
 	if err := s.userRepo.Create(ctx, user); err != nil {
@@ -81,23 +90,43 @@ func (s *UserService) Create(ctx context.Context, req appdto.CreateUserRequest) 
 
 // Update 更新用户资料。
 func (s *UserService) Update(ctx context.Context, id uint, req appdto.UpdateUserRequest) (*appdto.UserAdminView, error) {
+	actor, err := currentRequestAuth(ctx)
+	if err != nil {
+		return nil, ErrPermissionDenied
+	}
 	user, err := s.userRepo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	role, err := normalizeInputRole(req.Role)
+	nextRoleKey, err := normalizeInputRoleKey(req.RoleKey)
 	if err != nil {
 		return nil, err
 	}
-	isLocked, err := normalizeInputStatus(req.Status)
+	nextStatus, err := normalizeInputStatus(req.Status)
 	if err != nil {
 		return nil, err
+	}
+	if !permission.CanManageTargetRole(actor.RoleKey, user.RoleKey) || !permission.CanAssignRole(actor.RoleKey, nextRoleKey) {
+		return nil, ErrRoleAssignmentForbidden
+	}
+	if user.RoleKey == permission.RoleSuperAdmin && (nextRoleKey != permission.RoleSuperAdmin || nextStatus == permission.StatusLocked) {
+		activeSuperAdmins, err := s.countActiveSuperAdmins(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if activeSuperAdmins == 1 {
+			return nil, ErrLastSuperAdminForbidden
+		}
 	}
 
+	changedPrivilege := user.RoleKey != nextRoleKey || user.Status != nextStatus
 	user.Email = req.Email
-	user.Role = role
-	user.IsLocked = isLocked
+	user.RoleKey = nextRoleKey
+	user.Status = nextStatus
+	if changedPrivilege {
+		user.TokenVersion++
+	}
 	if err := s.userRepo.Update(ctx, user); err != nil {
 		return nil, err
 	}
@@ -142,45 +171,47 @@ func toUserAdminView(user *entity.User) appdto.UserAdminView {
 		ID:          user.ID,
 		Username:    user.Username,
 		Email:       user.Email,
-		Role:        outputRole(user.Role),
-		Status:      outputStatus(user.IsLocked),
+		RoleKey:     user.RoleKey,
+		Status:      user.Status,
 		LastLoginAt: lastLoginAt,
 		CreatedAt:   user.CreatedAt.Format(time.RFC3339),
 	}
 }
 
-func normalizeInputRole(role string) (string, error) {
-	switch strings.TrimSpace(role) {
-	case "admin":
-		return "admin", nil
-	case "normal", "user":
-		return "user", nil
-	default:
+func normalizeInputRoleKey(roleKey string) (string, error) {
+	roleKey = strings.TrimSpace(roleKey)
+	if !permission.IsValidRole(roleKey) {
 		return "", ErrUserRoleInvalid
 	}
+	return roleKey, nil
 }
 
-func normalizeInputStatus(status string) (bool, error) {
-	switch strings.TrimSpace(status) {
-	case "active":
-		return false, nil
-	case "locked":
-		return true, nil
-	default:
-		return false, ErrUserStatusInvalid
+func normalizeInputStatus(status string) (string, error) {
+	status = strings.TrimSpace(status)
+	if !permission.IsValidStatus(status) {
+		return "", ErrUserStatusInvalid
 	}
+	return status, nil
 }
 
-func outputRole(role string) string {
-	if role == "admin" {
-		return "admin"
+func currentRequestAuth(ctx context.Context) (security.RequestAuth, error) {
+	auth, ok := security.RequestAuthFromContext(ctx)
+	if !ok {
+		return security.RequestAuth{}, ErrPermissionDenied
 	}
-	return "normal"
+	return auth, nil
 }
 
-func outputStatus(isLocked bool) string {
-	if isLocked {
-		return "locked"
+func (s *UserService) countActiveSuperAdmins(ctx context.Context) (int, error) {
+	users, err := s.userRepo.List(ctx, domainrepo.UserListFilter{Status: permission.StatusActive})
+	if err != nil {
+		return 0, err
 	}
-	return "active"
+	count := 0
+	for _, item := range users {
+		if item.RoleKey == permission.RoleSuperAdmin {
+			count++
+		}
+	}
+	return count, nil
 }

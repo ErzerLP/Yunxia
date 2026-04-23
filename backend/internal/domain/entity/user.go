@@ -8,8 +8,8 @@ type User struct {
 	Username     string
 	Email        string
 	PasswordHash string
-	Role         string
-	IsLocked     bool
+	RoleKey      string
+	Status       string
 	TokenVersion int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time

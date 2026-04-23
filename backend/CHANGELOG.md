@@ -6,8 +6,118 @@
 
 - 后端根目录：`backend/`
 - 技术栈：Go 1.25、Gin、GORM、SQLite、JWT、bcrypt、Aria2、AWS SDK for Go v2
-- 当前状态：本地存储主链路已完成，离线下载已完成基础集成，S3 MVP 已完成 source / file / upload 主链路，分享 Draft 已完成文件下载 + 目录浏览
+- 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、分享/ACL/上传链路已全部接入新权限模型
 - 当前验证：`cd backend && go test ./...` 已通过
+
+---
+
+## 2026-04-23
+
+### 1. 全局权限模型重构
+
+- 彻底移除旧的 `admin / user(normal)` + `is_locked` 判权模型
+- 用户实体、仓储、JWT、请求上下文统一切换为：
+  - `role_key`
+  - `status`
+  - `capabilities`
+- 新增权限真相源：
+  - `internal/domain/permission/roles.go`
+  - `internal/domain/permission/status.go`
+  - `internal/domain/permission/capabilities.go`
+  - `internal/domain/permission/resolver.go`
+  - `internal/domain/permission/checker.go`
+
+当前固定角色：
+
+- `super_admin`
+- `admin`
+- `operator`
+- `user`
+
+当前固定状态：
+
+- `active`
+- `locked`
+
+### 2. 认证 / 初始化接口变更
+
+- 初始化首个用户固定为 `super_admin`
+- `GET /api/v1/setup/status` 返回字段改为：
+  - `has_super_admin`
+- `GET /api/v1/auth/me` 返回结构升级为：
+  - `user.role_key`
+  - `user.status`
+  - `capabilities[]`
+- access / refresh token 内部 claim 从 `role` 切换为 `role_key`
+
+### 3. 治理面接口改为 capability 判权
+
+- 移除 `RequireAdmin()`
+- 新增 `RequireCapability(...)`
+- 当前治理接口判权方式：
+  - `system.*`
+  - `user.*`
+  - `acl.*`
+  - `source.*`
+
+已落地的关键变化：
+
+- `GET /api/v1/system/stats` → `system.stats.read`
+- `GET /api/v1/system/config` → `system.config.read`
+- `PUT /api/v1/system/config` → `system.config.write`
+- 用户管理接口拆分到 `user.read / create / update / lock / password.reset / tokens.revoke / role.assign`
+- ACL 管理接口拆分到 `acl.read / acl.manage`
+- source 接口拆分到 `source.read / test / create / update / delete`
+
+### 4. 用户管理硬规则收口
+
+- `admin` 只能创建 / 更新 `operator`、`user`
+- `admin` 不能创建 / 提升 `admin` / `super_admin`
+- 系统始终至少保留 1 个 `active super_admin`
+- 用户管理对外字段统一为：
+  - `role_key`
+  - `status`
+
+新增错误：
+
+- `ROLE_ASSIGNMENT_FORBIDDEN`
+- `LAST_SUPER_ADMIN_FORBIDDEN`
+
+### 5. source secret 可见性收口
+
+- `GET /api/v1/sources/:id` 默认仅返回公开配置 + `secret_fields`
+- 只有具备 `source.secret.read` 的请求才会看到明文：
+  - `access_key`
+  - `secret_key`
+- 当前仅 `super_admin` 拥有该能力
+
+### 6. 数据面权限行为更新
+
+- task/share 改为 **owner-or-capability**
+  - `task.read_all`
+  - `task.manage_all`
+  - `share.read_all`
+  - `share.manage_all`
+- upload 会话操作严格限定 owner
+- `admin / operator / user` 的 runtime ACL 字符串 bypass 已移除
+- `super_admin` 当前保留 runtime ACL bypass，便于系统级维护与初始化
+
+### 7. 测试与验证
+
+- 新增/更新：
+  - capability resolver 单测
+  - user repo / JWT 新模型单测
+  - setup/auth 当前用户能力测试
+  - source secret 可见性测试
+  - governance capability HTTP 集成测试
+  - 用户角色边界与最后 super admin 保护测试
+- 当前验证结果：
+  - `go test ./...` 通过
+  - 旧权限关键字扫描通过：
+    - `RequireAdmin(`
+    - `IsLocked`
+    - `is_locked`
+    - 旧 `admin/normal` 判权逻辑
 
 ---
 

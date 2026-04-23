@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	"yunxia/internal/domain/permission"
 	"yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
 	httpresp "yunxia/internal/interfaces/http/response"
@@ -67,32 +68,26 @@ func (m *AuthMiddleware) RequireAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		if user.IsLocked {
+		if user.Status == permission.StatusLocked {
 			httpresp.Error(c, http.StatusForbidden, "AUTH_ACCOUNT_LOCKED", "account locked", nil)
 			c.Abort()
 			return
 		}
-
-		c.Request = c.Request.WithContext(security.WithRequestAuth(c.Request.Context(), security.RequestAuth{
-			UserID: user.ID,
-			Role:   user.Role,
-		}))
-		c.Set("user_id", user.ID)
-		c.Set("user_role", user.Role)
-		c.Next()
-	}
-}
-
-// RequireAdmin 要求当前用户为管理员。
-func RequireAdmin() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		role := c.GetString("user_role")
-		if role != "admin" {
-			httpresp.Error(c, http.StatusForbidden, "ROLE_FORBIDDEN", "admin role required", nil)
+		capabilities, err := permission.ResolveCapabilities(user.RoleKey)
+		if err != nil {
+			httpresp.Error(c, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "invalid role_key", nil)
 			c.Abort()
 			return
 		}
-
+		auth := security.RequestAuth{
+			UserID:       user.ID,
+			RoleKey:      user.RoleKey,
+			Status:       user.Status,
+			Capabilities: capabilities,
+		}
+		c.Request = c.Request.WithContext(security.WithRequestAuth(c.Request.Context(), auth))
+		c.Set("user_id", user.ID)
+		c.Set("request_auth", auth)
 		c.Next()
 	}
 }

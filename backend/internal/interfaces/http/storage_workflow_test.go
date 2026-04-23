@@ -164,8 +164,8 @@ func TestS3SourceCreateDetailAndFileAccessLifecycle(t *testing.T) {
 	if detail.Config["bucket"] != "media" || detail.Config["base_prefix"] != "library" {
 		t.Fatalf("unexpected s3 source config = %+v", detail.Config)
 	}
-	if _, exists := detail.Config["access_key"]; exists {
-		t.Fatalf("expected masked access_key, got config=%+v", detail.Config)
+	if detail.Config["access_key"] != "AKIA-TEST-1234" || detail.Config["secret_key"] != "secret-value" {
+		t.Fatalf("expected super admin to see secret config, got config=%+v", detail.Config)
 	}
 	accessKeyMask := detail.SecretFields["access_key"].(map[string]any)
 	if accessKeyMask["configured"] != true {
@@ -1615,16 +1615,27 @@ func enableMultiUserForTest(t *testing.T, engine *gin.Engine, accessToken string
 }
 
 func createNormalUserAndLoginForTest(t *testing.T, engine *gin.Engine, adminToken, username, password string) (int, string) {
+	return createUserAndLoginForTest(t, engine, adminToken, username, password, "user")
+}
+
+func createUserWithRoleAndLoginForTest(t *testing.T, engine *gin.Engine, adminToken, username, password, roleKey string) string {
+	t.Helper()
+
+	_, accessToken := createUserAndLoginForTest(t, engine, adminToken, username, password, roleKey)
+	return accessToken
+}
+
+func createUserAndLoginForTest(t *testing.T, engine *gin.Engine, adminToken, username, password, roleKey string) (int, string) {
 	t.Helper()
 
 	rec := performRequest(t, engine, http.MethodPost, "/api/v1/users", map[string]any{
 		"username": username,
 		"password": password,
 		"email":    username + "@example.com",
-		"role":     "normal",
+		"role_key": roleKey,
 	}, adminToken)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("create normal user expected 201, got %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("create user expected 201, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	created := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
 	userID := int(created["user"].(map[string]any)["id"].(float64))

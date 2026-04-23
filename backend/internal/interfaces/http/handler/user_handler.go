@@ -122,6 +122,10 @@ func (h *UserHandler) RevokeTokens(c *gin.Context) {
 
 func (h *UserHandler) writeError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, appsvc.ErrRoleAssignmentForbidden):
+		httpresp.Error(c, http.StatusForbidden, "ROLE_ASSIGNMENT_FORBIDDEN", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrLastSuperAdminForbidden):
+		httpresp.Error(c, http.StatusForbidden, "LAST_SUPER_ADMIN_FORBIDDEN", err.Error(), nil)
 	case errors.Is(err, domainrepo.ErrNotFound):
 		httpresp.Error(c, http.StatusNotFound, "USER_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrUserNameConflict):
