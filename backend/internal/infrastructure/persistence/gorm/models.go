@@ -162,3 +162,31 @@ type ShareLinkModel struct {
 	CreatedAt         time.Time  `gorm:"not null"`
 	UpdatedAt         time.Time  `gorm:"not null"`
 }
+
+// AuditLogModel 表示审计日志表。
+type AuditLogModel struct {
+	ID               uint      `gorm:"primaryKey"`
+	OccurredAt       time.Time `gorm:"index;not null"`
+	RequestID        string    `gorm:"index;size:64;not null"`
+	EntryPoint       string    `gorm:"index;size:16;not null"`
+	ActorUserID      *uint     `gorm:"index"`
+	ActorUsername    string    `gorm:"size:64"`
+	ActorRoleKey     string    `gorm:"size:32"`
+	ClientIP         string    `gorm:"size:64"`
+	UserAgent        string    `gorm:"size:512"`
+	Method           string    `gorm:"size:16;not null"`
+	Path             string    `gorm:"size:1024;not null"`
+	ResourceType     string    `gorm:"index;size:64;not null"`
+	Action           string    `gorm:"index;size:64;not null"`
+	Result           string    `gorm:"index;size:16;not null"`
+	ErrorCode        string    `gorm:"size:64"`
+	ResourceID       string    `gorm:"size:64"`
+	SourceID         *uint     `gorm:"index"`
+	VirtualPath      string    `gorm:"index;size:1024"`
+	ResolvedSourceID *uint     `gorm:"index"`
+	ResolvedPath     string    `gorm:"size:1024"`
+	BeforeJSON       string    `gorm:"type:text;not null;default:''"`
+	AfterJSON        string    `gorm:"type:text;not null;default:''"`
+	DetailJSON       string    `gorm:"type:text;not null;default:''"`
+	CreatedAt        time.Time `gorm:"not null"`
+}

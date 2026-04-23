@@ -7,6 +7,7 @@ type requestAuthContextKey struct{}
 // RequestAuth 表示当前请求的最小认证身份。
 type RequestAuth struct {
 	UserID       uint
+	Username     string
 	RoleKey      string
 	Status       string
 	Capabilities []string
