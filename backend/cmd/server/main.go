@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	appsvc "yunxia/internal/application/service"
 	appcfg "yunxia/internal/infrastructure/config"
 	"yunxia/internal/infrastructure/downloader"
+	appLog "yunxia/internal/infrastructure/observability/logging"
 	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
 	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
@@ -29,6 +31,18 @@ func main() {
 	if err := prepareDirectories(cfg); err != nil {
 		log.Fatalf("prepare directories: %v", err)
 	}
+
+	rootLogger := appLog.NewRootLogger(appLog.Options{
+		Level:     cfg.Logging.Level,
+		Format:    cfg.Logging.Format,
+		AddSource: cfg.Logging.AddSource,
+	}, appLog.AppMeta{
+		Service: "yunxia-backend",
+		Env:     cfg.Server.Mode,
+		Version: "dev",
+		Commit:  "local",
+	}, os.Stdout, os.Stderr)
+	slog.SetDefault(rootLogger)
 
 	gin.SetMode(cfg.Server.Mode)
 
@@ -136,7 +150,7 @@ func main() {
 	webdavHandler := httphandler.NewWebDAVHandler(cfg.WebDAV.Prefix, sourceRepo, systemConfigRepo, userRepo, aclAuthorizer, hasher)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
 
-	engine := httpiface.NewRouter(setupHandler, authHandler, systemHandler, authMW)
+	engine := httpiface.NewRouter(setupHandler, authHandler, systemHandler, authMW, rootLogger, cfg.WebDAV.Prefix, cfg.Logging.AccessLogEnabled)
 	httpiface.RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW)
 	httpiface.RegisterUserRoutes(engine, userHandler, authMW)
 	httpiface.RegisterACLRoutes(engine, aclHandler, authMW)
@@ -146,8 +160,9 @@ func main() {
 	httpiface.RegisterWebDAVRoutes(engine, cfg.WebDAV.Prefix, webdavHandler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("yunxia backend listening on %s", addr)
+	rootLogger.Info("yunxia backend listening", slog.String("event", "app.start"), slog.String("addr", addr))
 	if err := engine.Run(addr); err != nil {
+		rootLogger.Error("run server failed", slog.String("event", "app.stop"), slog.Any("error", err))
 		log.Fatalf("run server: %v", err)
 	}
 }

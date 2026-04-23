@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 
 	"yunxia/internal/domain/permission"
 	"yunxia/internal/domain/repository"
+	"yunxia/internal/infrastructure/observability/logging"
 	"yunxia/internal/infrastructure/security"
 	httpresp "yunxia/internal/interfaces/http/response"
 )
@@ -81,11 +83,19 @@ func (m *AuthMiddleware) RequireAuth() gin.HandlerFunc {
 		}
 		auth := security.RequestAuth{
 			UserID:       user.ID,
+			Username:     user.Username,
 			RoleKey:      user.RoleKey,
 			Status:       user.Status,
 			Capabilities: capabilities,
 		}
-		c.Request = c.Request.WithContext(security.WithRequestAuth(c.Request.Context(), auth))
+		requestContext := security.WithRequestAuth(c.Request.Context(), auth)
+		requestLogger := logging.FromContext(requestContext, nil)
+		requestLogger = requestLogger.With(
+			slog.Uint64("actor_user_id", uint64(user.ID)),
+			slog.String("actor_username", user.Username),
+			slog.String("actor_role_key", user.RoleKey),
+		)
+		c.Request = c.Request.WithContext(logging.WithLogger(requestContext, requestLogger))
 		c.Set("user_id", user.ID)
 		c.Set("request_auth", auth)
 		c.Next()

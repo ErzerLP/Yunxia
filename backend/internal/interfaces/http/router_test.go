@@ -20,6 +20,7 @@ import (
 
 	appsvc "yunxia/internal/application/service"
 	"yunxia/internal/domain/entity"
+	appLog "yunxia/internal/infrastructure/observability/logging"
 	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
 	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
@@ -564,8 +565,9 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
 	webdavHandler := httphandler.NewWebDAVHandler("/dav", sourceRepo, configRepo, userRepo, aclAuthorizer, hasher)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
+	rootLogger := appLog.NewRootLogger(appLog.Options{Level: "debug", Format: "json"}, appLog.AppMeta{Service: "yunxia-backend", Env: "test", Version: "test"}, &bytes.Buffer{}, &bytes.Buffer{})
 
-	engine := NewRouter(setupHandler, authHandler, systemHandler, authMW)
+	engine := NewRouter(setupHandler, authHandler, systemHandler, authMW, rootLogger, "/dav", true)
 	RegisterStorageRoutes(engine, sourceHandler, fileHandler, trashHandler, uploadHandler, authMW)
 	RegisterUserRoutes(engine, userHandler, authMW)
 	RegisterACLRoutes(engine, aclHandler, authMW)

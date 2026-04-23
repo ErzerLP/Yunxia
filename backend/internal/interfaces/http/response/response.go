@@ -18,6 +18,7 @@ type errorBody struct {
 
 // JSON 返回成功响应包。
 func JSON(c *gin.Context, status int, code, message string, data any) {
+	c.Set("response_code", code)
 	c.JSON(status, gin.H{
 		"success": true,
 		"code":    code,
@@ -32,6 +33,7 @@ func JSON(c *gin.Context, status int, code, message string, data any) {
 
 // Error 返回错误响应包。
 func Error(c *gin.Context, status int, code, message string, details any) {
+	c.Set("response_code", code)
 	c.JSON(status, gin.H{
 		"success": false,
 		"code":    code,

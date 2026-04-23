@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -17,10 +18,18 @@ func NewRouter(
 	authHandler *handler.AuthHandler,
 	systemHandler *handler.SystemHandler,
 	authMiddleware *middleware.AuthMiddleware,
+	rootLogger *slog.Logger,
+	webdavPrefix string,
+	accessLogEnabled bool,
 ) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID(), middleware.SecurityHeaders())
+	if accessLogEnabled {
+		r.Use(middleware.AccessLog(rootLogger, webdavPrefix, map[string]struct{}{
+			"/api/v1/health": {},
+		}))
+	}
+	r.Use(middleware.RecoveryWithLogger(rootLogger))
 
 	api := r.Group("/api/v1")
 	api.GET("/health", systemHandler.Health)
