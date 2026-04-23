@@ -6,6 +6,7 @@ Thumbs.db
 
 # Local agent / workspace metadata
 .claude/
+.worktrees/
 
 # Root local env / logs
 .env
@@ -25,6 +26,7 @@ FRONTEND-PLAN.md
 INTERFACE-ARCHITECTURE.md
 PRD.md
 TAD.md
+backend/API_CONTRACT.md
 
 # Backend local runtime artifacts
 backend/.env
