@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,10 +16,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/webdav"
 
+	appaudit "yunxia/internal/application/audit"
 	appsvc "yunxia/internal/application/service"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
+	"yunxia/internal/infrastructure/observability/logging"
 	"yunxia/internal/infrastructure/security"
 )
 
@@ -38,6 +42,8 @@ type WebDAVHandler struct {
 	aclAuthorizer    *appsvc.ACLAuthorizer
 	hasher           passwordComparer
 	lockSystem       webdav.LockSystem
+	auditRecorder    *appaudit.Recorder
+	logger           *slog.Logger
 }
 
 // NewWebDAVHandler 创建 WebDAV handler。
@@ -48,7 +54,12 @@ func NewWebDAVHandler(
 	userRepo domainrepo.UserRepository,
 	aclAuthorizer *appsvc.ACLAuthorizer,
 	hasher passwordComparer,
+	auditRecorder *appaudit.Recorder,
+	logger *slog.Logger,
 ) *WebDAVHandler {
+	if logger == nil {
+		logger = logging.Component(slog.Default(), "http.webdav")
+	}
 	return &WebDAVHandler{
 		prefix:           prefix,
 		sourceRepo:       sourceRepo,
@@ -57,6 +68,8 @@ func NewWebDAVHandler(
 		aclAuthorizer:    aclAuthorizer,
 		hasher:           hasher,
 		lockSystem:       webdav.NewMemLS(),
+		auditRecorder:    auditRecorder,
+		logger:           logger,
 	}
 }
 
@@ -115,15 +128,21 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 
 	requestCtx := security.WithRequestAuth(c.Request.Context(), security.RequestAuth{
 		UserID:       user.ID,
+		Username:     user.Username,
 		RoleKey:      user.RoleKey,
 		Status:       user.Status,
 		Capabilities: capabilitiesForRole(user.RoleKey),
 	})
+	c.Request = c.Request.WithContext(requestCtx)
 
-	req := cloneRequest(c.Request.WithContext(requestCtx))
+	req := cloneRequest(c.Request)
 	req.URL.Path = webdavPath
 	req.URL.RawPath = webdavPath
 	rewriteWebDAVDestination(req, h.prefix, source.WebDAVSlug)
+	if action, ok := webDAVAuditAction(req.Method); ok {
+		destinationPath, _ := normalizeWebDAVDestinationPath(req.Header.Get("Destination"))
+		defer h.recordWriteAudit(c, source, action, webdavPath, destinationPath)
+	}
 	if err := h.authorizeRequest(req.Context(), source.ID, req.Method, webdavPath, req.Header.Get("Destination")); err != nil {
 		if errors.Is(err, appsvc.ErrACLDenied) {
 			http.Error(c.Writer, "forbidden", http.StatusForbidden)
@@ -142,6 +161,58 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 		FileSystem: fileSystem,
 		LockSystem: h.lockSystem,
 	}).ServeHTTP(c.Writer, req)
+}
+
+func (h *WebDAVHandler) recordWriteAudit(c *gin.Context, source *entity.StorageSource, action string, requestPath string, destinationPath string) {
+	if h == nil || h.auditRecorder == nil || source == nil {
+		return
+	}
+
+	status := c.Writer.Status()
+	result, errorCode := classifyWebDAVAuditResult(status)
+	sourceID := source.ID
+	sourceVirtualPath := mergeMountAndInnerPathForHTTP(source.MountPath, requestPath)
+	targetPath := requestPath
+	if (action == "copy" || action == "move") && destinationPath != "" {
+		targetPath = destinationPath
+	}
+	targetVirtualPath := mergeMountAndInnerPathForHTTP(source.MountPath, targetPath)
+
+	event := appaudit.Event{
+		ResourceType: "file",
+		Action:       action,
+		Result:       result,
+		ErrorCode:    errorCode,
+		SourceID:     &sourceID,
+		VirtualPath:  targetVirtualPath,
+		Detail: map[string]any{
+			"status":              status,
+			"request_path":        requestPath,
+			"target_virtual_path": targetVirtualPath,
+		},
+	}
+	switch action {
+	case "mkcol", "put":
+		event.After = map[string]any{
+			"virtual_path": targetVirtualPath,
+		}
+	case "copy", "move":
+		event.Before = map[string]any{
+			"virtual_path": sourceVirtualPath,
+		}
+		event.After = map[string]any{
+			"virtual_path": targetVirtualPath,
+		}
+		if destinationPath != "" {
+			event.Detail["destination_path"] = destinationPath
+		}
+	case "delete":
+		event.Before = map[string]any{
+			"virtual_path": sourceVirtualPath,
+		}
+	}
+
+	appaudit.RecordBestEffort(c.Request.Context(), h.auditRecorder, h.logger, event)
 }
 
 func (h *WebDAVHandler) findSourceBySlug(ctx context.Context, slug string) (*entity.StorageSource, error) {
@@ -346,4 +417,43 @@ func stripWebDAVExternalPrefix(rawPath, prefix, slug string) string {
 	default:
 		return ""
 	}
+}
+
+func webDAVAuditAction(method string) (string, bool) {
+	switch strings.ToUpper(method) {
+	case http.MethodPut:
+		return "put", true
+	case "MKCOL":
+		return "mkcol", true
+	case http.MethodDelete:
+		return "delete", true
+	case "COPY":
+		return "copy", true
+	case "MOVE":
+		return "move", true
+	default:
+		return "", false
+	}
+}
+
+func classifyWebDAVAuditResult(status int) (appaudit.Result, string) {
+	switch {
+	case status >= http.StatusOK && status < http.StatusBadRequest:
+		return appaudit.ResultSuccess, ""
+	case status >= http.StatusBadRequest && status < http.StatusInternalServerError:
+		return appaudit.ResultDenied, fmt.Sprintf("HTTP_%d", status)
+	default:
+		return appaudit.ResultFailed, fmt.Sprintf("HTTP_%d", status)
+	}
+}
+
+func normalizeWebDAVDestinationPath(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err == nil && parsed.Path != "" {
+		return normalizeWebDAVRequestPath(parsed.Path)
+	}
+	return normalizeWebDAVRequestPath(raw)
 }

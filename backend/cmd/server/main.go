@@ -173,7 +173,16 @@ func main() {
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
-	webdavHandler := httphandler.NewWebDAVHandler(cfg.WebDAV.Prefix, sourceRepo, systemConfigRepo, userRepo, aclAuthorizer, hasher)
+	webdavHandler := httphandler.NewWebDAVHandler(
+		cfg.WebDAV.Prefix,
+		sourceRepo,
+		systemConfigRepo,
+		userRepo,
+		aclAuthorizer,
+		hasher,
+		auditRecorder,
+		appLog.Component(rootLogger, "http.webdav"),
+	)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
 
 	engine := httpiface.NewRouter(setupHandler, authHandler, systemHandler, authMW, rootLogger, cfg.WebDAV.Prefix, cfg.Logging.AccessLogEnabled)

@@ -1,7 +1,7 @@
 # Yunxia Backend API Contract
 
 > 更新时间：2026-04-23  
-> 对应实现：`origin/main` 当前后端代码（含全局权限模型 + 统一虚拟目录树 V2）  
+> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询）  
 > 真相源：`backend/internal/interfaces/http/router.go`、`backend/internal/interfaces/http/handler/*.go`、`backend/internal/application/dto/*.go`、`backend/internal/application/service/*_service.go`
 
 本文档只描述**当前后端实际实现**，用于前后端联调与接口核对。
@@ -71,6 +71,17 @@
 | `GET /s/:token` | 文件：302 到下载地址；目录：200 JSON |
 | `WebDAV` | 标准 WebDAV / XML / 文件流响应，不走 JSON 包络 |
 
+### 1.6 审计与日志约定
+
+- 审计写入当前是 **best-effort**
+- 审计落库失败时：
+  - 主业务接口**不会**因此改成失败
+  - runtime log 会记录 `event=audit.write.failed`
+- 当前已覆盖的审计范围：
+  - 治理面写操作：setup / system config / users / sources / ACL
+  - 数据面写操作：files / upload finish / trash restore / tasks / shares
+  - WebDAV 写操作：`PUT` / `MKCOL` / `DELETE` / `COPY` / `MOVE`
+
 ## 2. 用户、状态与 capability
 
 ### 2.1 用户字段
@@ -110,6 +121,9 @@
   - `source.update`
   - `source.delete`
   - `source.secret.read`
+- audit
+  - `audit.read`
+  - `audit.read_sensitive`
 - cross-user
   - `task.read_all`
   - `task.manage_all`
@@ -122,7 +136,7 @@
 |---|---|
 | `super_admin` | 拥有全部 capability；初始化首用户固定为该角色；保留 runtime ACL bypass |
 | `admin` | 具备治理 capability，但没有 `source.secret.read`；只能管理 `operator/user` |
-| `operator` | 只读统计、源读取/测试、跨用户任务/分享治理 |
+| `operator` | 只读统计、源读取/测试、跨用户任务治理；**当前没有**跨用户分享治理 capability |
 | `user` | 无治理 capability；主要依赖 ACL 访问数据面 |
 
 ### 2.4 当前关键规则
@@ -133,6 +147,8 @@
 - `view=admin` / source 详情 / source 增删改测：按 capability 控制
 - `task` / `share`：owner 默认可管理自己的数据；具备跨用户 capability 的角色可跨用户治理
 - S3 明文 secret 仅 `source.secret.read` 可见；当前仅 `super_admin` 可见
+- 审计查询接口要求 `audit.read`
+- `audit.read_sensitive` 当前仅为能力位预留；**现阶段没有额外敏感字段解锁差异**
 
 ## 3. 路由总览
 
@@ -358,7 +374,22 @@
 - 密码错误返回 `401 SHARE_PASSWORD_INVALID`
 - 过期返回 `410 SHARE_EXPIRED`
 
-### 3.11 统一虚拟目录树 V2（`/api/v2`）
+### 3.11 audit（`/api/v1`）
+
+| 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
+|---|---|---|---|---|
+| GET | `/audit/logs` | `audit.read` | query: `page,page_size,actor_user_id,actor_role_key,resource_type,action,result,source_id,virtual_path,request_id,entrypoint,started_at,ended_at` | 200，`{items,total,page,page_size,total_pages}` |
+| GET | `/audit/logs/:id` | `audit.read` | path: `id` | 200，审计详情 |
+
+补充：
+
+- `started_at` / `ended_at` 需要 RFC3339；非法时返回 `400 VALIDATION_ERROR`
+- `entrypoint` 当前可能值：`rest_v1` / `rest_v2` / `webdav`
+- 列表项中的 `summary` 是服务端生成的简短摘要
+- 详情中的 `before` / `after` / `detail` 为可选对象，空值时会省略
+- 当前即使拥有 `audit.read_sensitive`，也不会比 `audit.read` 看到更多明文字段
+
+### 3.12 统一虚拟目录树 V2（`/api/v2`）
 
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -386,7 +417,7 @@
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
 - `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`
 
-### 3.12 WebDAV
+### 3.13 WebDAV
 
 支持方法：
 
@@ -412,6 +443,16 @@
 - 需要 HTTPS 语义；反向代理场景应传 `X-Forwarded-Proto: https`
 - 普通用户仍受 ACL 约束
 - `webdav_read_only=true` 时写方法会被拒绝
+- 写方法当前会写入审计：
+  - `PUT -> file.put`
+  - `MKCOL -> file.mkcol`
+  - `DELETE -> file.delete`
+  - `COPY -> file.copy`
+  - `MOVE -> file.move`
+- WebDAV 写操作审计结果按 HTTP 状态归类：
+  - `2xx/3xx -> success`
+  - `4xx -> denied`
+  - `5xx -> failed`
 
 ## 4. 关键结构示例
 
@@ -545,6 +586,44 @@
 }
 ```
 
+### 4.7 AuditLogDetailResponse
+
+```json
+{
+  "id": 12,
+  "occurred_at": "2026-04-23T16:00:00+08:00",
+  "actor": {
+    "user_id": 1,
+    "username": "admin",
+    "role_key": "super_admin"
+  },
+  "request": {
+    "request_id": "req_xxx",
+    "entrypoint": "webdav",
+    "client_ip": "192.0.2.1",
+    "user_agent": "",
+    "method": "MKCOL",
+    "path": "/dav/local/docs"
+  },
+  "target": {
+    "source_id": 1,
+    "virtual_path": "/local/docs"
+  },
+  "resource_type": "file",
+  "action": "mkcol",
+  "result": "success",
+  "summary": "file.mkcol.success",
+  "after": {
+    "virtual_path": "/local/docs"
+  },
+  "detail": {
+    "status": 201,
+    "request_path": "/docs",
+    "target_virtual_path": "/local/docs"
+  }
+}
+```
+
 ## 5. 当前实际错误码
 
 ### 5.1 auth / permission
@@ -612,7 +691,11 @@
 - `TASK_INVALID_STATE`
 - `DOWNLOADER_UNAVAILABLE`
 
-### 5.6 通用
+### 5.6 audit
+
+- `AUDIT_LOG_NOT_FOUND`
+
+### 5.7 通用
 
 - `VALIDATION_ERROR`
 - `INTERNAL_ERROR`
@@ -628,4 +711,6 @@
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
 8. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
 9. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
-10. live smoke 已覆盖 `setup/auth/system/users/acl/sources/files/upload/trash/tasks/shares/webdav` 主链路；VFS 由 `backend/internal/interfaces/http/vfs_workflow_test.go` 显式覆盖。
+10. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
+11. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
+12. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。

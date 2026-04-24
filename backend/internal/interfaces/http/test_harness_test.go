@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -16,8 +17,8 @@ import (
 
 type testRouterHarness struct {
 	AuditRepo *gormrepo.AuditLogRepository
-	InfoBuf   fmt.Stringer
-	ErrBuf    fmt.Stringer
+	InfoBuf   *bytes.Buffer
+	ErrBuf    *bytes.Buffer
 }
 
 var testRouterHarnessRegistry sync.Map
@@ -339,4 +340,12 @@ func assertRuntimeLogContains(t *testing.T, engine *gin.Engine, expected string)
 	if !strings.Contains(combined, expected) {
 		t.Fatalf("expected runtime log containing %q, got %s", expected, combined)
 	}
+}
+
+func resetRuntimeLogBuffers(t *testing.T, engine *gin.Engine) {
+	t.Helper()
+
+	harness := lookupTestRouterHarness(t, engine)
+	harness.InfoBuf.Reset()
+	harness.ErrBuf.Reset()
 }

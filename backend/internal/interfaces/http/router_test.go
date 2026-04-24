@@ -54,6 +54,25 @@ type tokenData struct {
 	} `json:"tokens"`
 }
 
+type testAuditCreateRepository interface {
+	Create(ctx context.Context, log *entity.AuditLog) error
+}
+
+type testRouterConfig struct {
+	auditCreateRepo testAuditCreateRepository
+}
+
+type failingAuditCreateRepo struct {
+	err error
+}
+
+func (r failingAuditCreateRepo) Create(context.Context, *entity.AuditLog) error {
+	if r.err != nil {
+		return r.err
+	}
+	return fmt.Errorf("forced audit create failure")
+}
+
 func TestSetupAndAuthLifecycle(t *testing.T) {
 	engine := newTestRouter(t)
 
@@ -461,6 +480,17 @@ func TestAdminCannotCreateAnotherAdmin(t *testing.T) {
 }
 
 func newTestRouter(t *testing.T) *gin.Engine {
+	return newTestRouterWithOptions(t, testRouterConfig{})
+}
+
+func newStorageTestRouterWithFailingAuditRepo(t *testing.T) *gin.Engine {
+	t.Helper()
+	return newTestRouterWithOptions(t, testRouterConfig{
+		auditCreateRepo: failingAuditCreateRepo{err: fmt.Errorf("forced audit create failure")},
+	})
+}
+
+func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -502,7 +532,11 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	hasher := security.NewBcryptHasher(4)
 	tokenSvc := security.NewJWTTokenService("router-secret", 15*time.Minute, 7*24*time.Hour)
 	fileAccessSvc := security.NewFileAccessTokenService("router-secret")
-	auditRecorder := appaudit.NewRecorder(auditRepo, appLog.Component(rootLogger, "audit.recorder"))
+	auditCreateRepo := config.auditCreateRepo
+	if auditCreateRepo == nil {
+		auditCreateRepo = auditRepo
+	}
+	auditRecorder := appaudit.NewRecorder(auditCreateRepo, appLog.Component(rootLogger, "audit.recorder"))
 	auditQuerySvc := appaudit.NewQueryService(auditRepo)
 	options := appsvc.DefaultSystemOptions()
 	root := t.TempDir()
@@ -599,7 +633,16 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
-	webdavHandler := httphandler.NewWebDAVHandler("/dav", sourceRepo, configRepo, userRepo, aclAuthorizer, hasher)
+	webdavHandler := httphandler.NewWebDAVHandler(
+		"/dav",
+		sourceRepo,
+		configRepo,
+		userRepo,
+		aclAuthorizer,
+		hasher,
+		auditRecorder,
+		appLog.Component(rootLogger, "http.webdav"),
+	)
 	authMW := mw.NewAuthMiddleware(userRepo, tokenSvc)
 
 	engine := NewRouter(setupHandler, authHandler, systemHandler, authMW, rootLogger, "/dav", true)
