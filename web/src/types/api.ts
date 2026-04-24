@@ -93,9 +93,14 @@ export interface UserSummary {
   id: number;
   username: string;
   email: string;
-  role: 'admin' | 'normal' | 'guest';
-  is_locked: boolean;
+  role_key: 'super_admin' | 'admin' | 'operator' | 'user';
+  status: 'active' | 'locked';
   created_at: string;
+}
+
+export interface CurrentUserResponse {
+  user: UserSummary;
+  capabilities: string[];
 }
 
 // Storage Source
@@ -108,6 +113,7 @@ export interface StorageSource {
   is_webdav_exposed: boolean;
   webdav_read_only: boolean;
   webdav_slug: string;
+  mount_path: string;
   root_path: string;
   used_bytes: number | null;
   total_bytes: number | null;
@@ -128,6 +134,7 @@ export interface CreateSourceRequest {
   is_enabled: boolean;
   is_webdav_exposed: boolean;
   webdav_read_only: boolean;
+  mount_path: string;
   root_path: string;
   sort_order?: number;
   config: Record<string, unknown>;
@@ -139,6 +146,7 @@ export interface UpdateSourceRequest {
   is_enabled?: boolean;
   is_webdav_exposed?: boolean;
   webdav_read_only?: boolean;
+  mount_path?: string;
   root_path?: string;
   sort_order?: number;
   config?: Record<string, unknown>;
@@ -250,8 +258,8 @@ export interface UploadSession {
 }
 
 export interface UploadInitRequest {
-  source_id: number;
-  path: string;
+  source_id?: number;
+  path?: string;
   filename: string;
   file_size: number;
   file_hash: string;
@@ -330,8 +338,8 @@ export interface DownloadTask {
 export interface CreateTaskRequest {
   type: 'download';
   url: string;
-  source_id: number;
-  save_path: string;
+  source_id?: number;
+  save_path?: string;
 }
 
 // System
@@ -361,4 +369,93 @@ export interface HealthStatus {
   status: string;
   service: string;
   version: string;
+}
+
+// Trash
+export interface TrashItem {
+  id: number;
+  source_id: number;
+  path: string;
+  name: string;
+  is_dir: boolean;
+  size: number;
+  deleted_at: string;
+  created_at: string;
+}
+
+// Share
+export interface Share {
+  id: number;
+  source_id: number;
+  path: string;
+  name: string;
+  is_dir: boolean;
+  link: string;
+  has_password: boolean;
+  expires_at: string | null;
+  created_at: string;
+}
+
+export interface CreateShareRequest {
+  source_id: number;
+  path: string;
+  expires_in?: number;
+  password?: string;
+}
+
+// User Management
+export interface User {
+  id: number;
+  username: string;
+  email: string;
+  role_key: 'super_admin' | 'admin' | 'operator' | 'user';
+  status: 'active' | 'locked';
+  created_at: string;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+  email?: string;
+  role_key: string;
+}
+
+export interface UpdateUserRequest {
+  email?: string;
+  role_key?: string;
+  status?: 'active' | 'locked';
+}
+
+// ACL
+export interface AclRule {
+  id: number;
+  source_id: number;
+  path: string;
+  subject_type: 'user' | 'role';
+  subject_id: number;
+  effect: 'allow' | 'deny';
+  priority: number;
+  permissions: {
+    read: boolean;
+    write: boolean;
+    delete: boolean;
+    share: boolean;
+  };
+  inherit_to_children: boolean;
+}
+
+export interface CreateAclRuleRequest {
+  source_id: number;
+  path: string;
+  subject_type: string;
+  subject_id: number;
+  effect: string;
+  priority: number;
+  permissions: {
+    read: boolean;
+    write: boolean;
+    delete: boolean;
+    share: boolean;
+  };
+  inherit_to_children: boolean;
 }

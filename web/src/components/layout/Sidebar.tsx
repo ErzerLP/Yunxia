@@ -1,13 +1,17 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { FolderOpen, HardDrive, Download, Settings, Menu, ChevronLeft } from 'lucide-react'
+import { FolderOpen, HardDrive, Download, Trash2, Link, Settings, Menu, ChevronLeft, Users } from 'lucide-react'
+import { useAuthStore } from '@/stores/authStore'
 import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 const navItems = [
   { id: 'files', label: '文件', icon: FolderOpen, path: '/files' },
-  { id: 'sources', label: '存储源', icon: HardDrive, path: '/sources' },
-  { id: 'tasks', label: '离线下载', icon: Download, path: '/tasks' },
-  { id: 'settings', label: '设置', icon: Settings, path: '/settings' },
+  { id: 'sources', label: '存储源', icon: HardDrive, path: '/sources', capability: 'source.read' },
+  { id: 'tasks', label: '离线下载', icon: Download, path: '/tasks', capability: 'task.read_all' },
+  { id: 'trash', label: '回收站', icon: Trash2, path: '/trash' },
+  { id: 'shares', label: '分享', icon: Link, path: '/shares', capability: 'share.read_all' },
+  { id: 'settings', label: '设置', icon: Settings, path: '/settings', capability: 'system.config.read' },
+  { id: 'users', label: '用户', icon: Users, path: '/users', capability: 'user.read' },
 ]
 
 export function Sidebar() {
@@ -15,6 +19,11 @@ export function Sidebar() {
   const location = useLocation()
   const { sidebar, toggleSidebar, setSidebarActive } = useUIStore()
   const { isCollapsed } = sidebar
+  const { hasCapability } = useAuthStore()
+
+  const visibleNavItems = navItems.filter(
+    (item) => !item.capability || hasCapability(item.capability)
+  )
 
   const handleNavigate = (item: typeof navItems[0]) => {
     setSidebarActive(item.id)
@@ -40,7 +49,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 py-2 space-y-1 overflow-y-auto scrollbar-thin">
-        {navItems.map((item) => {
+        {visibleNavItems.map((item) => {
           const active = isActive(item.path)
           return (
             <button

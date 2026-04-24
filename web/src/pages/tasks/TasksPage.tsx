@@ -6,9 +6,7 @@ import { taskApi } from '@/api/task'
 import {
   Play,
   Pause,
-  RotateCcw,
   X,
-  Trash2,
   Download,
   Clock,
   CheckCircle2,
@@ -171,27 +169,9 @@ export function TasksPage() {
     }
   }
 
-  const handleRetry = async (id: number) => {
-    try {
-      await taskApi.retry(id)
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    } catch {
-      // ignore
-    }
-  }
-
   const handleCancel = async (id: number) => {
     try {
       await taskApi.cancel(id)
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    } catch {
-      // ignore
-    }
-  }
-
-  const handleDelete = async (id: number) => {
-    try {
-      await taskApi.delete(id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
     } catch {
       // ignore
@@ -265,15 +245,6 @@ export function TasksPage() {
                         <Play className="w-4 h-4" />
                       </button>
                     )}
-                    {task.status === 'failed' && (
-                      <button
-                        onClick={() => handleRetry(task.id)}
-                        className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
-                        title="重试"
-                      >
-                        <RotateCcw className="w-4 h-4" />
-                      </button>
-                    )}
                     {task.status !== 'completed' && task.status !== 'canceled' && (
                       <button
                         onClick={() => handleCancel(task.id)}
@@ -283,13 +254,6 @@ export function TasksPage() {
                         <X className="w-4 h-4" />
                       </button>
                     )}
-                    <button
-                      onClick={() => handleDelete(task.id)}
-                      className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
-                      title="删除"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
                 </div>
 

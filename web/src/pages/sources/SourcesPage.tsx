@@ -3,9 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { sourceApi } from '@/api/source'
-import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X } from 'lucide-react'
+import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil } from 'lucide-react'
 import { cn, formatBytes } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
+import { useHasCapability } from '@/hooks/useCapability'
 import type { StorageSource } from '@/types/api'
 
 function StatusBadge({ status }: { status: StorageSource['status'] }) {
@@ -23,10 +24,135 @@ function StatusBadge({ status }: { status: StorageSource['status'] }) {
   )
 }
 
+function EditSourceModal({
+  isOpen,
+  onClose,
+  onSuccess,
+  source,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  onSuccess: () => void
+  source: StorageSource | null
+}) {
+  const [name, setName] = useState('')
+  const [mountPath, setMountPath] = useState('')
+  const [rootPath, setRootPath] = useState('')
+  const [isEnabled, setIsEnabled] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (isOpen && source) {
+      setName(source.name)
+      setMountPath(source.mount_path)
+      setRootPath(source.root_path)
+      setIsEnabled(source.is_enabled)
+    }
+  }, [isOpen, source])
+
+  if (!isOpen || !source) return null
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) return
+    setIsSubmitting(true)
+    try {
+      await sourceApi.update(source.id, {
+        name: name.trim(),
+        mount_path: mountPath,
+        root_path: rootPath,
+        is_enabled: isEnabled,
+      })
+      onSuccess()
+      onClose()
+    } catch {
+      // ignore
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-card border border-border rounded-lg shadow-xl">
+        <div className="flex items-center justify-between px-4 h-12 border-b border-border">
+          <h3 className="font-medium text-foreground flex items-center gap-2">
+            <Pencil className="w-4 h-4" />
+            编辑存储源
+          </h3>
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">名称</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">挂载路径</label>
+            <input
+              type="text"
+              value={mountPath}
+              onChange={(e) => setMountPath(e.target.value)}
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">根路径</label>
+            <input
+              type="text"
+              value={rootPath}
+              onChange={(e) => setRootPath(e.target.value)}
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="is_enabled"
+              checked={isEnabled}
+              onChange={(e) => setIsEnabled(e.target.checked)}
+              className="rounded border-border"
+            />
+            <label htmlFor="is_enabled" className="text-sm text-foreground">启用</label>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting || !name.trim()}
+              className={cn(
+                'px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors',
+                (isSubmitting || !name.trim()) && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              {isSubmitting ? '保存中...' : '保存'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void; onSuccess: () => void }) {
   const [name, setName] = useState('')
   const [driverType, setDriverType] = useState<'local' | 's3'>('local')
   const [rootPath, setRootPath] = useState('/data')
+  const [mountPath, setMountPath] = useState('/')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   useEffect(() => {
@@ -34,6 +160,7 @@ function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; on
       setName('')
       setDriverType('local')
       setRootPath('/data')
+      setMountPath('/')
     }
   }, [isOpen])
 
@@ -50,6 +177,7 @@ function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; on
         is_enabled: true,
         is_webdav_exposed: false,
         webdav_read_only: false,
+        mount_path: mountPath,
         root_path: rootPath,
         config: {},
       })
@@ -107,6 +235,16 @@ function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; on
             </div>
           </div>
           <div>
+            <label className="text-sm text-muted-foreground mb-1 block">挂载路径</label>
+            <input
+              type="text"
+              value={mountPath}
+              onChange={(e) => setMountPath(e.target.value)}
+              placeholder="/local"
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div>
             <label className="text-sm text-muted-foreground mb-1 block">根路径</label>
             <input
               type="text"
@@ -146,6 +284,12 @@ export function SourcesPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
   const { setCurrentSource, currentSource } = useFileStore()
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<StorageSource | null>(null)
+
+  const canCreate = useHasCapability('source.create')
+  const canUpdate = useHasCapability('source.update')
+  const canDelete = useHasCapability('source.delete')
+  const canTest = useHasCapability('source.test')
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -194,13 +338,15 @@ export function SourcesPage() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 h-14 border-b border-border shrink-0">
         <h1 className="text-lg font-semibold text-foreground">存储源管理</h1>
-        <button
-          onClick={() => setCreateModalOpen(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          <span>添加存储源</span>
-        </button>
+        {canCreate && (
+          <button
+            onClick={() => setCreateModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            <span>添加存储源</span>
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin p-4">
@@ -208,12 +354,14 @@ export function SourcesPage() {
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
             <HardDrive className="w-12 h-12 opacity-30" />
             <p>暂无存储源</p>
-            <button
-              onClick={() => setCreateModalOpen(true)}
-              className="px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors"
-            >
-              添加存储源
-            </button>
+            {canCreate && (
+              <button
+                onClick={() => setCreateModalOpen(true)}
+                className="px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors"
+              >
+                添加存储源
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -279,26 +427,42 @@ export function SourcesPage() {
                     </span>
                   )}
                   <div className="flex-1" />
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleTest(source.id)
-                    }}
-                    className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
-                    title="测试连接"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleDelete(source.id)
-                    }}
-                    className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
-                    title="删除"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {canTest && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleTest(source.id)
+                      }}
+                      className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+                      title="测试连接"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {canUpdate && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setEditTarget(source)
+                      }}
+                      className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+                      title="编辑"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {canDelete && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDelete(source.id)
+                      }}
+                      className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                      title="删除"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -310,6 +474,12 @@ export function SourcesPage() {
         isOpen={createModalOpen}
         onClose={() => setCreateModalOpen(false)}
         onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
+      />
+      <EditSourceModal
+        isOpen={!!editTarget}
+        onClose={() => setEditTarget(null)}
+        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
+        source={editTarget}
       />
     </div>
   )

@@ -19,13 +19,13 @@ export const fileApi = {
   search: (params: SearchFilesParams) =>
     apiClient.get<{ items: FileItem[]; total: number }>('/files/search', { params }),
   mkdir: (data: MkdirRequest) =>
-    apiClient.post<FileItem>('/files/mkdir', data),
+    apiClient.post<{ created: FileItem }>('/files/mkdir', data),
   rename: (data: RenameRequest) =>
-    apiClient.post<void>('/files/rename', data),
+    apiClient.post<{ old_path: string; new_path: string; file: FileItem }>('/files/rename', data),
   move: (data: MoveRequest) =>
-    apiClient.post<void>('/files/move', data),
+    apiClient.post<{ old_path: string; new_path: string; moved: boolean }>('/files/move', data),
   copy: (data: CopyRequest) =>
-    apiClient.post<void>('/files/copy', data),
+    apiClient.post<{ source_path: string; new_path: string; copied: boolean }>('/files/copy', data),
   delete: (data: DeleteRequest) =>
     apiClient.delete<void>('/files', { data }),
   getAccessUrl: (data: AccessUrlRequest) =>

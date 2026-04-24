@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Upload,
   FolderPlus,
@@ -7,21 +7,70 @@ import {
   List,
   ArrowUp,
   Search,
+  X,
 } from 'lucide-react'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
+import { fileApi } from '@/api/file'
+import { useQuery } from '@tanstack/react-query'
 import { SourceSelector } from './SourceSelector'
 import { MkdirModal } from './MkdirModal'
 import { cn } from '@/utils'
 
 export function FileToolbar() {
-  const { currentSource, currentPath, viewMode, setViewMode, navigateUp } = useFileStore()
+  const { currentSource, currentPath, viewMode, setViewMode, navigateUp, setFiles } = useFileStore()
   const { setUploadModalOpen } = useUIStore()
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [mkdirOpen, setMkdirOpen] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   const canGoUp = currentPath !== '/'
+
+  const { refetch } = useQuery({
+    queryKey: ['files-search', currentSource?.id, searchQuery],
+    queryFn: () =>
+      fileApi.search({
+        source_id: currentSource?.id || 0,
+        keyword: searchQuery,
+        path_prefix: currentPath,
+        page: 1,
+        page_size: 100,
+      }),
+    enabled: false,
+  })
+
+  useEffect(() => {
+    if (showSearch && searchInputRef.current) {
+      searchInputRef.current.focus()
+    }
+  }, [showSearch])
+
+  const handleSearch = async () => {
+    if (!searchQuery.trim() || !currentSource) return
+    const res = await refetch()
+    if (res.data?.items) {
+      setFiles(res.data.items)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleSearch()
+    }
+    if (e.key === 'Escape') {
+      setShowSearch(false)
+      setSearchQuery('')
+    }
+  }
+
+  const clearSearch = () => {
+    setSearchQuery('')
+    setShowSearch(false)
+    if (currentSource) {
+      window.location.reload()
+    }
+  }
 
   return (
     <div className="flex items-center gap-2 px-4 h-14 border-b border-border shrink-0">
@@ -78,17 +127,25 @@ export function FileToolbar() {
       <div className="flex-1" />
 
       {showSearch && (
-        <div className="relative">
+        <div className="relative flex items-center gap-1">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder="搜索文件..."
-            className="w-48 pl-8 pr-3 py-1.5 text-sm rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            autoFocus
-            onBlur={() => !searchQuery && setShowSearch(false)}
+            className="w-48 pl-8 pr-7 py-1.5 text-sm rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           />
+          {searchQuery && (
+            <button
+              onClick={clearSearch}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-accent text-muted-foreground"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       )}
 

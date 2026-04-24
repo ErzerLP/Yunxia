@@ -5,8 +5,24 @@ import { LoginPage } from '@/pages/auth/LoginPage'
 import { FileManagerPage } from '@/pages/files/FileManagerPage'
 import { SourcesPage } from '@/pages/sources/SourcesPage'
 import { TasksPage } from '@/pages/tasks/TasksPage'
+import { TrashPage } from '@/pages/trash/TrashPage'
+import { SharesPage } from '@/pages/shares/SharesPage'
 import { SettingsPage } from '@/pages/settings/SettingsPage'
+import { UsersPage } from '@/pages/users/UsersPage'
+import { useCapabilityGuard } from '@/hooks/useCapability'
 import App from '@/App'
+
+function CapabilityRoute({ cap, children }: { cap: string; children: React.ReactNode }) {
+  const { allowed, isLoading } = useCapabilityGuard(cap)
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+  return allowed ? <>{children}</> : null
+}
 
 export const router = createBrowserRouter([
   {
@@ -32,9 +48,12 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to="/files" replace /> },
           { path: 'files', element: <FileManagerPage /> },
           { path: 'files/*', element: <FileManagerPage /> },
-          { path: 'sources', element: <SourcesPage /> },
-          { path: 'tasks', element: <TasksPage /> },
-          { path: 'settings', element: <SettingsPage /> },
+          { path: 'sources', element: <CapabilityRoute cap="source.read"><SourcesPage /></CapabilityRoute> },
+          { path: 'tasks', element: <CapabilityRoute cap="task.read_all"><TasksPage /></CapabilityRoute> },
+          { path: 'trash', element: <TrashPage /> },
+          { path: 'shares', element: <CapabilityRoute cap="share.read_all"><SharesPage /></CapabilityRoute> },
+          { path: 'settings', element: <CapabilityRoute cap="system.config.read"><SettingsPage /></CapabilityRoute> },
+          { path: 'users', element: <CapabilityRoute cap="user.read"><UsersPage /></CapabilityRoute> },
         ],
       },
     ],

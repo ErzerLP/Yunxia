@@ -4,5 +4,5 @@ import type { SystemConfigPublic, SystemVersion, HealthStatus } from '@/types/ap
 export const systemApi = {
   getConfig: () => apiClient.get<SystemConfigPublic>('/system/config'),
   getVersion: () => apiClient.get<SystemVersion>('/system/version'),
-  health: () => apiClient.get<HealthStatus>('/system/health'),
+  health: () => apiClient.get<HealthStatus>('/health'),
 }

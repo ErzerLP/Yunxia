@@ -8,6 +8,7 @@ import { formatBytes, getFileIconClass, cn } from '@/utils'
 import { FileContextMenu } from './FileContextMenu'
 import { RenameModal } from './RenameModal'
 import { DeleteConfirmModal } from './DeleteConfirmModal'
+import { MoveCopyModal } from './MoveCopyModal'
 import type { FileItem } from '@/types/api'
 
 const iconMap = {
@@ -45,6 +46,7 @@ export function FileGrid() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: FileItem } | null>(null)
   const [renameTarget, setRenameTarget] = useState<FileItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<FileItem | null>(null)
+  const [moveCopyTarget, setMoveCopyTarget] = useState<{ item: FileItem; mode: 'move' | 'copy' } | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['files', currentSource?.id, currentPath],
@@ -103,6 +105,16 @@ export function FileGrid() {
 
   const handleDelete = (item: FileItem) => {
     setDeleteTarget(item)
+    setContextMenu(null)
+  }
+
+  const handleMove = (item: FileItem) => {
+    setMoveCopyTarget({ item, mode: 'move' })
+    setContextMenu(null)
+  }
+
+  const handleCopy = (item: FileItem) => {
+    setMoveCopyTarget({ item, mode: 'copy' })
     setContextMenu(null)
   }
 
@@ -182,6 +194,8 @@ export function FileGrid() {
           onPreview={!contextMenu.item.is_dir ? () => openPreview(contextMenu.item) : undefined}
           onDownload={!contextMenu.item.is_dir ? () => handleDownload(contextMenu.item) : undefined}
           onRename={() => handleRename(contextMenu.item)}
+          onCopy={() => handleCopy(contextMenu.item)}
+          onMove={() => handleMove(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
         />
       )}
@@ -204,6 +218,18 @@ export function FileGrid() {
           sourceId={currentSource.id}
           path={deleteTarget.path}
           fileName={deleteTarget.name}
+          onSuccess={refreshFiles}
+        />
+      )}
+
+      {moveCopyTarget && currentSource && (
+        <MoveCopyModal
+          isOpen={!!moveCopyTarget}
+          onClose={() => setMoveCopyTarget(null)}
+          mode={moveCopyTarget.mode}
+          sourceId={currentSource.id}
+          sourcePath={moveCopyTarget.item.path}
+          fileName={moveCopyTarget.item.name}
           onSuccess={refreshFiles}
         />
       )}

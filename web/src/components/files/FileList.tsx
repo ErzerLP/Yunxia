@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Folder, FileText, Image, Film, Music, File, MoreHorizontal } from 'lucide-react'
+import { Folder, FileText, Image, Film, Music, File, MoreHorizontal, Trash2 } from 'lucide-react'
 import { fileApi } from '@/api/file'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -9,6 +9,7 @@ import { cn } from '@/utils'
 import { FileContextMenu } from './FileContextMenu'
 import { RenameModal } from './RenameModal'
 import { DeleteConfirmModal } from './DeleteConfirmModal'
+import { MoveCopyModal } from './MoveCopyModal'
 import type { FileItem } from '@/types/api'
 
 const iconMap = {
@@ -45,6 +46,7 @@ export function FileList() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: FileItem } | null>(null)
   const [renameTarget, setRenameTarget] = useState<FileItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<FileItem | null>(null)
+  const [moveCopyTarget, setMoveCopyTarget] = useState<{ item: FileItem; mode: 'move' | 'copy' } | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['files', currentSource?.id, currentPath],
@@ -106,6 +108,16 @@ export function FileList() {
     setContextMenu(null)
   }
 
+  const handleMove = (item: FileItem) => {
+    setMoveCopyTarget({ item, mode: 'move' })
+    setContextMenu(null)
+  }
+
+  const handleCopy = (item: FileItem) => {
+    setMoveCopyTarget({ item, mode: 'copy' })
+    setContextMenu(null)
+  }
+
   const refreshFiles = () => {
     queryClient.invalidateQueries({ queryKey: ['files', currentSource?.id, currentPath] })
   }
@@ -134,8 +146,41 @@ export function FileList() {
     )
   }
 
+  const hasSelection = selectedFiles.size > 0
+
   return (
     <>
+      {hasSelection && (
+        <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-primary/5 shrink-0">
+          <span className="text-sm text-primary font-medium">已选择 {selectedFiles.size} 项</span>
+          <div className="flex-1" />
+          <button
+            onClick={() => {
+              if (!currentSource) return
+              const paths = Array.from(selectedFiles)
+              // Batch delete not supported by API, delete one by one
+              Promise.all(
+                paths.map((path) =>
+                  fileApi.delete({ source_id: currentSource.id, path, delete_mode: 'permanent' })
+                )
+              ).then(() => {
+                refreshFiles()
+                useFileStore.getState().clearSelection()
+              })
+            }}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            批量删除
+          </button>
+          <button
+            onClick={() => useFileStore.getState().clearSelection()}
+            className="px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:bg-accent transition-colors"
+          >
+            取消选择
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-auto scrollbar-thin">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-background z-10">
@@ -221,6 +266,8 @@ export function FileList() {
           onPreview={!contextMenu.item.is_dir ? () => openPreview(contextMenu.item) : undefined}
           onDownload={!contextMenu.item.is_dir ? () => handleDownload(contextMenu.item) : undefined}
           onRename={() => handleRename(contextMenu.item)}
+          onCopy={() => handleCopy(contextMenu.item)}
+          onMove={() => handleMove(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
         />
       )}
@@ -243,6 +290,18 @@ export function FileList() {
           sourceId={currentSource.id}
           path={deleteTarget.path}
           fileName={deleteTarget.name}
+          onSuccess={refreshFiles}
+        />
+      )}
+
+      {moveCopyTarget && currentSource && (
+        <MoveCopyModal
+          isOpen={!!moveCopyTarget}
+          onClose={() => setMoveCopyTarget(null)}
+          mode={moveCopyTarget.mode}
+          sourceId={currentSource.id}
+          sourcePath={moveCopyTarget.item.path}
+          fileName={moveCopyTarget.item.name}
           onSuccess={refreshFiles}
         />
       )}

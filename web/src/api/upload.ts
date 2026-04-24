@@ -28,7 +28,7 @@ export const uploadApi = {
     apiClient.post<UploadFinishResponse>('/upload/finish', data),
 
   listSessions: (params?: { status?: string; source_id?: number }) =>
-    apiClient.get<{ items: UploadSession[] }>('/upload/sessions', { params }),
+    apiClient.get<{ items: UploadSession[]; total: number }>('/upload/sessions', { params }),
 
   cancelSession: (uploadId: string) =>
     apiClient.delete<{ upload_id: string; canceled: boolean }>(`/upload/sessions/${uploadId}`),

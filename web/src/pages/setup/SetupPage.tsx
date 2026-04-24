@@ -6,7 +6,7 @@ import { Cloud, Eye, EyeOff, Loader2 } from 'lucide-react'
 
 export function SetupPage() {
   const navigate = useNavigate()
-  const { setUser, setTokens } = useAuthStore()
+  const { setUser, setCapabilities, setTokens } = useAuthStore()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -40,6 +40,7 @@ export function SetupPage() {
         email: email.trim() || undefined,
       })
       setUser(res.user)
+      setCapabilities([])
       setTokens(res.tokens)
       navigate('/files', { replace: true })
     } catch (err: unknown) {

@@ -8,7 +8,7 @@ import { UploadModal } from '@/components/files/UploadModal'
 export default function App() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { setUser, setTokens, logout, setLoading } = useAuthStore()
+  const { setUser, setCapabilities, setTokens, logout, setLoading } = useAuthStore()
 
   useEffect(() => {
     const init = async () => {
@@ -33,8 +33,9 @@ export default function App() {
 
         // Token exists, validate by calling /auth/me
         try {
-          const user = await authApi.me()
-          setUser(user)
+          const res = await authApi.me()
+          setUser(res.user)
+          setCapabilities(res.capabilities)
           setLoading(false)
         } catch {
           // Token invalid/expired and refresh failed (interceptor redirects)
@@ -50,7 +51,7 @@ export default function App() {
     }
 
     init()
-  }, [navigate, location.pathname, setLoading, setUser, setTokens, logout])
+  }, [navigate, location.pathname, setLoading, setUser, setCapabilities, setTokens, logout])
 
   return <UploadModal />
 }

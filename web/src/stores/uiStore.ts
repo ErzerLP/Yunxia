@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ToastItem, ToastType } from '@/components/ui/Toast'
 
 interface SidebarState {
   isCollapsed: boolean
@@ -19,6 +20,7 @@ interface UIState {
   theme: 'light' | 'dark' | 'system'
   isUploadModalOpen: boolean
   globalLoading: boolean
+  toasts: ToastItem[]
   toggleSidebar: () => void
   setSidebarActive: (item: string) => void
   openPreview: (file: { path: string; source_id: number; name: string; mime_type: string }) => void
@@ -26,6 +28,8 @@ interface UIState {
   setTheme: (theme: 'light' | 'dark' | 'system') => void
   setUploadModalOpen: (open: boolean) => void
   setGlobalLoading: (loading: boolean) => void
+  addToast: (message: string, type: ToastType, duration?: number) => void
+  removeToast: (id: string) => void
 }
 
 function getInitialTheme(): 'light' | 'dark' | 'system' {
@@ -48,6 +52,7 @@ export const useUIStore = create<UIState>((set) => ({
   theme: getInitialTheme(),
   isUploadModalOpen: false,
   globalLoading: false,
+  toasts: [],
   toggleSidebar: () =>
     set((state) => ({
       sidebar: { ...state.sidebar, isCollapsed: !state.sidebar.isCollapsed },
@@ -95,4 +100,12 @@ export const useUIStore = create<UIState>((set) => ({
   },
   setUploadModalOpen: (open) => set({ isUploadModalOpen: open }),
   setGlobalLoading: (loading) => set({ globalLoading: loading }),
+  addToast: (message, type, duration) =>
+    set((state) => ({
+      toasts: [...state.toasts, { id: Math.random().toString(36).slice(2), message, type, duration }],
+    })),
+  removeToast: (id) =>
+    set((state) => ({
+      toasts: state.toasts.filter((t) => t.id !== id),
+    })),
 }))
