@@ -116,6 +116,11 @@ export function ShareAccessPage() {
     setError(null)
     try {
       const res = await sharePublicApi.open(token, password, currentPath)
+      if (!res || !res.share) {
+        setError('分享数据格式错误')
+        setIsLoading(false)
+        return
+      }
       setShareInfo({
         name: res.share.name,
         is_dir: res.share.is_dir,

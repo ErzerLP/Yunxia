@@ -56,15 +56,20 @@ function PermissionsDisplay({ perms }: { perms: AclRule['permissions'] | undefin
     <div className="flex items-center gap-1">
       {labels.map(({ key, label }) => {
         const enabled = perms?.[key] ?? false
+        if (enabled) {
+          return (
+            <span
+              key={key}
+              className="text-xs px-1.5 py-0.5 rounded border bg-primary/10 text-primary border-primary/20"
+            >
+              {label}
+            </span>
+          )
+        }
         return (
           <span
             key={key}
-            className={cn(
-              'text-xs px-1.5 py-0.5 rounded border',
-              enabled
-                ? 'bg-primary/10 text-primary border-primary/20'
-                : 'bg-muted text-muted-foreground/40 border-transparent line-through'
-            )}
+            className="text-xs px-1.5 py-0.5 rounded border bg-muted text-muted-foreground/40 border-transparent line-through"
           >
             {label}
           </span>
@@ -493,6 +498,9 @@ export function AclPage() {
                     </td>
                     <td className="px-4 py-2.5">
                       <PermissionsDisplay perms={rule.permissions} />
+                      <span className="text-[10px] text-muted-foreground/60 ml-2 font-mono">
+                        {JSON.stringify(rule.permissions)}
+                      </span>
                     </td>
                     <td className="px-4 py-2.5 text-muted-foreground">{rule.priority}</td>
                     <td className="px-4 py-2.5">

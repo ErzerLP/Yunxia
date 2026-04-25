@@ -4,6 +4,19 @@ import type { ApiResponse, ApiError } from '@/types/api'
 
 const API_BASE_URL = '/api/v1'
 
+function extractErrorMessage(error: AxiosError<ApiError>): string {
+  const data = error.response?.data
+  if (data && !data.success && data.message) {
+    return data.message
+  }
+  if (data && data.error?.details) {
+    const details = data.error.details as Record<string, string>
+    const msgs = Object.values(details).filter(Boolean)
+    if (msgs.length > 0) return msgs.join('; ')
+  }
+  return error.message
+}
+
 class ApiClient {
   private instance: AxiosInstance
   private refreshPromise: Promise<string> | null = null
@@ -49,7 +62,8 @@ class ApiClient {
           }
         }
 
-        return Promise.reject(error)
+        const message = extractErrorMessage(error)
+        return Promise.reject(new Error(message))
       }
     )
   }

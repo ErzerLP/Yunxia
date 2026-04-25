@@ -55,8 +55,19 @@ export interface PublicShareOpenResponse {
 }
 
 export const sharePublicApi = {
-  open: (token: string, password?: string, path?: string) =>
-    publicClient.get<{ data: PublicShareOpenResponse }>(`/s/${token}`, {
+  open: async (token: string, password?: string, path?: string) => {
+    const r = await publicClient.get<unknown>(`/s/${token}`, {
       params: { password, path: path || '/' },
-    }).then(r => r.data.data),
+    })
+    const responseData = r.data as Record<string, unknown>
+    if (!responseData || typeof responseData !== 'object') {
+      throw new Error('Invalid response format')
+    }
+    // Backend envelope: { success, code, message, data: PublicShareOpenResponse }
+    const innerData = responseData.data as PublicShareOpenResponse | undefined
+    if (!innerData) {
+      throw new Error('Response missing data field')
+    }
+    return innerData
+  },
 }
