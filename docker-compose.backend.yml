@@ -5,6 +5,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # Linux 测试机常用 127.0.0.1 代理；build 期使用 host 网络可让容器内 apt/go 访问宿主机代理。
+      # 如目标环境不允许 host build network，可在 .env 中覆盖为 default。
+      network: "${YUNXIA_DOCKER_BUILD_NETWORK:-host}"
       args:
         GO_IMAGE: "${YUNXIA_DOCKER_GO_IMAGE:-golang:1.25-bookworm}"
         RUNTIME_IMAGE: "${YUNXIA_DOCKER_RUNTIME_IMAGE:-debian:bookworm-slim}"
@@ -45,6 +48,8 @@ services:
     build:
       context: ./backend
       dockerfile: docker/aria2.Dockerfile
+      # 与 backend 构建保持一致，避免 apk 访问宿主机 127.0.0.1 代理时失败。
+      network: "${YUNXIA_DOCKER_BUILD_NETWORK:-host}"
       args:
         ARIA2_BASE_IMAGE: "${YUNXIA_DOCKER_ARIA2_BASE_IMAGE:-alpine:3.22}"
         HTTP_PROXY: "${HTTP_PROXY:-}"

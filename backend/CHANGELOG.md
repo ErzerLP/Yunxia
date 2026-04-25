@@ -801,6 +801,19 @@
   - 兼容受限网络下的 docker build 代理透传
   - 避免因固定镜像 tag 或代理不可达导致部署验证被阻塞
 
+#### 14.7 Docker Compose 构建代理修正
+
+- 问题现象：
+  - 测试机启用 `http_proxy=http://127.0.0.1:7890` 后，`docker compose build` 会把该代理地址透传进 build 容器。
+  - build 容器内的 `127.0.0.1` 指向容器自身，不是宿主机，导致 `apt-get update` / `apk add` 无法连接代理并中断构建。
+- 修正：
+  - `docker-compose.backend.yml` 为 `backend` 与 `aria2` 的 build 阶段新增可配置网络：
+    - 默认 `YUNXIA_DOCKER_BUILD_NETWORK=host`
+    - 允许在不支持 host build network 的环境覆盖为 `default`
+  - `backend/.env.example` 补充该变量说明。
+- 目的：
+  - 让 Linux 测试机上通过本地代理解除网络限制后，仓库原生 Compose 构建流程可以继续完成。
+
 ---
 
 ## 维护约定
