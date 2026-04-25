@@ -47,13 +47,19 @@ function CreateTaskModal({
   onSubmit: (url: string, sourceId: number, savePath: string) => void
 }) {
   const [url, setUrl] = useState('')
-  const [sourceId, setSourceId] = useState(0)
+  const [sourceId, setSourceId] = useState('')
   const [savePath, setSavePath] = useState('/')
   const { currentSource } = useFileStore()
 
   useEffect(() => {
-    if (isOpen && currentSource) {
-      setSourceId(currentSource.id)
+    if (isOpen) {
+      setUrl('')
+      setSavePath('/')
+      if (currentSource) {
+        setSourceId(String(currentSource.id))
+      } else {
+        setSourceId('')
+      }
     }
   }, [isOpen, currentSource])
 
@@ -107,8 +113,9 @@ function CreateTaskModal({
             </button>
             <button
               onClick={() => {
-                if (url.trim() && sourceId) {
-                  onSubmit(url.trim(), sourceId, savePath)
+                const sid = parseInt(sourceId, 10)
+                if (url.trim() && sid > 0) {
+                  onSubmit(url.trim(), sid, savePath)
                 }
               }}
               disabled={!url.trim() || !sourceId}

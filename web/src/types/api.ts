@@ -507,12 +507,12 @@ export interface VFSAccessUrlRequest {
 
 // System
 export interface SystemStats {
-  total_users: number;
-  total_sources: number;
-  total_files: number;
-  total_bytes: number;
-  active_tasks: number;
-  total_shares: number;
+  sources_total: number;
+  files_total: number;
+  downloads_running: number;
+  downloads_completed: number;
+  users_total: number;
+  storage_used_bytes: number;
 }
 
 // Audit

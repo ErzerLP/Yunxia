@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { sharePublicApi } from '@/api/sharePublic'
+import type { PublicShareEntry } from '@/api/sharePublic'
 import {
   Folder,
   FileText,
@@ -16,7 +17,6 @@ import {
   Eye,
 } from 'lucide-react'
 import { cn, formatDate, getFileIconClass } from '@/utils'
-import type { FileItem } from '@/types/api'
 
 const iconMap = {
   folder: Folder,
@@ -32,7 +32,7 @@ const iconMap = {
   archive: File,
 }
 
-function FileIcon({ item }: { item: FileItem }) {
+function FileIcon({ item }: { item: PublicShareEntry }) {
   const type = getFileIconClass(item.extension, item.is_dir)
   const Icon = iconMap[type as keyof typeof iconMap] || File
   return (
@@ -102,7 +102,7 @@ export function ShareAccessPage() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
   const [shareInfo, setShareInfo] = useState<{ name: string; is_dir: boolean; has_password: boolean; expires_at: string | null } | null>(null)
-  const [items, setItems] = useState<FileItem[]>([])
+  const [items, setItems] = useState<PublicShareEntry[]>([])
   const [currentPath, setCurrentPath] = useState('/')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -117,19 +117,16 @@ export function ShareAccessPage() {
     try {
       const res = await sharePublicApi.open(token, password, currentPath)
       setShareInfo({
-        name: res.name,
-        is_dir: res.is_dir,
-        has_password: res.has_password,
-        expires_at: res.expires_at,
+        name: res.share.name,
+        is_dir: res.share.is_dir,
+        has_password: res.share.has_password,
+        expires_at: res.share.expires_at,
       })
-      if (res.items) {
-        setItems(res.items)
-        if (res.current_path) setCurrentPath(res.current_path)
-      }
+      setItems(res.items || [])
+      setCurrentPath(res.current_path || '/')
       setNeedsPassword(false)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '分享加载失败'
-      // Check if it's a password required error
       if (msg.toLowerCase().includes('password') || msg.toLowerCase().includes('unauthorized')) {
         setNeedsPassword(true)
       } else {
@@ -155,15 +152,21 @@ export function ShareAccessPage() {
     })
   }
 
-  const handleNavigate = async (item: FileItem) => {
+  const handleNavigate = async (item: PublicShareEntry) => {
     if (!item.is_dir || !token) return
     setIsLoading(true)
     try {
       const res = await sharePublicApi.open(token, undefined, item.path)
-      if (res.items) {
-        setItems(res.items)
-        if (res.current_path) setCurrentPath(res.current_path)
+      if (res.share) {
+        setShareInfo({
+          name: res.share.name,
+          is_dir: res.share.is_dir,
+          has_password: res.share.has_password,
+          expires_at: res.share.expires_at,
+        })
       }
+      setItems(res.items || [])
+      setCurrentPath(res.current_path || '/')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败'
       setError(msg)
@@ -178,10 +181,16 @@ export function ShareAccessPage() {
     setIsLoading(true)
     try {
       const res = await sharePublicApi.open(token, undefined, parent)
-      if (res.items) {
-        setItems(res.items)
-        if (res.current_path) setCurrentPath(res.current_path)
+      if (res.share) {
+        setShareInfo({
+          name: res.share.name,
+          is_dir: res.share.is_dir,
+          has_password: res.share.has_password,
+          expires_at: res.share.expires_at,
+        })
       }
+      setItems(res.items || [])
+      setCurrentPath(res.current_path || '/')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败'
       setError(msg)
@@ -190,22 +199,27 @@ export function ShareAccessPage() {
     }
   }
 
-  const handleDownload = async (item: FileItem) => {
+  const handleDownload = async (item: PublicShareEntry) => {
     if (!token) return
     try {
-      const res = await sharePublicApi.accessUrl(token, item.path, 'download')
-      window.open(res.url, '_blank')
+      const res = await sharePublicApi.open(token, undefined, item.path)
+      // For file downloads, backend returns redirect URL
+      if ((res as unknown as { redirect_url?: string }).redirect_url) {
+        window.open((res as unknown as { redirect_url: string }).redirect_url, '_blank')
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '获取下载链接失败'
       setError(msg)
     }
   }
 
-  const handlePreview = async (item: FileItem) => {
+  const handlePreview = async (item: PublicShareEntry) => {
     if (!token || !item.can_preview) return
     try {
-      const res = await sharePublicApi.accessUrl(token, item.path, 'preview')
-      window.open(res.url, '_blank')
+      const res = await sharePublicApi.open(token, undefined, item.path)
+      if ((res as unknown as { redirect_url?: string }).redirect_url) {
+        window.open((res as unknown as { redirect_url: string }).redirect_url, '_blank')
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '获取预览链接失败'
       setError(msg)

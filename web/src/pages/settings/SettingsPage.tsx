@@ -276,12 +276,12 @@ export function SettingsPage() {
             <section className="space-y-3">
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">系统统计</h2>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                <StatCard icon={Users} label="用户总数" value={stats.total_users} color="bg-blue-500" />
-                <StatCard icon={HardDrive} label="存储源" value={stats.total_sources} color="bg-emerald-500" />
-                <StatCard icon={FolderOpen} label="文件总数" value={stats.total_files} color="bg-amber-500" />
-                <StatCard icon={BarChart3} label="总容量" value={formatBytes(stats.total_bytes)} color="bg-purple-500" />
-                <StatCard icon={Download} label="活跃任务" value={stats.active_tasks} color="bg-rose-500" />
-                <StatCard icon={Link2} label="分享总数" value={stats.total_shares} color="bg-cyan-500" />
+                <StatCard icon={Users} label="用户总数" value={stats.users_total} color="bg-blue-500" />
+                <StatCard icon={HardDrive} label="存储源" value={stats.sources_total} color="bg-emerald-500" />
+                <StatCard icon={FolderOpen} label="文件总数" value={stats.files_total} color="bg-amber-500" />
+                <StatCard icon={BarChart3} label="总容量" value={formatBytes(stats.storage_used_bytes)} color="bg-purple-500" />
+                <StatCard icon={Download} label="活跃任务" value={stats.downloads_running} color="bg-rose-500" />
+                <StatCard icon={Link2} label="已完成任务" value={stats.downloads_completed} color="bg-cyan-500" />
               </div>
             </section>
           )}

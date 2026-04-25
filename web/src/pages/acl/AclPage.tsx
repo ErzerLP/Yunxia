@@ -45,7 +45,7 @@ function SubjectBadge({ type }: { type: AclRule['subject_type'] }) {
   )
 }
 
-function PermissionsDisplay({ perms }: { perms: AclRule['permissions'] }) {
+function PermissionsDisplay({ perms }: { perms: AclRule['permissions'] | undefined }) {
   const labels = [
     { key: 'read', label: '读' },
     { key: 'write', label: '写' },
@@ -54,19 +54,22 @@ function PermissionsDisplay({ perms }: { perms: AclRule['permissions'] }) {
   ] as const
   return (
     <div className="flex items-center gap-1">
-      {labels.map(({ key, label }) => (
-        <span
-          key={key}
-          className={cn(
-            'text-xs px-1.5 py-0.5 rounded',
-            perms[key]
-              ? 'bg-primary/10 text-primary'
-              : 'bg-muted text-muted-foreground/50'
-          )}
-        >
-          {label}
-        </span>
-      ))}
+      {labels.map(({ key, label }) => {
+        const enabled = perms?.[key] ?? false
+        return (
+          <span
+            key={key}
+            className={cn(
+              'text-xs px-1.5 py-0.5 rounded border',
+              enabled
+                ? 'bg-primary/10 text-primary border-primary/20'
+                : 'bg-muted text-muted-foreground/40 border-transparent line-through'
+            )}
+          >
+            {label}
+          </span>
+        )
+      })}
     </div>
   )
 }

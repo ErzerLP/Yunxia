@@ -12,13 +12,14 @@ import {
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { fileV2Api } from '@/api/fileV2'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { VFSMkdirModal } from './VFSMkdirModal'
 import { cn } from '@/utils'
 
 export function VFSFileToolbar() {
   const { currentVirtualPath, viewMode, setViewMode, navigateVirtualUp, setVfsItems } = useFileStore()
   const { setUploadModalOpen } = useUIStore()
+  const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [mkdirOpen, setMkdirOpen] = useState(false)
@@ -65,7 +66,7 @@ export function VFSFileToolbar() {
   const clearSearch = () => {
     setSearchQuery('')
     setShowSearch(false)
-    window.location.reload()
+    queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })
   }
 
   return (
@@ -107,7 +108,7 @@ export function VFSFileToolbar() {
       </button>
 
       <button
-        onClick={() => window.location.reload()}
+        onClick={() => queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })}
         className="p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
         title="刷新"
       >
@@ -181,7 +182,7 @@ export function VFSFileToolbar() {
           isOpen={mkdirOpen}
           onClose={() => setMkdirOpen(false)}
           parentPath={currentVirtualPath}
-          onSuccess={() => window.location.reload()}
+          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })}
         />
       )}
     </div>
