@@ -1,13 +1,14 @@
-import { useEffect } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { trashApi } from '@/api/trash'
+import { sourceApi } from '@/api/source'
 import { useUIStore } from '@/stores/uiStore'
-import { Trash2, RotateCcw, Folder, FileText, Image, Film, Music, File } from 'lucide-react'
+import { Trash2, RotateCcw, Folder, FileText, Image, Film, Music, File, HardDrive, ChevronDown, CheckCircle2 } from 'lucide-react'
 import { formatBytes, formatDate, getFileIconClass } from '@/utils'
 import { cn } from '@/utils'
-import type { TrashItem } from '@/types/api'
+import type { TrashItem, StorageSource } from '@/types/api'
 
 const iconMap = {
   folder: Folder,
@@ -41,6 +42,9 @@ export function TrashPage() {
   const queryClient = useQueryClient()
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
   const { addToast } = useUIStore()
+  const [currentSource, setCurrentSource] = useState<StorageSource | null>(null)
+  const [sourceOpen, setSourceOpen] = useState(false)
+  const sourceRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -48,16 +52,39 @@ export function TrashPage() {
     }
   }, [isAuthenticated, authLoading, navigate])
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['trash'],
-    queryFn: () => trashApi.list({ page: 1, page_size: 100 }),
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (sourceRef.current && !sourceRef.current.contains(e.target as Node)) {
+        setSourceOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const { data: sourcesData } = useQuery({
+    queryKey: ['sources-trash'],
+    queryFn: () => sourceApi.list({ page: 1, page_size: 100, view: 'navigation' }),
+  })
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['trash', currentSource?.id],
+    queryFn: () =>
+      trashApi.list({
+        source_id: currentSource!.id,
+        page: 1,
+        page_size: 100,
+      }),
+    enabled: !!currentSource,
   })
 
   const handleRestore = async (id: number) => {
     try {
       await trashApi.restore(id)
       addToast('文件已恢复', 'success')
-      queryClient.invalidateQueries({ queryKey: ['trash'] })
+      if (currentSource) {
+        queryClient.invalidateQueries({ queryKey: ['trash', currentSource.id] })
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '恢复失败'
       addToast(msg, 'error')
@@ -69,7 +96,9 @@ export function TrashPage() {
     try {
       await trashApi.delete(id)
       addToast('文件已永久删除', 'success')
-      queryClient.invalidateQueries({ queryKey: ['trash'] })
+      if (currentSource) {
+        queryClient.invalidateQueries({ queryKey: ['trash', currentSource.id] })
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '删除失败'
       addToast(msg, 'error')
@@ -77,18 +106,19 @@ export function TrashPage() {
   }
 
   const handleClear = async () => {
+    if (!currentSource) return
     if (!confirm('确定要清空回收站吗？所有文件将被永久删除，此操作不可撤销。')) return
     try {
-      await trashApi.clear()
+      await trashApi.clear(currentSource.id)
       addToast('回收站已清空', 'success')
-      queryClient.invalidateQueries({ queryKey: ['trash'] })
+      queryClient.invalidateQueries({ queryKey: ['trash', currentSource.id] })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '清空失败'
       addToast(msg, 'error')
     }
   }
 
-  if (authLoading || isLoading) {
+  if (authLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -97,11 +127,51 @@ export function TrashPage() {
   }
 
   const items = data?.items || []
+  const sources = sourcesData?.items || []
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 h-14 border-b border-border shrink-0">
-        <h1 className="text-lg font-semibold text-foreground">回收站</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold text-foreground">回收站</h1>
+          <div ref={sourceRef} className="relative">
+            <button
+              onClick={() => setSourceOpen(!sourceOpen)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-border bg-card text-sm hover:border-primary/30 transition-colors"
+            >
+              <HardDrive className="w-4 h-4 text-primary" />
+              <span className="text-foreground">{currentSource?.name || '选择存储源'}</span>
+              <ChevronDown className={cn('w-3.5 h-3.5 text-muted-foreground transition-transform', sourceOpen && 'rotate-180')} />
+            </button>
+            {sourceOpen && (
+              <div className="absolute top-full left-0 mt-1 w-56 bg-card border border-border rounded-lg shadow-lg z-50 py-1">
+                {sources.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-muted-foreground">暂无存储源</div>
+                ) : (
+                  sources.map((source) => (
+                    <button
+                      key={source.id}
+                      onClick={() => {
+                        setCurrentSource(source)
+                        setSourceOpen(false)
+                      }}
+                      className={cn(
+                        'w-full flex items-center gap-2 px-3 py-2 text-sm transition-colors',
+                        currentSource?.id === source.id
+                          ? 'bg-primary/5 text-primary'
+                          : 'text-foreground hover:bg-accent'
+                      )}
+                    >
+                      <HardDrive className="w-4 h-4 shrink-0" />
+                      <span className="flex-1 text-left truncate">{source.name}</span>
+                      {currentSource?.id === source.id && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
         {items.length > 0 && (
           <button
             onClick={handleClear}
@@ -114,7 +184,21 @@ export function TrashPage() {
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin p-4">
-        {items.length === 0 ? (
+        {!currentSource ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
+            <HardDrive className="w-12 h-12 opacity-30" />
+            <p>请选择存储源</p>
+          </div>
+        ) : isLoading ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
+            <Trash2 className="w-12 h-12 opacity-30" />
+            <p className="text-destructive">{(error as Error).message || '加载失败'}</p>
+          </div>
+        ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
             <Trash2 className="w-12 h-12 opacity-30" />
             <p>回收站为空</p>

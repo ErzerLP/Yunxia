@@ -8,9 +8,9 @@ class ApiClient {
   private instance: AxiosInstance
   private refreshPromise: Promise<string> | null = null
 
-  constructor() {
+  constructor(baseURL?: string) {
     this.instance = axios.create({
-      baseURL: API_BASE_URL,
+      baseURL: baseURL || API_BASE_URL,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
@@ -120,3 +120,4 @@ class ApiClient {
 }
 
 export const apiClient = new ApiClient()
+export const v2Client = new ApiClient('/api/v2')

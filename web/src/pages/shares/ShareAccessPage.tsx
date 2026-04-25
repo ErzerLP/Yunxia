@@ -102,7 +102,6 @@ export function ShareAccessPage() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
   const [shareInfo, setShareInfo] = useState<{ name: string; is_dir: boolean; has_password: boolean; expires_at: string | null } | null>(null)
-  const [accessToken, setAccessToken] = useState<string | null>(null)
   const [items, setItems] = useState<FileItem[]>([])
   const [currentPath, setCurrentPath] = useState('/')
   const [isLoading, setIsLoading] = useState(true)
@@ -111,81 +110,90 @@ export function ShareAccessPage() {
   const [isVerifying, setIsVerifying] = useState(false)
   const [needsPassword, setNeedsPassword] = useState(false)
 
-  useEffect(() => {
+  const loadShare = async (password?: string) => {
     if (!token) return
     setIsLoading(true)
-    sharePublicApi
-      .verify(token)
-      .then((res) => {
-        setShareInfo(res.share)
-        if (res.access_token) {
-          setAccessToken(res.access_token)
-          loadList(res.access_token, '/')
-        } else if (res.share.has_password) {
-          setNeedsPassword(true)
-          setIsLoading(false)
-        } else {
-          setIsLoading(false)
-        }
+    setError(null)
+    try {
+      const res = await sharePublicApi.open(token, password, currentPath)
+      setShareInfo({
+        name: res.name,
+        is_dir: res.is_dir,
+        has_password: res.has_password,
+        expires_at: res.expires_at,
       })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : '分享验证失败'
-        setError(msg)
-        setIsLoading(false)
-      })
-  }, [token])
-
-  const loadList = (atk: string, path: string) => {
-    if (!token) return
-    setIsLoading(true)
-    sharePublicApi
-      .list(token, path, atk)
-      .then((res) => {
+      if (res.items) {
         setItems(res.items)
-        setCurrentPath(res.current_path)
-        setIsLoading(false)
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : '加载失败'
+        if (res.current_path) setCurrentPath(res.current_path)
+      }
+      setNeedsPassword(false)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '分享加载失败'
+      // Check if it's a password required error
+      if (msg.toLowerCase().includes('password') || msg.toLowerCase().includes('unauthorized')) {
+        setNeedsPassword(true)
+      } else {
         setError(msg)
-        setIsLoading(false)
-      })
+      }
+    } finally {
+      setIsLoading(false)
+    }
   }
+
+  useEffect(() => {
+    if (token) {
+      loadShare()
+    }
+  }, [token])
 
   const handleVerifyPassword = (password: string) => {
     if (!token) return
     setIsVerifying(true)
     setPasswordError(null)
-    sharePublicApi
-      .verify(token, password)
-      .then((res) => {
-        setShareInfo(res.share)
-        if (res.access_token) {
-          setAccessToken(res.access_token)
-          setNeedsPassword(false)
-          loadList(res.access_token, '/')
-        } else {
-          setPasswordError('密码错误')
-          setIsVerifying(false)
-        }
-      })
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : '验证失败'
-        setPasswordError(msg)
-        setIsVerifying(false)
-      })
+    loadShare(password).finally(() => {
+      setIsVerifying(false)
+    })
   }
 
-  const handleNavigate = (item: FileItem) => {
-    if (item.is_dir && accessToken) {
-      loadList(accessToken, item.path)
+  const handleNavigate = async (item: FileItem) => {
+    if (!item.is_dir || !token) return
+    setIsLoading(true)
+    try {
+      const res = await sharePublicApi.open(token, undefined, item.path)
+      if (res.items) {
+        setItems(res.items)
+        if (res.current_path) setCurrentPath(res.current_path)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败'
+      setError(msg)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleGoUp = async () => {
+    if (!token) return
+    const parent = currentPath.split('/').slice(0, -1).join('/') || '/'
+    setIsLoading(true)
+    try {
+      const res = await sharePublicApi.open(token, undefined, parent)
+      if (res.items) {
+        setItems(res.items)
+        if (res.current_path) setCurrentPath(res.current_path)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败'
+      setError(msg)
+    } finally {
+      setIsLoading(false)
     }
   }
 
   const handleDownload = async (item: FileItem) => {
-    if (!token || !accessToken) return
+    if (!token) return
     try {
-      const res = await sharePublicApi.accessUrl(token, item.path, accessToken, 'download')
+      const res = await sharePublicApi.accessUrl(token, item.path, 'download')
       window.open(res.url, '_blank')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '获取下载链接失败'
@@ -194,10 +202,9 @@ export function ShareAccessPage() {
   }
 
   const handlePreview = async (item: FileItem) => {
-    if (!token || !accessToken) return
-    if (!item.can_preview) return
+    if (!token || !item.can_preview) return
     try {
-      const res = await sharePublicApi.accessUrl(token, item.path, accessToken, 'preview')
+      const res = await sharePublicApi.accessUrl(token, item.path, 'preview')
       window.open(res.url, '_blank')
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '获取预览链接失败'
@@ -271,10 +278,7 @@ export function ShareAccessPage() {
         {shareInfo.is_dir && !isRoot && (
           <div className="flex items-center gap-2 px-4 h-10 border-t border-border bg-muted/30">
             <button
-              onClick={() => {
-                const parent = currentPath.split('/').slice(0, -1).join('/') || '/'
-                if (accessToken) loadList(accessToken, parent)
-              }}
+              onClick={handleGoUp}
               className="p-1 rounded-md hover:bg-accent text-muted-foreground"
             >
               <ChevronLeft className="w-4 h-4" />

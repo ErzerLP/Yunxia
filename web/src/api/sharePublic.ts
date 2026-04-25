@@ -1,5 +1,12 @@
-import { apiClient } from './client'
+import axios from 'axios'
 import type { FileItem } from '@/types/api'
+
+// Public share endpoints are NOT under /api/v1, use raw axios
+const publicClient = axios.create({
+  baseURL: '',
+  timeout: 30000,
+  headers: { 'Content-Type': 'application/json' },
+})
 
 export interface PublicShareInfo {
   name: string
@@ -8,34 +15,23 @@ export interface PublicShareInfo {
   expires_at: string | null
 }
 
-export interface PublicShareVerifyRequest {
-  token: string
-  password?: string
-}
-
-export interface PublicShareVerifyResponse {
-  share: PublicShareInfo
-  access_token?: string
-}
-
-export interface PublicShareListResponse {
-  items: FileItem[]
-  current_path: string
+export interface PublicShareOpenResponse {
+  name: string
+  is_dir: boolean
+  has_password: boolean
+  expires_at: string | null
+  items?: FileItem[]
+  current_path?: string
 }
 
 export const sharePublicApi = {
-  verify: (token: string, password?: string) =>
-    apiClient.post<PublicShareVerifyResponse>('/shares/public/verify', { token, password }),
+  open: (token: string, password?: string, path?: string) =>
+    publicClient.get<{ data: PublicShareOpenResponse }>(`/s/${token}`, {
+      params: { password, path: path || '/' },
+    }).then(r => r.data.data),
 
-  list: (token: string, path?: string, accessToken?: string) =>
-    apiClient.get<PublicShareListResponse>(`/shares/public/${token}/list`, {
-      params: { path: path || '/' },
-      headers: accessToken ? { 'X-Share-Access-Token': accessToken } : undefined,
-    }),
-
-  accessUrl: (token: string, path: string, accessToken?: string, purpose: 'preview' | 'download' = 'download') =>
-    apiClient.get<{ url: string; method: string; expires_at: string }>(`/shares/public/${token}/access`, {
-      params: { path, purpose },
-      headers: accessToken ? { 'X-Share-Access-Token': accessToken } : undefined,
-    }),
+  accessUrl: (token: string, path: string, purpose: 'preview' | 'download' = 'download') =>
+    publicClient.get<{ data: { url: string; method: string; expires_at: string } }>(`/s/${token}`, {
+      params: { path, disposition: purpose === 'download' ? 'attachment' : 'inline' },
+    }).then(r => r.data.data),
 }

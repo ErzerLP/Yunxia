@@ -2,7 +2,7 @@ import { apiClient } from './client'
 import type { TrashItem } from '@/types/api'
 
 export const trashApi = {
-  list: (params?: { source_id?: number; page?: number; page_size?: number }) =>
+  list: (params: { source_id: number; page?: number; page_size?: number }) =>
     apiClient.get<{ items: TrashItem[] }>('/trash', { params }),
 
   restore: (id: number) =>

@@ -331,6 +331,7 @@ export function AclPage() {
   const { addToast } = useUIStore()
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<AclRule | null>(null)
+  const [currentSourceId, setCurrentSourceId] = useState<number | null>(null)
 
   const canRead = useHasCapability('acl.read')
   const canManage = useHasCapability('acl.manage')
@@ -348,16 +349,29 @@ export function AclPage() {
     }
   }, [authLoading, isAuthenticated, canRead, navigate, addToast])
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['acl-rules'],
-    queryFn: () => aclApi.list({ page: 1, page_size: 100 }),
-    enabled: canRead,
-  })
-
   const { data: sourcesData } = useQuery({
     queryKey: ['sources-acl'],
     queryFn: () => sourceApi.list({ page: 1, page_size: 100, view: 'admin' }),
     enabled: canRead,
+  })
+
+  const sources = sourcesData?.items || []
+
+  useEffect(() => {
+    if (sources.length > 0 && currentSourceId === null) {
+      setCurrentSourceId(sources[0].id)
+    }
+  }, [sources, currentSourceId])
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['acl-rules', currentSourceId],
+    queryFn: () =>
+      aclApi.list({
+        source_id: currentSourceId!,
+        page: 1,
+        page_size: 100,
+      }),
+    enabled: canRead && currentSourceId !== null,
   })
 
   const handleDelete = async (id: number) => {
@@ -365,14 +379,14 @@ export function AclPage() {
     try {
       await aclApi.delete(id)
       addToast('规则已删除', 'success')
-      queryClient.invalidateQueries({ queryKey: ['acl-rules'] })
+      queryClient.invalidateQueries({ queryKey: ['acl-rules', currentSourceId] })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '删除失败'
       addToast(msg, 'error')
     }
   }
 
-  if (authLoading || isLoading) {
+  if (authLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -381,12 +395,24 @@ export function AclPage() {
   }
 
   const rules = data?.items || []
-  const sources = sourcesData?.items || []
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 h-14 border-b border-border shrink-0">
-        <h1 className="text-lg font-semibold text-foreground">ACL 管理</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold text-foreground">ACL 管理</h1>
+          {sources.length > 0 && (
+            <select
+              value={currentSourceId ?? ''}
+              onChange={(e) => setCurrentSourceId(Number(e.target.value))}
+              className="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {sources.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
         {canManage && (
           <button
             onClick={() => {
@@ -402,7 +428,21 @@ export function AclPage() {
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin p-4">
-        {rules.length === 0 ? (
+        {currentSourceId === null ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
+            <Shield className="w-12 h-12 opacity-30" />
+            <p>请选择存储源</p>
+          </div>
+        ) : isLoading ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
+            <Shield className="w-12 h-12 opacity-30" />
+            <p className="text-destructive">{(error as Error).message || '加载失败'}</p>
+          </div>
+        ) : rules.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
             <Shield className="w-12 h-12 opacity-30" />
             <p>暂无 ACL 规则</p>
@@ -488,7 +528,7 @@ export function AclPage() {
       <AclRuleModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
-        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['acl-rules'] })}
+        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['acl-rules', currentSourceId] })}
         rule={editTarget}
         sources={sources}
       />

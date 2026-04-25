@@ -2,14 +2,14 @@ import { apiClient } from './client'
 import type { AclRule, CreateAclRuleRequest, PaginationParams } from '@/types/api'
 
 export interface ListAclParams extends PaginationParams {
-  source_id?: number;
+  source_id: number;
   path?: string;
   subject_type?: string;
   subject_id?: number;
 }
 
 export const aclApi = {
-  list: (params?: ListAclParams) =>
+  list: (params: ListAclParams) =>
     apiClient.get<{ items: AclRule[]; total: number }>('/acl/rules', { params }),
 
   create: (data: CreateAclRuleRequest) =>

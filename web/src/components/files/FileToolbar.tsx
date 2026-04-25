@@ -12,7 +12,7 @@ import {
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { fileApi } from '@/api/file'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SourceSelector } from './SourceSelector'
 import { MkdirModal } from './MkdirModal'
 import { cn } from '@/utils'
@@ -20,6 +20,7 @@ import { cn } from '@/utils'
 export function FileToolbar() {
   const { currentSource, currentPath, viewMode, setViewMode, navigateUp, setFiles } = useFileStore()
   const { setUploadModalOpen } = useUIStore()
+  const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [mkdirOpen, setMkdirOpen] = useState(false)
@@ -68,7 +69,7 @@ export function FileToolbar() {
     setSearchQuery('')
     setShowSearch(false)
     if (currentSource) {
-      window.location.reload()
+      queryClient.invalidateQueries({ queryKey: ['files', currentSource.id, currentPath] })
     }
   }
 
@@ -117,7 +118,11 @@ export function FileToolbar() {
       </button>
 
       <button
-        onClick={() => window.location.reload()}
+        onClick={() => {
+          if (currentSource) {
+            queryClient.invalidateQueries({ queryKey: ['files', currentSource.id, currentPath] })
+          }
+        }}
         className="p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
         title="刷新"
       >
@@ -192,7 +197,9 @@ export function FileToolbar() {
           onClose={() => setMkdirOpen(false)}
           sourceId={currentSource.id}
           parentPath={currentPath}
-          onSuccess={() => window.location.reload()}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['files', currentSource.id, currentPath] })
+          }}
         />
       )}
     </div>

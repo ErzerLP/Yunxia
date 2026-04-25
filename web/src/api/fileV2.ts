@@ -1,4 +1,4 @@
-import { apiClient } from './client'
+import { v2Client } from './client'
 import type { VFSItem, VFSListResult, VFSAccessUrlRequest, AccessUrlResponse, PaginationParams } from '@/types/api'
 
 export interface ListVFSParams extends PaginationParams {
@@ -37,28 +37,28 @@ export interface VFSDeleteRequest {
 
 export const fileV2Api = {
   list: (params?: ListVFSParams) =>
-    apiClient.get<VFSListResult>('/api/v2/fs/list', { params }),
+    v2Client.get<VFSListResult>('/fs/list', { params }),
 
   search: (params: SearchVFSParams) =>
-    apiClient.get<VFSListResult>('/api/v2/fs/search', { params }),
+    v2Client.get<VFSListResult>('/fs/search', { params }),
 
   mkdir: (data: VFSMkdirRequest) =>
-    apiClient.post<{ item: VFSItem }>('/api/v2/fs/mkdir', data),
+    v2Client.post<{ item: VFSItem }>('/fs/mkdir', data),
 
   rename: (data: VFSRenameRequest) =>
-    apiClient.post<{ item: VFSItem }>('/api/v2/fs/rename', data),
+    v2Client.post<{ item: VFSItem }>('/fs/rename', data),
 
   move: (data: VFSMoveRequest) =>
-    apiClient.post<{ moved: number }>('/api/v2/fs/move', data),
+    v2Client.post<{ moved: number }>('/fs/move', data),
 
   copy: (data: VFSCopyRequest) =>
-    apiClient.post<{ copied: number; item?: VFSItem }>('/api/v2/fs/copy', data),
+    v2Client.post<{ copied: number; item?: VFSItem }>('/fs/copy', data),
 
   delete: (data: VFSDeleteRequest) =>
-    apiClient.delete<{ deleted: number }>('/api/v2/fs', { data }),
+    v2Client.delete<{ deleted: number }>('/fs', { data }),
 
   accessUrl: (data: VFSAccessUrlRequest) =>
-    apiClient.post<AccessUrlResponse>('/api/v2/fs/access-url', data),
+    v2Client.post<AccessUrlResponse>('/fs/access-url', data),
 
   download: (path: string) => {
     const encoded = encodeURIComponent(path)
