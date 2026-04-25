@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { taskApi } from '@/api/task'
+import { sourceApi } from '@/api/source'
 import {
   Play,
   Pause,
@@ -15,6 +16,7 @@ import {
   Plus,
   Link as LinkIcon,
   HardDrive,
+  Server,
 } from 'lucide-react'
 import { formatBytes, formatDate, formatDuration, formatSpeed } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
@@ -51,17 +53,26 @@ function CreateTaskModal({
   const [savePath, setSavePath] = useState('/')
   const { currentSource } = useFileStore()
 
+  const { data: sourcesData } = useQuery({
+    queryKey: ['sources-task-modal'],
+    queryFn: () => sourceApi.list({ page: 1, page_size: 100 }),
+    enabled: isOpen,
+  })
+  const sources = sourcesData?.items || []
+
   useEffect(() => {
     if (isOpen) {
       setUrl('')
       setSavePath('/')
       if (currentSource) {
         setSourceId(String(currentSource.id))
+      } else if (sources.length > 0) {
+        setSourceId(String(sources[0].id))
       } else {
         setSourceId('')
       }
     }
-  }, [isOpen, currentSource])
+  }, [isOpen, currentSource, sources])
 
   if (!isOpen) return null
 
@@ -90,6 +101,21 @@ function CreateTaskModal({
                 placeholder="https://example.com/file.zip"
                 className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">存储源</label>
+            <div className="relative">
+              <Server className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <select
+                value={sourceId}
+                onChange={(e) => setSourceId(e.target.value)}
+                className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring appearance-none"
+              >
+                {sources.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
             </div>
           </div>
           <div>

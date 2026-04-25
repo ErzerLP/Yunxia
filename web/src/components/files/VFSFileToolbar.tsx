@@ -15,11 +15,13 @@ import { fileV2Api } from '@/api/fileV2'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { VFSMkdirModal } from './VFSMkdirModal'
 import { cn } from '@/utils'
+import { useHasCapability } from '@/hooks/useCapability'
 
 export function VFSFileToolbar() {
   const { currentVirtualPath, viewMode, setViewMode, navigateVirtualUp, setVfsItems } = useFileStore()
   const { setUploadModalOpen } = useUIStore()
   const queryClient = useQueryClient()
+  const canWrite = useHasCapability('file.write')
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [mkdirOpen, setMkdirOpen] = useState(false)
@@ -91,21 +93,25 @@ export function VFSFileToolbar() {
 
       <div className="w-px h-5 bg-border mx-1" />
 
-      <button
-        onClick={() => setUploadModalOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-      >
-        <Upload className="w-4 h-4" />
-        <span>上传</span>
-      </button>
+      {canWrite && (
+        <button
+          onClick={() => setUploadModalOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          <Upload className="w-4 h-4" />
+          <span>上传</span>
+        </button>
+      )}
 
-      <button
-        onClick={() => setMkdirOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-      >
-        <FolderPlus className="w-4 h-4" />
-        <span>新建文件夹</span>
-      </button>
+      {canWrite && (
+        <button
+          onClick={() => setMkdirOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <FolderPlus className="w-4 h-4" />
+          <span>新建文件夹</span>
+        </button>
+      )}
 
       <button
         onClick={() => queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })}

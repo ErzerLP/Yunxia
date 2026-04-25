@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, FolderPlus } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
+import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 interface VFSMkdirModalProps {
@@ -13,11 +14,14 @@ interface VFSMkdirModalProps {
 export function VFSMkdirModal({ isOpen, onClose, parentPath, onSuccess }: VFSMkdirModalProps) {
   const [name, setName] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const { addToast } = useUIStore()
 
   useEffect(() => {
     if (isOpen) {
       setName('')
+      setError(null)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [isOpen])
@@ -31,12 +35,16 @@ export function VFSMkdirModal({ isOpen, onClose, parentPath, onSuccess }: VFSMkd
     }
 
     setIsSubmitting(true)
+    setError(null)
     try {
       await fileV2Api.mkdir({ parent_path: parentPath, name: trimmed })
+      addToast('文件夹创建成功', 'success')
       onSuccess?.()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '创建失败'
+      setError(msg)
+      addToast(msg, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -67,6 +75,7 @@ export function VFSMkdirModal({ isOpen, onClose, parentPath, onSuccess }: VFSMkd
             className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             placeholder="文件夹名称"
           />
+          {error && <p className="text-sm text-destructive mt-2">{error}</p>}
           <div className="flex justify-end gap-2 mt-4">
             <button
               type="button"
