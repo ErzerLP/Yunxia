@@ -1,10 +1,97 @@
 # Yunxia Backend API Contract
 
-> 更新时间：2026-04-23  
-> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询）  
+> 更新时间：2026-04-25
+> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询）
 > 真相源：`backend/internal/interfaces/http/router.go`、`backend/internal/interfaces/http/handler/*.go`、`backend/internal/application/dto/*.go`、`backend/internal/application/service/*_service.go`
 
-本文档只描述**当前后端实际实现**，用于前后端联调与接口核对。
+本文档只描述**当前后端实际实现**，用于前后端联调、API client 封装与页面功能核对。
+
+## 0. 前端接入速览
+
+### 0.1 当前后端模块总览
+
+| 模块 | Base | 当前能力 | 前端用途 |
+|---|---|---|---|
+| 初始化 / 认证 | `/api/v1` | 初始化、登录、刷新 token、登出、当前用户能力 | 登录页、初始化页、全局权限渲染 |
+| 系统 | `/api/v1/system/*` | version、stats、config 读写 | 管理后台首页、系统设置页 |
+| 用户管理 | `/api/v1/users*` | 用户列表、创建、更新、重置密码、撤销令牌 | 用户管理页 |
+| ACL | `/api/v1/acl/rules*` | 对用户授予/拒绝 source 内路径权限 | 权限配置页 |
+| 存储源 | `/api/v1/sources*` | local/S3 源列表、详情、创建、更新、删除、测试 | 存储源管理、侧边栏导航 |
+| 传统文件 | `/api/v1/files*` | 按 `source_id + path` 管理文件 | 兼容旧文件页 |
+| 上传 | `/api/v1/upload*` | 初始化、分片、完成、会话、取消 | 文件上传 |
+| 回收站 | `/api/v1/trash*` | 列表、恢复、永久删除、清空 | 回收站页 |
+| 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消 | 离线任务页 |
+| 分享 | `/api/v1/shares*`、`/s/:token` | 分享管理、公开分享访问 | 分享管理页、公开分享页 |
+| 审计 | `/api/v1/audit/logs*` | 审计列表、审计详情 | 审计日志页 |
+| 统一虚拟目录 V2 | `/api/v2/fs*` | 基于虚拟路径的文件列表、搜索、写操作、下载 | **新文件管理页推荐优先使用** |
+| WebDAV | `{webdav_prefix}` 默认 `/dav` | WebDAV 客户端访问 local 源 | 前端主要展示配置，不直接走 JSON API |
+
+### 0.2 新文件管理页推荐接口
+
+如果是新写前端文件管理页面，推荐优先用 VFS v2，不要让页面直接关心底层 source 类型：
+
+| 页面动作 | 推荐接口 |
+|---|---|
+| 进入根目录 | `GET /api/v2/fs/list?path=/` |
+| 进入目录 | `GET /api/v2/fs/list?path=/local/docs` |
+| 搜索 | `GET /api/v2/fs/search?path=/local&keyword=hello` |
+| 新建目录 | `POST /api/v2/fs/mkdir` |
+| 重命名 | `POST /api/v2/fs/rename` |
+| 移动 | `POST /api/v2/fs/move` |
+| 复制 | `POST /api/v2/fs/copy` |
+| 删除 | `DELETE /api/v2/fs` |
+| 生成下载链接 | `POST /api/v2/fs/access-url` |
+| 执行下载 | `GET /api/v2/fs/download?...` |
+| 上传初始化 | `POST /api/v1/upload/init`，优先传 `target_virtual_parent_path` |
+
+### 0.3 前端统一请求封装建议
+
+普通 JSON 接口建议统一封装响应包络：
+
+```ts
+type ApiEnvelope<T> = {
+  success: boolean
+  code: string
+  message: string
+  data: T
+  meta: {
+    request_id: string
+    timestamp: string
+  }
+  error?: {
+    details?: unknown
+  }
+}
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = localStorage.getItem('access_token')
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers ?? {}),
+    },
+  })
+
+  const payload = (await res.json()) as ApiEnvelope<T>
+  if (!res.ok || !payload.success) {
+    throw Object.assign(new Error(payload.message), {
+      status: res.status,
+      code: payload.code,
+      requestId: payload.meta?.request_id,
+      details: payload.error?.details,
+    })
+  }
+  return payload.data
+}
+```
+
+下载接口不要用上面的 JSON 封装；local 会返回文件流，S3 会返回 302。最简单的调用方式：
+
+```ts
+window.location.href = downloadUrl
+```
 
 ## 1. 通用约定
 
@@ -55,6 +142,47 @@
 - 普通接口：`Authorization: Bearer <access_token>`
 - 下载短链：`access_token` 查询参数
 - WebDAV：Basic Auth（用户名 / 密码）
+
+JSON 请求统一使用：
+
+```http
+Content-Type: application/json
+Authorization: Bearer <access_token>
+```
+
+公开接口不需要 Bearer：
+
+- `GET /api/v1/health`
+- `GET /api/v1/setup/status`
+- `POST /api/v1/setup/init`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `GET /s/:token`
+
+下载接口虽然路由公开，但仍必须满足以下任一条件：
+
+- 带 `Authorization: Bearer <access_token>`
+- 或 query 里带短时 `access_token`
+
+### 1.3.1 token 刷新建议
+
+前端收到以下错误时，可以尝试 refresh：
+
+- `401 AUTH_TOKEN_MISSING`
+- `401 AUTH_TOKEN_INVALID`
+
+刷新接口：
+
+```http
+POST /api/v1/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "<refresh_token>"
+}
+```
+
+refresh 成功后替换本地 access / refresh token；refresh 失败再跳登录页。
 
 ### 1.4 时间 / 分页
 
@@ -236,6 +364,53 @@
 - local：`config.base_path`
 - s3：`config.endpoint,region,bucket,base_prefix,force_path_style` + `secret_patch.access_key/secret_key`
 
+创建 local 源示例：
+
+```json
+{
+  "name": "本地资料",
+  "driver_type": "local",
+  "is_enabled": true,
+  "is_webdav_exposed": false,
+  "webdav_read_only": true,
+  "mount_path": "/local-data",
+  "root_path": "/",
+  "sort_order": 0,
+  "config": {
+    "base_path": "D:/data/yunxia/local-data"
+  },
+  "secret_patch": {}
+}
+```
+
+创建 S3 源示例：
+
+```json
+{
+  "name": "S3 媒体库",
+  "driver_type": "s3",
+  "is_enabled": true,
+  "is_webdav_exposed": false,
+  "webdav_read_only": true,
+  "mount_path": "/media",
+  "root_path": "/",
+  "sort_order": 10,
+  "config": {
+    "endpoint": "https://s3.example.com",
+    "region": "us-east-1",
+    "bucket": "yunxia-demo",
+    "base_prefix": "media",
+    "force_path_style": true
+  },
+  "secret_patch": {
+    "access_key": "AKIA...",
+    "secret_key": "secret..."
+  }
+}
+```
+
+更新 S3 源时，如果不修改密钥，可以不传对应 `secret_patch` 字段；如果要清空密钥，可以传 `null`。
+
 补充：
 
 - 初始化完成后自动创建默认本地源：`本地存储`
@@ -312,6 +487,45 @@
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
 - 纯虚拟目录无落地存储时返回 `409 NO_BACKING_STORAGE`
+
+本地源上传调用顺序：
+
+1. `POST /api/v1/upload/init`
+2. 按 `upload.chunk_size` 切片
+3. 对每片调用 `PUT /api/v1/upload/chunk?upload_id=<id>&index=<0-based>`
+   - Header：`Content-Type: application/octet-stream`
+   - Body：当前分片二进制
+4. `POST /api/v1/upload/finish`
+
+本地源 `PUT /upload/chunk` 响应：
+
+```json
+{
+  "upload_id": "upl_xxx",
+  "index": 0,
+  "received_bytes": 5242880,
+  "already_uploaded": false
+}
+```
+
+S3 源上传调用顺序：
+
+1. `POST /api/v1/upload/init`
+2. 前端根据 `part_instructions[]` 直接 PUT 到 S3 presigned URL
+3. 收集每个分片返回的 ETag
+4. `POST /api/v1/upload/finish`，Body 里传 `parts`
+
+S3 finish Body 示例：
+
+```json
+{
+  "upload_id": "upl_xxx",
+  "parts": [
+    { "index": 0, "etag": "\"etag-part-1\"" },
+    { "index": 1, "etag": "\"etag-part-2\"" }
+  ]
+}
+```
 
 ### 3.8 trash（`/api/v1`）
 
@@ -714,3 +928,75 @@
 10. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
 11. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
 12. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+
+## 7. 前端常见页面调用流程
+
+### 7.1 应用启动流程
+
+1. `GET /api/v1/setup/status`
+2. 如果 `setup_required=true`：进入初始化页，提交 `POST /api/v1/setup/init`
+3. 如果已初始化但没有本地 token：进入登录页，提交 `POST /api/v1/auth/login`
+4. 登录成功保存：
+   - `tokens.access_token`
+   - `tokens.refresh_token`
+   - `user`
+5. 进入主应用后调用 `GET /api/v1/auth/me` 刷新当前用户与 `capabilities`
+
+### 7.2 文件管理页推荐流程（VFS）
+
+1. 初始化目录树：`GET /api/v2/fs/list?path=/`
+2. 点击目录：`GET /api/v2/fs/list?path=<item.path>`
+3. 新建目录：`POST /api/v2/fs/mkdir`
+4. 上传文件：
+   - `POST /api/v1/upload/init`，传 `target_virtual_parent_path=<current_path>`
+   - local：`PUT /api/v1/upload/chunk` 后 `POST /api/v1/upload/finish`
+   - S3：按 `part_instructions` 直传后 `POST /api/v1/upload/finish`
+5. 下载文件：
+   - `POST /api/v2/fs/access-url`
+   - 浏览器打开返回的 `url`
+6. 删除文件：
+   - `DELETE /api/v2/fs`，默认 `delete_mode=trash`
+7. 回收站：
+   - 如果页面是按 source 展示回收站，使用 `/api/v1/trash?source_id=<id>`
+
+### 7.3 存储源管理页流程
+
+1. 管理视图列表：`GET /api/v1/sources?view=admin`
+2. 创建前测试配置：`POST /api/v1/sources/test`
+3. 创建：`POST /api/v1/sources`
+4. 详情编辑：`GET /api/v1/sources/:id`
+5. 保存：`PUT /api/v1/sources/:id`
+6. 删除：`DELETE /api/v1/sources/:id`
+
+### 7.4 分享页流程
+
+1. 分享列表：`GET /api/v1/shares`
+2. 创建分享：`POST /api/v1/shares`
+3. 更新分享：`PUT /api/v1/shares/:id`
+4. 删除分享：`DELETE /api/v1/shares/:id`
+5. 公开分享页：
+   - 目录：`GET /s/:token?path=/&password=xxx`
+   - 文件：直接打开 `/s/:token?password=xxx`
+
+### 7.5 管理权限渲染建议
+
+前端按钮显示建议以 capability 为准：
+
+| 页面动作 | capability |
+|---|---|
+| 查看系统统计 | `system.stats.read` |
+| 查看系统配置 | `system.config.read` |
+| 修改系统配置 | `system.config.write` |
+| 查看用户 | `user.read` |
+| 创建用户 | `user.create` + `user.role.assign` |
+| 更新用户 | `user.update` + `user.role.assign` + `user.lock` |
+| 重置密码 | `user.password.reset` |
+| 撤销用户令牌 | `user.tokens.revoke` |
+| 查看 ACL | `acl.read` |
+| 管理 ACL | `acl.manage` |
+| 查看 source 管理列表/详情 | `source.read` |
+| 测试 source | `source.test` |
+| 创建 source | `source.create` |
+| 更新 source | `source.update` |
+| 删除 source | `source.delete` |
+| 查看审计 | `audit.read` |

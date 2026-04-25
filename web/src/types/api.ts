@@ -255,6 +255,9 @@ export interface UploadSession {
   status: 'pending' | 'uploading' | 'completed' | 'canceled' | 'expired';
   is_fast_upload: boolean;
   expires_at: string;
+  target_virtual_parent_path?: string;
+  resolved_source_id?: number;
+  resolved_inner_parent_path?: string;
 }
 
 export interface UploadInitRequest {
@@ -264,6 +267,7 @@ export interface UploadInitRequest {
   file_size: number;
   file_hash: string;
   last_modified_at?: string;
+  target_virtual_parent_path?: string;
 }
 
 export interface PartInstruction {
@@ -333,6 +337,9 @@ export interface DownloadTask {
     file_path: string | null;
     source_id: number;
   };
+  save_virtual_path?: string;
+  resolved_source_id?: number;
+  resolved_inner_save_path?: string;
 }
 
 export interface CreateTaskRequest {
@@ -340,6 +347,7 @@ export interface CreateTaskRequest {
   url: string;
   source_id?: number;
   save_path?: string;
+  target_virtual_save_path?: string;
 }
 
 // System
@@ -381,6 +389,7 @@ export interface TrashItem {
   size: number;
   deleted_at: string;
   created_at: string;
+  original_virtual_path?: string;
 }
 
 // Share
@@ -394,6 +403,9 @@ export interface Share {
   has_password: boolean;
   expires_at: string | null;
   created_at: string;
+  target_virtual_path?: string;
+  resolved_source_id?: number;
+  resolved_inner_path?: string;
 }
 
 export interface CreateShareRequest {
@@ -458,4 +470,85 @@ export interface CreateAclRuleRequest {
     share: boolean;
   };
   inherit_to_children: boolean;
+}
+
+// V2 Virtual Filesystem
+export interface VFSItem {
+  name: string;
+  path: string;
+  parent_path: string;
+  source_id: number | null;
+  entry_kind: 'file' | 'directory';
+  is_virtual: boolean;
+  is_mount_point: boolean;
+  size: number;
+  mime_type: string;
+  extension: string;
+  modified_at: string;
+  created_at: string;
+  etag: string;
+  can_preview: boolean;
+  can_download: boolean;
+  can_delete: boolean;
+  thumbnail_url: string | null;
+}
+
+export interface VFSListResult {
+  items: VFSItem[];
+  current_path: string;
+}
+
+export interface VFSAccessUrlRequest {
+  path: string;
+  purpose?: 'preview' | 'download';
+  disposition?: 'inline' | 'attachment';
+  expires_in?: number;
+}
+
+// System
+export interface SystemStats {
+  total_users: number;
+  total_sources: number;
+  total_files: number;
+  total_bytes: number;
+  active_tasks: number;
+  total_shares: number;
+}
+
+// Audit
+export interface AuditLog {
+  id: number;
+  occurred_at: string;
+  actor: {
+    user_id: number;
+    username: string;
+    role_key: string;
+  };
+  request: {
+    request_id: string;
+    entrypoint: string;
+    client_ip: string;
+    user_agent: string;
+    method: string;
+    path: string;
+  };
+  target: {
+    source_id: number;
+    virtual_path: string;
+  };
+  resource_type: string;
+  action: string;
+  result: string;
+  summary: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  detail?: Record<string, unknown>;
+}
+
+export interface AuditLogListResponse {
+  items: AuditLog[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }

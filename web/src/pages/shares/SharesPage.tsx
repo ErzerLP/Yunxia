@@ -18,6 +18,7 @@ import {
   File,
   X,
   Copy,
+  Pencil,
 } from 'lucide-react'
 import { formatDate, getFileIconClass } from '@/utils'
 import { cn } from '@/utils'
@@ -48,6 +49,135 @@ function ShareIcon({ share }: { share: Share }) {
         share.is_dir ? 'text-primary' : 'text-muted-foreground'
       )}
     />
+  )
+}
+
+function EditShareModal({
+  isOpen,
+  onClose,
+  onSuccess,
+  share,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  onSuccess: () => void
+  share: Share | null
+}) {
+  const [expiresIn, setExpiresIn] = useState('')
+  const [password, setPassword] = useState('')
+  const [removePassword, setRemovePassword] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const { addToast } = useUIStore()
+
+  useEffect(() => {
+    if (isOpen && share) {
+      setExpiresIn('')
+      setPassword('')
+      setRemovePassword(false)
+    }
+  }, [isOpen, share])
+
+  if (!isOpen || !share) return null
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsSubmitting(true)
+    try {
+      const data: { expires_in?: number; password?: string | null } = {}
+      const exp = parseInt(expiresIn, 10)
+      if (expiresIn && !isNaN(exp) && exp > 0) {
+        data.expires_in = exp
+      }
+      if (removePassword) {
+        data.password = null
+      } else if (password.trim()) {
+        data.password = password.trim()
+      }
+      await shareApi.update(share.id, data)
+      addToast('分享已更新', 'success')
+      onSuccess()
+      onClose()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '更新失败'
+      addToast(msg, 'error')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-card border border-border rounded-lg shadow-xl">
+        <div className="flex items-center justify-between px-4 h-12 border-b border-border">
+          <h3 className="font-medium text-foreground flex items-center gap-2">
+            <Pencil className="w-4 h-4" />
+            编辑分享
+          </h3>
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">名称</label>
+            <p className="text-sm text-foreground px-3 py-2 rounded-md border border-border bg-muted/50">
+              {share.name}
+            </p>
+          </div>
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">新的有效期（秒，可选）</label>
+            <input
+              type="number"
+              value={expiresIn}
+              onChange={(e) => setExpiresIn(e.target.value)}
+              placeholder="86400"
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-muted-foreground mb-1 block">新密码（可选）</label>
+            <input
+              type="text"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="留空表示不修改"
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          {share.has_password && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={removePassword}
+                onChange={(e) => setRemovePassword(e.target.checked)}
+                className="rounded border-border"
+              />
+              <span className="text-sm text-foreground">移除密码</span>
+            </label>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className={cn(
+                'px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors',
+                isSubmitting && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              {isSubmitting ? '保存中...' : '保存'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   )
 }
 
@@ -192,6 +322,7 @@ export function SharesPage() {
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
   const { addToast } = useUIStore()
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<Share | null>(null)
   const canManageAll = useHasCapability('share.manage_all')
 
   useEffect(() => {
@@ -286,6 +417,15 @@ export function SharesPage() {
                   >
                     <Copy className="w-4 h-4" />
                   </button>
+                  {canManageAll && (
+                    <button
+                      onClick={() => setEditTarget(share)}
+                      className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+                      title="编辑"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                  )}
                   <button
                     onClick={() => handleDelete(share.id)}
                     className="p-1.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
@@ -307,6 +447,14 @@ export function SharesPage() {
           queryClient.invalidateQueries({ queryKey: ['shares'] })
           addToast('分享创建成功', 'success')
         }}
+      />
+      <EditShareModal
+        isOpen={!!editTarget}
+        onClose={() => setEditTarget(null)}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['shares'] })
+        }}
+        share={editTarget}
       />
     </div>
   )

@@ -1,17 +1,20 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { FolderOpen, HardDrive, Download, Trash2, Link, Settings, Menu, ChevronLeft, Users } from 'lucide-react'
+import { FolderOpen, HardDrive, Download, Trash2, Link, Settings, Menu, ChevronLeft, Users, FolderTree, Shield, ScrollText } from 'lucide-react'
 import { useAuthStore } from '@/stores/authStore'
 import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 const navItems = [
   { id: 'files', label: '文件', icon: FolderOpen, path: '/files' },
+  { id: 'vfs', label: '虚拟目录', icon: FolderTree, path: '/vfs' },
   { id: 'sources', label: '存储源', icon: HardDrive, path: '/sources', capability: 'source.read' },
   { id: 'tasks', label: '离线下载', icon: Download, path: '/tasks', capability: 'task.read_all' },
   { id: 'trash', label: '回收站', icon: Trash2, path: '/trash' },
   { id: 'shares', label: '分享', icon: Link, path: '/shares', capability: 'share.read_all' },
   { id: 'settings', label: '设置', icon: Settings, path: '/settings', capability: 'system.config.read' },
   { id: 'users', label: '用户', icon: Users, path: '/users', capability: 'user.read' },
+  { id: 'acl', label: 'ACL', icon: Shield, path: '/acl', capability: 'acl.read' },
+  { id: 'audit', label: '审计', icon: ScrollText, path: '/audit', capability: 'audit.read' },
 ]
 
 export function Sidebar() {
