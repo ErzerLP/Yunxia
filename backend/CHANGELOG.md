@@ -331,8 +331,10 @@
 
 - 新增 `ACLAuthorizer`，开始把 ACL 从“可配置”推进到“真实生效”
 - 当前运行时判定语义：
-  - `admin` 直接放行
-  - `multi_user_enabled=false` 时普通用户继续放行
+  - `super_admin` 保留 runtime ACL bypass
+  - `admin / operator / user` 进入 ACL 判定
+  - `multi_user_enabled=false` 且该 source 没有 ACL 规则时普通用户继续放行
+  - 一旦 source 存在显式 ACL 规则，普通用户即进入 ACL 判定，避免配置了读权限但写操作仍被放行
   - `multi_user_enabled=true` 时普通用户进入 ACL 判定
   - 当前默认策略为：未命中规则即拒绝
   - 当前匹配顺序为：`priority desc, id asc`
@@ -813,6 +815,18 @@
   - `backend/.env.example` 补充该变量说明。
 - 目的：
   - 让 Linux 测试机上通过本地代理解除网络限制后，仓库原生 Compose 构建流程可以继续完成。
+
+#### 14.8 ACL 显式规则生效修正
+
+- 问题现象：
+  - 在默认 `multi_user_enabled=false` 状态下，即使管理员已经为普通用户创建了显式 ACL 规则，运行时仍会整体 bypass ACL。
+  - 表现为普通用户仅被授予目录读取权限后，仍可在该目录下执行 `mkdir` 等写操作。
+- 修正：
+  - ACL 判定器现在会先加载 source 维度规则。
+  - 仅当 `multi_user_enabled=false` 且该 source 没有任何 ACL 规则时才保留单用户兼容放行。
+  - 一旦存在显式 ACL 规则，普通用户会按规则进入默认拒绝判定；`super_admin` 仍保留 runtime ACL bypass。
+- 新增回归测试：
+  - `TestVFSMkdirDeniedWhenUserOnlyHasReadACL`
 
 ---
 

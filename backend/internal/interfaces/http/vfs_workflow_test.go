@@ -244,6 +244,38 @@ func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
 	}
 }
 
+func TestVFSMkdirDeniedWhenUserOnlyHasReadACL(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, _ := bootstrapAdmin(t, engine)
+
+	sourceID := createLocalSourceWithMountForTest(t, engine, adminToken, "e2e-root", "/")
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/mkdir", map[string]any{
+		"parent_path": "/",
+		"name":        "e2e-folder",
+	}, adminToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin mkdir expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "e2e-reader", "strong-password-123")
+	createACLRuleForTest(t, engine, adminToken, sourceID, userID, "/e2e-folder", map[string]any{
+		"read":   true,
+		"write":  false,
+		"delete": false,
+		"share":  false,
+	}, "allow", 100, true)
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/mkdir", map[string]any{
+		"parent_path": "/e2e-folder",
+		"name":        "should-not-create",
+	}, userToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("read-only user mkdir expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "ACL_DENIED")
+}
+
 func TestVFSMkdirRejectsPureVirtualParent(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, _ := bootstrapAdmin(t, engine)

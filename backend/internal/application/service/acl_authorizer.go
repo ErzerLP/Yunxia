@@ -129,19 +129,19 @@ func (a *ACLAuthorizer) newEvaluator(ctx context.Context, sourceID uint) (*aclEv
 	if auth.RoleKey == permission.RoleSuperAdmin {
 		return &aclEvaluator{bypass: true}, nil
 	}
-	cfg, err := a.systemConfigRepo.Get(ctx)
-	if err != nil {
-		if errors.Is(err, domainrepo.ErrNotFound) {
-			return &aclEvaluator{bypass: true}, nil
-		}
-		return nil, err
-	}
-	if !cfg.MultiUserEnabled {
-		return &aclEvaluator{bypass: true}, nil
-	}
 	rules, err := a.aclRepo.List(ctx, domainrepo.ACLRuleFilter{SourceID: sourceID})
 	if err != nil {
 		return nil, err
+	}
+	cfg, err := a.systemConfigRepo.Get(ctx)
+	if err != nil {
+		if errors.Is(err, domainrepo.ErrNotFound) {
+			return &aclEvaluator{bypass: len(rules) == 0}, nil
+		}
+		return nil, err
+	}
+	if !cfg.MultiUserEnabled && len(rules) == 0 {
+		return &aclEvaluator{bypass: true}, nil
 	}
 	mountPath := "/"
 	if a.sourceRepo != nil {
