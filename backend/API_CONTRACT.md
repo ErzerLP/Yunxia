@@ -547,7 +547,7 @@ S3 finish Body 示例：
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
 | GET | `/tasks` | Bearer | - | 200，`{items[]}` |
-| POST | `/tasks` | Bearer | `type,url,source_id,save_path` | 202，`{task}` |
+| POST | `/tasks` | Bearer | `type,url,target_virtual_parent_path`；兼容 `type,url,source_id,save_path` | 202，`{task}` |
 | GET | `/tasks/:id` | Bearer | path: `id` | 200，**直接返回 `DownloadTaskView`** |
 | POST | `/tasks/:id/pause` | Bearer | path: `id` | 200，`{id,status}` |
 | POST | `/tasks/:id/resume` | Bearer | path: `id` | 200，`{id,status}` |
@@ -555,8 +555,15 @@ S3 finish Body 示例：
 
 补充：
 
-- `save_path` 入参仍是 **source 内部路径**，不是虚拟目录路径
+- 推荐新建任务时传 `target_virtual_parent_path`，语义是“统一虚拟目录中的目标父目录”，后端会解析到具体挂载存储源
+- 兼容旧模式：不传 `target_virtual_parent_path` 时，继续使用 `source_id + save_path`
+- 旧模式下 `save_path` 是 **source 内部目标父目录**，不是统一虚拟目录路径
+- 下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
+  - local 目标：从 staging move/copy 到真实物理路径
+  - S3 目标：从 staging 上传到对应对象 key
+  - staging 本地物理路径不会返回给前端
 - 返回体当前会补充 VFS 快照字段：
+  - `target_virtual_parent_path`
   - `save_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_save_path`
@@ -742,6 +749,7 @@ S3 finish Body 示例：
   "status": "pending",
   "source_id": 1,
   "save_path": "/downloads",
+  "target_virtual_parent_path": "/local/downloads",
   "save_virtual_path": "/local/downloads",
   "resolved_source_id": 1,
   "resolved_inner_save_path": "/downloads",
@@ -924,11 +932,13 @@ S3 finish Body 示例：
 5. `DELETE /api/v1/upload/sessions/:upload_id` 返回的是 `{upload_id,canceled}`，不是空对象。
 6. `DELETE /api/v1/acl/rules/:id` 返回的是 `{}`，不是 `{deleted,id}`。
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
-8. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
-9. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
-10. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
-11. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
-12. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
+9. 离线下载不会把 Aria2 直接指向目标源目录，而是先落后端本地 staging，完成后由后端导入 local / S3。
+10. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
+11. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
+12. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
+13. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
+14. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
 
 ## 7. 前端常见页面调用流程
 

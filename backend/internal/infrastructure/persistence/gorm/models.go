@@ -87,27 +87,29 @@ type UploadSessionModel struct {
 
 // DownloadTaskModel 表示下载任务表。
 type DownloadTaskModel struct {
-	ID                    uint    `gorm:"primaryKey"`
-	UserID                uint    `gorm:"index;not null;default:0"`
-	Type                  string  `gorm:"size:32;not null"`
-	Status                string  `gorm:"size:32;not null"`
-	SourceID              uint    `gorm:"index;not null"`
-	SavePath              string  `gorm:"size:1024;not null"`
-	SaveVirtualPath       string  `gorm:"size:1024;not null;default:''"`
-	ResolvedSourceID      uint    `gorm:"index;not null;default:0"`
-	ResolvedInnerSavePath string  `gorm:"size:1024;not null;default:''"`
-	DisplayName           string  `gorm:"size:255;not null"`
-	SourceURL             string  `gorm:"type:text;not null"`
-	ExternalID            string  `gorm:"size:128"`
-	Progress              float64 `gorm:"not null;default:0"`
-	DownloadedBytes       int64   `gorm:"not null;default:0"`
-	TotalBytes            *int64
-	SpeedBytes            int64 `gorm:"not null;default:0"`
-	ETASeconds            *int64
-	ErrorMessage          *string `gorm:"type:text"`
-	FinishedAt            *time.Time
-	CreatedAt             time.Time `gorm:"not null"`
-	UpdatedAt             time.Time `gorm:"not null"`
+	ID                      uint    `gorm:"primaryKey"`
+	UserID                  uint    `gorm:"index;not null;default:0"`
+	Type                    string  `gorm:"size:32;not null"`
+	Status                  string  `gorm:"size:32;not null"`
+	SourceID                uint    `gorm:"index;not null"`
+	SavePath                string  `gorm:"size:1024;not null"`
+	TargetVirtualParentPath string  `gorm:"size:1024;not null;default:''"`
+	SaveVirtualPath         string  `gorm:"size:1024;not null;default:''"`
+	ResolvedSourceID        uint    `gorm:"index;not null;default:0"`
+	ResolvedInnerSavePath   string  `gorm:"size:1024;not null;default:''"`
+	StagingDir              string  `gorm:"size:1024;not null;default:''"`
+	DisplayName             string  `gorm:"size:255;not null"`
+	SourceURL               string  `gorm:"type:text;not null"`
+	ExternalID              string  `gorm:"size:128"`
+	Progress                float64 `gorm:"not null;default:0"`
+	DownloadedBytes         int64   `gorm:"not null;default:0"`
+	TotalBytes              *int64
+	SpeedBytes              int64 `gorm:"not null;default:0"`
+	ETASeconds              *int64
+	ErrorMessage            *string `gorm:"type:text"`
+	FinishedAt              *time.Time
+	CreatedAt               time.Time `gorm:"not null"`
+	UpdatedAt               time.Time `gorm:"not null"`
 }
 
 // TrashItemModel 表示回收站元数据表。

@@ -407,6 +407,209 @@ func TestTaskServiceCreatePersistsOwnerID(t *testing.T) {
 	}
 }
 
+func TestTaskCreateDownloadsIntoStagingAndImportsCompletedLocalFile(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "本地下载目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "archive.zip",
+		content:  []byte("downloaded archive"),
+	}
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(stagingRoot))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/archive.zip",
+		SourceID: source.ID,
+		SavePath: "/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if downloader.addDir == "/downloads" || filepath.Dir(downloader.addDir) != stagingRoot {
+		t.Fatalf("expected downloader dir under staging root %q, got %q", stagingRoot, downloader.addDir)
+	}
+	stored, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("taskRepo.FindByID() error = %v", err)
+	}
+	if stored.StagingDir != downloader.addDir {
+		t.Fatalf("expected stored staging dir %q, got %+v", downloader.addDir, stored)
+	}
+
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected imported task completed, got %+v", got)
+	}
+	targetPath := filepath.Join(basePath, "downloads", "archive.zip")
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("expected imported file at %s: %v", targetPath, err)
+	}
+	if string(content) != "downloaded archive" {
+		t.Fatalf("unexpected imported content %q", content)
+	}
+	if _, err := os.Stat(downloader.addDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected staging dir removed after import, stat err=%v", err)
+	}
+}
+
+func TestTaskCreateSupportsNonLocalTargetByImportDriver(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	source := &entity.StorageSource{
+		Name:       "S3 下载目标",
+		DriverType: "s3",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/remote",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "episode01.mkv",
+		content:  []byte("episode-content"),
+	}
+	importer := &recordingTaskImportDriver{}
+	svc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		downloader,
+		WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")),
+		WithTaskImportDriver("s3", importer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/episode01.mkv",
+		SourceID: source.ID,
+		SavePath: "/shows",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := svc.Get(ctx, created.ID); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(importer.calls) != 1 {
+		t.Fatalf("expected one import call, got %+v", importer.calls)
+	}
+	call := importer.calls[0]
+	if call.targetPath != "/shows/episode01.mkv" {
+		t.Fatalf("expected remote target /shows/episode01.mkv, got %+v", call)
+	}
+	if string(call.content) != "episode-content" {
+		t.Fatalf("unexpected imported remote content %q", call.content)
+	}
+}
+
+func TestTaskCreateAcceptsTargetVirtualParentPath(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "VFS 下载目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/media",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "movie.mkv",
+		content:  []byte("movie-content"),
+	}
+	vfsSvc := NewVFSService(sourceRepo)
+	svc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		downloader,
+		WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")),
+		WithTaskVFSResolver(vfsSvc),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:                    "download",
+		URL:                     "https://example.com/movie.mkv",
+		TargetVirtualParentPath: "/media/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.SourceID != source.ID ||
+		created.SavePath != "/downloads" ||
+		created.TargetVirtualParentPath != "/media/downloads" ||
+		created.SaveVirtualPath != "/media/downloads" ||
+		created.ResolvedSourceID != source.ID ||
+		created.ResolvedInnerSavePath != "/downloads" {
+		t.Fatalf("unexpected resolved task view = %+v", created)
+	}
+
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected task completed, got %+v", got)
+	}
+	content, err := os.ReadFile(filepath.Join(basePath, "downloads", "movie.mkv"))
+	if err != nil {
+		t.Fatalf("expected imported file through vfs target: %v", err)
+	}
+	if string(content) != "movie-content" {
+		t.Fatalf("unexpected imported content %q", content)
+	}
+}
+
 func TestUserServiceManagementLifecycle(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -839,6 +1042,70 @@ func (taskServiceTestDownloader) Resume(context.Context, string) error {
 }
 
 func (taskServiceTestDownloader) Remove(context.Context, string) error {
+	return nil
+}
+
+type completedWritingDownloader struct {
+	filename string
+	content  []byte
+	addDir   string
+}
+
+func (d *completedWritingDownloader) AddURI(_ context.Context, _ string, dir string) (string, error) {
+	d.addDir = dir
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, d.filename), d.content, 0o644); err != nil {
+		return "", err
+	}
+	return "gid-completed", nil
+}
+
+func (d *completedWritingDownloader) TellStatus(context.Context, string) (*DownloadStatus, error) {
+	size := int64(len(d.content))
+	return &DownloadStatus{
+		Status:         "completed",
+		CompletedBytes: size,
+		TotalBytes:     &size,
+		DisplayName:    d.filename,
+	}, nil
+}
+
+func (d *completedWritingDownloader) Pause(context.Context, string) error {
+	return nil
+}
+
+func (d *completedWritingDownloader) Resume(context.Context, string) error {
+	return nil
+}
+
+func (d *completedWritingDownloader) Remove(context.Context, string) error {
+	return nil
+}
+
+type recordingTaskImportDriver struct {
+	calls []recordingTaskImportCall
+}
+
+type recordingTaskImportCall struct {
+	sourceID   uint
+	targetPath string
+	localPath  string
+	content    []byte
+}
+
+func (d *recordingTaskImportDriver) ImportFile(_ context.Context, source *entity.StorageSource, targetPath string, localPath string) error {
+	content, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	d.calls = append(d.calls, recordingTaskImportCall{
+		sourceID:   source.ID,
+		targetPath: targetPath,
+		localPath:  localPath,
+		content:    content,
+	})
 	return nil
 }
 

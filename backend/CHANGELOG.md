@@ -713,7 +713,7 @@
   - `Invoke-RestMethod -Method Post http://127.0.0.1:6800/jsonrpc`（`aria2.getVersion`）
   - `cd backend && go test ./...`
 - 当前已知限制：
-  - 当前后端仍不会把任务 `save_path` 自动映射为默认 local source 的物理路径；若希望 Yunxia 立即浏览 Aria2 下载结果，仍需手动创建 `base_path=/downloads` 的 local source
+  - 该限制已在 `14.9` 中解除：离线下载现在先进入本地 staging，再由后端导入目标挂载源
 
 ### 14. 统一存储 / VFS 第一阶段落地
 
@@ -827,6 +827,35 @@
   - 一旦存在显式 ACL 规则，普通用户会按规则进入默认拒绝判定；`super_admin` 仍保留 runtime ACL bypass。
 - 新增回归测试：
   - `TestVFSMkdirDeniedWhenUserOnlyHasReadACL`
+
+#### 14.9 离线下载 staging 与目标存储源导入
+
+- 离线下载执行策略调整为：
+  - Aria2 只下载到后端本地 staging 目录
+  - 后端检测任务完成后，将 staging 文件导入目标挂载源
+  - 导入成功后清理该任务 staging 目录
+- local 目标导入：
+  - 同盘优先 `rename`
+  - 跨盘或 rename 失败时 fallback 为 copy + remove
+  - 目标文件已存在时拒绝覆盖
+- S3 目标导入：
+  - 新增 `S3Driver.ImportFile`
+  - 后端从 staging 读取文件并 `PutObject` 到 S3
+  - 目标对象已存在时拒绝覆盖
+- Task 数据结构新增：
+  - `target_virtual_parent_path`
+  - `staging_dir`（仅内部持久化，不返回前端）
+- `POST /api/v1/tasks` 现在支持两种目标指定方式：
+  - 推荐：`target_virtual_parent_path`
+  - 兼容：`source_id + save_path`
+- 后端启动时会注册后台同步 worker：
+  - 周期性刷新下载器状态
+  - 对完成任务执行导入
+- 新增回归验证：
+  - `TestTaskCreateDownloadsIntoStagingAndImportsCompletedLocalFile`
+  - `TestTaskCreateSupportsNonLocalTargetByImportDriver`
+  - `TestTaskCreateAcceptsTargetVirtualParentPath`
+  - `go test ./...`
 
 ---
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/url"
 	"os"
 	"path"
@@ -334,6 +335,50 @@ func (d *S3Driver) PresignDownload(ctx context.Context, source *entity.StorageSo
 	}
 
 	return presigned.URL, expiresAt, nil
+}
+
+// ImportFile 将本地暂存文件上传到 S3 指定路径。
+func (d *S3Driver) ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error {
+	cfg, err := ParseS3ConfigJSON(source.ConfigJSON)
+	if err != nil {
+		return err
+	}
+	key, err := buildS3ObjectKey(cfg, source.RootPath, targetPath)
+	if err != nil {
+		return err
+	}
+	client, _, err := d.clientFactory.New(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	_, err = client.HeadObject(ctx, &awss3.HeadObjectInput{
+		Bucket: aws.String(cfg.Bucket),
+		Key:    aws.String(key),
+	})
+	if err == nil {
+		return fs.ErrExist
+	}
+	if !errors.Is(mapS3NotFound(err), os.ErrNotExist) {
+		return err
+	}
+
+	file, err := os.Open(localPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	input := &awss3.PutObjectInput{
+		Bucket: aws.String(cfg.Bucket),
+		Key:    aws.String(key),
+		Body:   file,
+	}
+	if contentType := mime.TypeByExtension(path.Ext(targetPath)); contentType != "" {
+		input.ContentType = aws.String(contentType)
+	}
+	_, err = client.PutObject(ctx, input)
+	return err
 }
 
 // Delete 删除单个 S3 对象或伪目录。

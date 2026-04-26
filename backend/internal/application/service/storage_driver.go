@@ -152,6 +152,38 @@ func WithTaskACLAuthorizer(authorizer *ACLAuthorizer) TaskServiceOption {
 	}
 }
 
+// WithTaskStagingDir 设置离线下载的本地暂存根目录。
+func WithTaskStagingDir(dir string) TaskServiceOption {
+	return func(s *TaskService) {
+		if dir == "" {
+			return
+		}
+		s.stagingRoot = dir
+	}
+}
+
+// WithTaskImportDriver 注册下载完成后导入远端存储源的驱动。
+func WithTaskImportDriver(driverType string, driver TaskImportDriver) TaskServiceOption {
+	return func(s *TaskService) {
+		if driverType == "" || driver == nil {
+			return
+		}
+		if s.importDrivers == nil {
+			s.importDrivers = make(map[string]TaskImportDriver)
+		}
+		s.importDrivers[driverType] = driver
+	}
+}
+
+// WithTaskVFSResolver 注册 TaskService 使用的统一虚拟目录解析器。
+func WithTaskVFSResolver(resolver interface {
+	ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
+}) TaskServiceOption {
+	return func(s *TaskService) {
+		s.vfsResolver = resolver
+	}
+}
+
 // ShareServiceOption 定义 ShareService 的可选配置。
 type ShareServiceOption func(*ShareService)
 

@@ -128,6 +128,10 @@ func (h *TaskHandler) writeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, domainrepo.ErrNotFound):
 		httpresp.Error(c, http.StatusNotFound, "TASK_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrPathInvalid):
+		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrNoBackingStorage):
+		httpresp.Error(c, http.StatusConflict, "NO_BACKING_STORAGE", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrTaskInvalidState):
 		httpresp.Error(c, http.StatusConflict, "TASK_INVALID_STATE", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrACLDenied), errors.Is(err, appsvc.ErrPermissionDenied):

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -149,7 +151,11 @@ func main() {
 		downloadSvc,
 		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
+		appsvc.WithTaskStagingDir(filepath.Join(cfg.Storage.TempDir, "downloads")),
+		appsvc.WithTaskImportDriver("s3", s3Driver),
+		appsvc.WithTaskVFSResolver(vfsSvc),
 	)
+	go taskSvc.StartSyncWorker(context.Background(), 5*time.Second)
 	shareSvc := appsvc.NewShareService(
 		shareRepo,
 		sourceRepo,

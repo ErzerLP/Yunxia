@@ -167,17 +167,18 @@ func taskAuditView(task *entity.DownloadTask) map[string]any {
 		return nil
 	}
 	return map[string]any{
-		"id":                       task.ID,
-		"user_id":                  task.UserID,
-		"type":                     task.Type,
-		"status":                   task.Status,
-		"source_id":                task.SourceID,
-		"save_path":                task.SavePath,
-		"save_virtual_path":        task.SaveVirtualPath,
-		"resolved_source_id":       task.ResolvedSourceID,
-		"resolved_inner_save_path": task.ResolvedInnerSavePath,
-		"display_name":             task.DisplayName,
-		"source_url":               task.SourceURL,
+		"id":                         task.ID,
+		"user_id":                    task.UserID,
+		"type":                       task.Type,
+		"status":                     task.Status,
+		"source_id":                  task.SourceID,
+		"save_path":                  task.SavePath,
+		"target_virtual_parent_path": task.TargetVirtualParentPath,
+		"save_virtual_path":          task.SaveVirtualPath,
+		"resolved_source_id":         task.ResolvedSourceID,
+		"resolved_inner_save_path":   task.ResolvedInnerSavePath,
+		"display_name":               task.DisplayName,
+		"source_url":                 task.SourceURL,
 	}
 }
 
@@ -332,6 +333,8 @@ func taskErrorCode(err error) string {
 		return "SOURCE_DRIVER_UNSUPPORTED"
 	case errors.Is(err, ErrTaskInvalidState):
 		return "TASK_INVALID_STATE"
+	case errors.Is(err, ErrNoBackingStorage):
+		return "NO_BACKING_STORAGE"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:
