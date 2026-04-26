@@ -593,6 +593,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", fakeS3),
 		appsvc.WithVFSFileOperator(fileSvc),
+		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
 	)
 	uploadSvc := appsvc.NewUploadService(
 		sourceRepo,

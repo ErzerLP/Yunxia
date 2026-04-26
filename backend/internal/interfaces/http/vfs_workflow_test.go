@@ -276,6 +276,51 @@ func TestVFSMkdirDeniedWhenUserOnlyHasReadACL(t *testing.T) {
 	assertFailureCode(t, rec.Body.Bytes(), "ACL_DENIED")
 }
 
+func TestVFSListFiltersUnauthorizedMountedChildren(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, _ := bootstrapAdmin(t, engine)
+
+	sourceID := createLocalSourceWithMountForTest(t, engine, adminToken, "acl-list-root", "/acl-list-local")
+	uploadLocalObjectForTest(t, engine, adminToken, sourceID, "/", "visible-check-20260426.txt", []byte("leak"))
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/mkdir", map[string]any{
+		"parent_path": "/acl-list-local",
+		"name":        "mount-check-folder",
+	}, adminToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin vfs mkdir expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "vfs-list-reader", "strong-password-123")
+	createACLRuleForTest(t, engine, adminToken, sourceID, userID, "/mount-check-folder", map[string]any{
+		"read":   true,
+		"write":  false,
+		"delete": false,
+		"share":  false,
+	}, "allow", 100, true)
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/acl-list-local", nil, userToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	names := collectMapNames(listed.Items)
+	if !containsString(names, "mount-check-folder") {
+		t.Fatalf("expected authorized folder visible, got %+v", listed.Items)
+	}
+	if containsString(names, "visible-check-20260426.txt") {
+		t.Fatalf("expected unauthorized file hidden from vfs list, got %+v", listed.Items)
+	}
+	for _, item := range listed.Items {
+		if item["name"] != "mount-check-folder" {
+			continue
+		}
+		if item["can_delete"] == true || item["can_download"] == true {
+			t.Fatalf("expected read-only directory capabilities constrained, got %+v", item)
+		}
+	}
+}
+
 func TestVFSMkdirRejectsPureVirtualParent(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, _ := bootstrapAdmin(t, engine)

@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -135,6 +136,7 @@ func main() {
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", s3Driver),
 		appsvc.WithVFSFileOperator(fileSvc),
+		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
 	)
 	uploadSvc := appsvc.NewUploadService(
 		sourceRepo,
@@ -151,7 +153,7 @@ func main() {
 		downloadSvc,
 		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
-		appsvc.WithTaskStagingDir(filepath.Join(cfg.Storage.TempDir, "downloads")),
+		appsvc.WithTaskStagingDir(taskStagingRoot(cfg)),
 		appsvc.WithTaskImportDriver("s3", s3Driver),
 		appsvc.WithTaskVFSResolver(vfsSvc),
 	)
@@ -225,4 +227,11 @@ func prepareDirectories(cfg appcfg.Config) error {
 		}
 	}
 	return nil
+}
+
+func taskStagingRoot(cfg appcfg.Config) string {
+	if strings.TrimSpace(cfg.Aria2.DownloadDir) != "" {
+		return slashpath.Join(filepath.ToSlash(cfg.Aria2.DownloadDir), "staging")
+	}
+	return filepath.Join(cfg.Storage.TempDir, "downloads")
 }

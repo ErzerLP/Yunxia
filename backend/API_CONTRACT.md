@@ -933,12 +933,13 @@ S3 finish Body 示例：
 6. `DELETE /api/v1/acl/rules/:id` 返回的是 `{}`，不是 `{deleted,id}`。
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
 8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
-9. 离线下载不会把 Aria2 直接指向目标源目录，而是先落后端本地 staging，完成后由后端导入 local / S3。
-10. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
-11. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
-12. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
-13. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
-14. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+9. 离线下载不会把 Aria2 直接指向目标源目录，而是先落 backend 与 aria2 共享的 staging，完成后由后端导入 local / S3。
+10. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
+11. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
+12. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
+13. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
+14. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
+15. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
 
 ## 7. 前端常见页面调用流程
 

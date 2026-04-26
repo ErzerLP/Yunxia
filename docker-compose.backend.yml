@@ -32,6 +32,8 @@ services:
       YUNXIA_JWT_SECRET: "${YUNXIA_JWT_SECRET:-change-me-in-production}"
       YUNXIA_ARIA2_RPC_URL: "http://aria2:6800/jsonrpc"
       YUNXIA_ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:-}"
+      # 必须与 aria2 容器中的下载目录一致，并通过 backend-downloads 卷共享。
+      YUNXIA_ARIA2_DOWNLOAD_DIR: "${YUNXIA_ARIA2_DOWNLOAD_DIR:-/downloads}"
     volumes:
       - backend-data:/app/data
       - backend-downloads:/downloads
@@ -65,7 +67,7 @@ services:
       ARIA2_RPC_SECRET: "${ARIA2_RPC_SECRET:-}"
       ARIA2_RPC_PORT: "6800"
       ARIA2_LISTEN_PORT: "${ARIA2_LISTEN_PORT:-6888}"
-      ARIA2_DOWNLOAD_DIR: "/downloads"
+      ARIA2_DOWNLOAD_DIR: "${YUNXIA_ARIA2_DOWNLOAD_DIR:-/downloads}"
       ARIA2_CONF_DIR: "/config"
       ARIA2_MAX_CONCURRENT_DOWNLOADS: "${ARIA2_MAX_CONCURRENT_DOWNLOADS:-5}"
     volumes:

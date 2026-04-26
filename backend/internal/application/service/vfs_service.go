@@ -43,9 +43,10 @@ func (unsupportedVFSFileOperator) Delete(context.Context, appdto.DeleteFileReque
 
 // VFSService 提供统一虚拟目录树的路径解析能力。
 type VFSService struct {
-	registry    *MountRegistry
-	fileDrivers map[string]FileDriver
-	fileOp      vfsFileOperator
+	registry      *MountRegistry
+	fileDrivers   map[string]FileDriver
+	fileOp        vfsFileOperator
+	aclAuthorizer *ACLAuthorizer
 }
 
 // VFSServiceOption 定义 VFSService 的可选配置。
@@ -68,6 +69,13 @@ func WithVFSFileDriver(driverType string, driver FileDriver) VFSServiceOption {
 func WithVFSFileOperator(fileOp vfsFileOperator) VFSServiceOption {
 	return func(s *VFSService) {
 		s.fileOp = fileOp
+	}
+}
+
+// WithVFSACLAuthorizer 注册 VFSService 使用的 ACL 判定器。
+func WithVFSACLAuthorizer(authorizer *ACLAuthorizer) VFSServiceOption {
+	return func(s *VFSService) {
+		s.aclAuthorizer = authorizer
 	}
 }
 
@@ -226,6 +234,10 @@ func (s *VFSService) List(ctx context.Context, currentPath string) (*appdto.VFSL
 	}
 	if resolved.IsRealMount {
 		realItems, listErr := s.listMountedDirectory(ctx, normalizedCurrentPath, resolved)
+		if listErr != nil {
+			return nil, listErr
+		}
+		realItems, listErr = s.filterReadableVFSItems(ctx, resolved.Source.ID, realItems)
 		if listErr != nil {
 			return nil, listErr
 		}
@@ -443,6 +455,13 @@ func (s *VFSService) requireFileOperator() vfsFileOperator {
 		return unsupportedVFSFileOperator{}
 	}
 	return s.fileOp
+}
+
+func (s *VFSService) filterReadableVFSItems(ctx context.Context, sourceID uint, items []appdto.VFSItem) ([]appdto.VFSItem, error) {
+	if s.aclAuthorizer == nil {
+		return items, nil
+	}
+	return s.aclAuthorizer.FilterVFSItems(ctx, sourceID, items)
 }
 
 func normalizeVFSWriteError(err error) error {

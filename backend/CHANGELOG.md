@@ -857,6 +857,24 @@
   - `TestTaskCreateAcceptsTargetVirtualParentPath`
   - `go test ./...`
 
+#### 14.10 离线下载共享 staging 与 VFS ACL 列表过滤修正
+
+- 修正离线下载在 Docker Compose 部署下没有真正进入目标存储源的问题：
+  - 新增 `YUNXIA_ARIA2_DOWNLOAD_DIR`
+  - backend 与 aria2 共同使用 `backend-downloads:/downloads`
+  - Task staging 根目录改为 `${YUNXIA_ARIA2_DOWNLOAD_DIR}/staging`
+  - 避免 Aria2 将文件下载到只有 aria2 容器可见的位置，导致后端无法导入
+- 修正 VFS 列表越权展示问题：
+  - `VFSService.List` 现在会对真实挂载目录下的子项执行 ACL read 过滤
+  - 未授权文件不再出现在 `/api/v2/fs/list`
+  - 返回项的 `can_delete` 会按 delete 权限收敛
+- 新增回归验证：
+  - `TestTaskStagingRootUsesSharedAria2DownloadDir`
+  - `TestLoadReadsAria2DownloadDir`
+  - `TestVFSListFiltersUnauthorizedMountedChildren`
+  - `go test ./...`
+  - `docker compose -f docker-compose.backend.yml config`
+
 ---
 
 ## 维护约定

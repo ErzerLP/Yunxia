@@ -88,6 +88,36 @@ func (a *ACLAuthorizer) FilterFileItems(ctx context.Context, sourceID uint, item
 	return filtered, nil
 }
 
+// FilterVFSItems 按 read 权限过滤统一虚拟目录项。
+func (a *ACLAuthorizer) FilterVFSItems(ctx context.Context, sourceID uint, items []appdto.VFSItem) ([]appdto.VFSItem, error) {
+	evaluator, err := a.newEvaluator(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if evaluator.bypass {
+		return items, nil
+	}
+
+	filtered := make([]appdto.VFSItem, 0, len(items))
+	for _, item := range items {
+		allowed, allowErr := evaluator.allowVirtualPath(item.Path, ACLActionRead)
+		if allowErr != nil {
+			return nil, allowErr
+		}
+		if !allowed {
+			continue
+		}
+		deleteAllowed, allowErr := evaluator.allowVirtualPath(item.Path, ACLActionDelete)
+		if allowErr != nil {
+			return nil, allowErr
+		}
+		item.CanDelete = item.CanDelete && deleteAllowed
+		item.CanDownload = item.CanDownload && item.EntryKind == string(VirtualEntryKindFile)
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
+}
+
 // CanSeeSource 判定当前用户是否应在导航中看见该 source。
 func (a *ACLAuthorizer) CanSeeSource(ctx context.Context, sourceID uint) (bool, error) {
 	evaluator, err := a.newEvaluator(ctx, sourceID)
@@ -177,6 +207,41 @@ func (e *aclEvaluator) allowPath(pathValue string, action ACLAction) (bool, erro
 			continue
 		}
 		if !ruleMatchesPath(rule, normalizedPath, targetVirtualPath) {
+			continue
+		}
+		if !ruleContainsAction(rule, action) {
+			continue
+		}
+		return strings.TrimSpace(rule.Effect) == "allow", nil
+	}
+	return false, nil
+}
+
+func (e *aclEvaluator) allowVirtualPath(virtualPath string, action ACLAction) (bool, error) {
+	if e.bypass {
+		return true, nil
+	}
+	normalizedVirtualPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return false, ErrPathInvalid
+	}
+
+	innerPath := normalizedVirtualPath
+	if normalizedMountPath, mountErr := normalizeMountPath(e.mountPath); mountErr == nil && normalizedMountPath != "/" {
+		if !isSubPath(normalizedMountPath, normalizedVirtualPath) {
+			return false, nil
+		}
+		innerPath = strings.TrimPrefix(normalizedVirtualPath, normalizedMountPath)
+		if innerPath == "" {
+			innerPath = "/"
+		}
+	}
+
+	for _, rule := range e.rules {
+		if rule.SubjectType != "user" || rule.SubjectID != e.userID {
+			continue
+		}
+		if !ruleMatchesPath(rule, innerPath, normalizedVirtualPath) {
 			continue
 		}
 		if !ruleContainsAction(rule, action) {
