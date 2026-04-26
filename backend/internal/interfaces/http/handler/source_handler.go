@@ -166,6 +166,8 @@ func (h *SourceHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_DRIVER_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrConfigInvalid):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "CONFIG_INVALID", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrPathInvalid):
+		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceConnectionFailed):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_CONNECTION_FAILED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceNameConflict):

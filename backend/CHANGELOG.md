@@ -885,6 +885,18 @@
   - `TestTaskCompletedClearsRealtimeDownloadMetrics`
   - `TestTaskGetSanitizesPersistedCompletedRealtimeMetrics`
 
+#### 14.12 存储源路径参数错误响应修正
+
+- 修正创建 / 测试 / 更新 local 存储源时路径参数错误被映射为 500 的问题。
+- 当请求缺少 `config.base_path`，或 `root_path` / `mount_path` 等路径字段非法时：
+  - 返回 HTTP `400`
+  - 错误码为 `PATH_INVALID`
+- 明确 local 源语义：
+  - `config.base_path` 是物理宿主路径
+  - `root_path` 是源内逻辑根路径
+- 新增回归验证：
+  - `TestLocalSourceCreateInvalidPathReturnsClientError`
+
 ---
 
 ## 维护约定

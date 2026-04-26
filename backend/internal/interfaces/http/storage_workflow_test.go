@@ -1293,6 +1293,28 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 	}
 }
 
+func TestLocalSourceCreateInvalidPathReturnsClientError(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
+		"name":              "前端本地盘",
+		"driver_type":       "local",
+		"is_enabled":        true,
+		"is_webdav_exposed": false,
+		"webdav_read_only":  true,
+		"mount_path":        "/e2e-host-disk",
+		"root_path":         "/mnt/e2e-host-disk",
+		"sort_order":        10,
+		"config":            map[string]any{},
+		"secret_patch":      map[string]any{},
+	}, accessToken)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid local source expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "PATH_INVALID")
+}
+
 func TestLocalFileUploadAndDownloadLifecycle(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, sourceID := bootstrapAdmin(t, engine)
