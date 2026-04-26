@@ -182,17 +182,27 @@ function EditSourceModal({
 }
 
 function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const { addToast } = useUIStore()
   const [name, setName] = useState('')
   const [driverType, setDriverType] = useState<'local' | 's3'>('local')
-  const [rootPath, setRootPath] = useState('/data')
+  const [basePath, setBasePath] = useState('/data')
+  const [rootPath, setRootPath] = useState('/')
   const [mountPath, setMountPath] = useState('/')
   const [isWebDAVExposed, setIsWebDAVExposed] = useState(false)
   const [webDAVReadOnly, setWebDAVReadOnly] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
+    if (driverType === 'local' && !basePath.trim()) {
+      const message = '请填写本地硬盘路径 / base_path'
+      setCreateError(message)
+      addToast(message, 'error')
+      return
+    }
+    setCreateError(null)
     setIsSubmitting(true)
     try {
       await sourceApi.create({
@@ -203,12 +213,15 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
         webdav_read_only: driverType === 'local' ? webDAVReadOnly : true,
         mount_path: mountPath,
         root_path: rootPath,
-        config: {},
+        config: driverType === 'local' ? { base_path: basePath.trim() } : {},
+        secret_patch: {},
       })
       onSuccess()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '创建存储源失败'
+      setCreateError(message)
+      addToast(message, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -268,14 +281,33 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+          {driverType === 'local' && (
+            <div>
+              <label className="text-sm text-muted-foreground mb-1 block">本地硬盘路径 / base_path</label>
+              <input
+                type="text"
+                value={basePath}
+                onChange={(e) => setBasePath(e.target.value)}
+                placeholder="/mnt/e2e-host-disk"
+                className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                填容器内可访问的本地目录，例如 /mnt/e2e-host-disk。
+              </p>
+            </div>
+          )}
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">根路径</label>
+            <label className="text-sm text-muted-foreground mb-1 block">源内根路径 / root_path</label>
             <input
               type="text"
               value={rootPath}
               onChange={(e) => setRootPath(e.target.value)}
+              placeholder="/"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              通常保持为 /；这不是本地硬盘路径。
+            </p>
           </div>
           <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
@@ -311,6 +343,12 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
               只读访问
             </label>
           </div>
+          {createError && (
+            <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{createError}</span>
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -321,10 +359,10 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !name.trim()}
+              disabled={isSubmitting || !name.trim() || (driverType === 'local' && !basePath.trim())}
               className={cn(
                 'px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors',
-                (isSubmitting || !name.trim()) && 'opacity-50 cursor-not-allowed'
+                (isSubmitting || !name.trim() || (driverType === 'local' && !basePath.trim())) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isSubmitting ? '创建中...' : '创建'}

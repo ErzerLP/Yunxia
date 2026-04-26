@@ -166,6 +166,31 @@ assertIncludes(
   'webDAVReadOnly',
   '新增/编辑存储源需要提供 WebDAV 只读开关。',
 )
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  '本地硬盘路径 / base_path',
+  '添加本地存储源弹窗必须提供 config.base_path 输入项，不能让用户误把容器目录填到 root_path。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'base_path: basePath.trim()',
+  '创建 local 存储源必须把本地硬盘路径提交为 config.base_path。',
+)
+assertNotIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'config: {},',
+  '创建存储源不能无条件提交空 config，否则 local 源缺少 base_path 会失败。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'setCreateError',
+  '创建存储源失败必须在弹窗内展示可见错误提示。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  "addToast(message, 'error')",
+  '创建存储源失败必须弹出错误 toast，不能静默停留在弹窗。',
+)
 
 // Regression checks for offline task status, public share routing, and transient empty file views.
 assertIncludes(
