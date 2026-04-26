@@ -909,6 +909,24 @@
   - `TestLocalSourceCreateRejectsMissingBasePath`
   - `TestSourceCRUDAndNavigationLifecycle`
 
+#### 14.14 VFS ACL 根挂载过滤、本地只读源与任务错误清理
+
+- 修正多用户开启后 `/api/v2/fs/list?path=/` 会泄露未授权挂载点名称的问题。
+  - VFS 根目录和纯虚拟目录投影现在先按 `CanSeeSource` 过滤可见挂载源。
+  - 与 `/api/v1/sources?view=navigation` 的可见性保持一致。
+- 修正本地源实际不可写时的能力与错误表现：
+  - local / VFS 列表在父目录不可写时返回 `can_delete=false`。
+  - mkdir 等写操作命中只读本地源时返回 HTTP `403 SOURCE_READ_ONLY`，不再暴露底层 `read-only file system` 500。
+- 修正离线下载任务已完成但仍残留旧 `error_message` 的问题：
+  - 导入成功后清空任务错误信息。
+  - 历史 `completed` 任务响应层也会把 `error_message` 收敛为 `null`。
+- 新增 / 更新回归验证：
+  - `TestNavigationSourcesACLVisibility`
+  - `TestVFSListLocalReadOnlyDirectoryDisablesDeleteCapability`
+  - `TestFileMkdirReadOnlyLocalSourceReturnsSourceReadOnly`
+  - `TestTaskCompletedClearsStaleDownloaderErrorMessage`
+  - `TestTaskGetSanitizesPersistedCompletedErrorMessage`
+
 ---
 
 ## 维护约定

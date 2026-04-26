@@ -574,6 +574,7 @@ S3 finish Body 示例：
 - 普通用户默认仅能看到 / 操作自己的任务
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
+- `completed` 任务返回时 `error_message` 固定为 `null`；若导入失败，任务会转为 `failed` 并返回失败原因
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
 - 当前没有 `retry` 接口
 
@@ -640,6 +641,8 @@ S3 finish Body 示例：
 - `/fs/list` 可能返回：
   - 实际文件 / 目录
   - 由 mount 组合出来的纯虚拟目录节点
+- 多用户开启后，`/fs/list?path=/` 只投影当前用户可见的挂载源；未授权 source 的挂载点名称不会出现在根目录
+- 本地挂载目录探测为不可写时，列表项 `can_delete=false`；写操作返回 `403 SOURCE_READ_ONLY`
 - 纯虚拟目录上的写操作（mkdir / rename / move / copy / delete / upload init）如果没有唯一 backing storage，返回 `409 NO_BACKING_STORAGE`
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
 - `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`
@@ -886,6 +889,7 @@ S3 finish Body 示例：
 - `SOURCE_CONNECTION_FAILED`
 - `SOURCE_NAME_CONFLICT`
 - `SOURCE_IN_USE`
+- `SOURCE_READ_ONLY`
 - `CONFIG_INVALID`
 - `MOUNT_PATH_CONFLICT`
 - `PATH_INVALID`

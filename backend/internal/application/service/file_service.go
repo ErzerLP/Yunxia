@@ -37,6 +37,7 @@ type FileService struct {
 	userRepo      domainrepo.UserRepository
 	fileDrivers   map[string]FileDriver
 	trashItemRepo domainrepo.TrashItemRepository
+	localDirWritable func(string) bool
 	logger        *slog.Logger
 	auditRecorder *appaudit.Recorder
 }
@@ -60,6 +61,7 @@ func NewFileService(
 		authTokens:       authTokens,
 		userRepo:         userRepo,
 		fileDrivers:      make(map[string]FileDriver),
+		localDirWritable: probeLocalDirectoryWritable,
 		logger:           newServiceLogger("service.file"),
 	}
 	for _, option := range options {
@@ -95,6 +97,7 @@ func (s *FileService) List(ctx context.Context, query appdto.FileListQuery) (*ap
 		return nil, 0, 0, 0, 0, err
 	}
 
+	parentWritable := s.canWriteLocalDir(physicalPath)
 	items := make([]appdto.FileItem, 0, len(entries))
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".trash") || strings.HasPrefix(entry.Name(), ".system") {
@@ -109,7 +112,9 @@ func (s *FileService) List(ctx context.Context, query appdto.FileListQuery) (*ap
 		if virtualPath == "/" {
 			itemPath = "/" + entry.Name()
 		}
-		items = append(items, buildFileItem(source.ID, itemPath, info))
+		item := buildFileItem(source.ID, itemPath, info)
+		item.CanDelete = item.CanDelete && parentWritable
+		items = append(items, item)
 	}
 
 	sortFileItems(items, query.SortBy, query.SortOrder)
@@ -305,6 +310,9 @@ func (s *FileService) mkdirLocal(source *entity.StorageSource, req appdto.MkdirR
 	if !info.IsDir() {
 		return nil, ErrPathInvalid
 	}
+	if !s.canWriteLocalDir(parentPhysical) {
+		return nil, ErrSourceReadOnly
+	}
 
 	targetVirtual := path.Join(parentPath, req.Name)
 	if parentPath == "/" {
@@ -318,11 +326,18 @@ func (s *FileService) mkdirLocal(source *entity.StorageSource, req appdto.MkdirR
 		return nil, ErrFileAlreadyExists
 	}
 	if err := os.Mkdir(targetPhysical, 0o755); err != nil {
-		return nil, err
+		return nil, normalizeLocalWriteError(err)
 	}
 	targetInfo, _ := os.Stat(targetPhysical)
 	item := buildFileItem(source.ID, targetVirtual, targetInfo)
 	return &item, nil
+}
+
+func (s *FileService) canWriteLocalDir(dir string) bool {
+	if s.localDirWritable == nil {
+		return true
+	}
+	return s.localDirWritable(dir)
 }
 
 func (s *FileService) mkdirWithDriver(ctx context.Context, source *entity.StorageSource, req appdto.MkdirRequest) (*appdto.FileItem, error) {

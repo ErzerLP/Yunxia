@@ -87,6 +87,15 @@ func WithFileACLAuthorizer(authorizer *ACLAuthorizer) FileServiceOption {
 	}
 }
 
+// WithFileLocalDirWritable 覆盖本地目录可写探测能力，主要用于测试只读挂载。
+func WithFileLocalDirWritable(checker func(string) bool) FileServiceOption {
+	return func(s *FileService) {
+		if checker != nil {
+			s.localDirWritable = checker
+		}
+	}
+}
+
 // TrashServiceOption 定义 TrashService 的可选配置。
 type TrashServiceOption func(*TrashService)
 

@@ -45,6 +45,46 @@ func marshalLocalSourceConfig(basePath string) (string, error) {
 	return string(data), nil
 }
 
+func probeLocalDirectoryWritable(dir string) bool {
+	probe, err := os.CreateTemp(dir, ".yunxia-write-test-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(name)
+		return false
+	}
+	if err := os.Remove(name); err != nil {
+		return false
+	}
+	return true
+}
+
+func normalizeLocalWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isLocalReadOnlyError(err) {
+		return ErrSourceReadOnly
+	}
+	return err
+}
+
+func isLocalReadOnlyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "read-only file system") ||
+		strings.Contains(message, "permission denied") ||
+		strings.Contains(message, "access is denied") ||
+		strings.Contains(message, "operation not permitted")
+}
+
 func normalizeVirtualPath(input string) (string, error) {
 	if input == "" {
 		input = "/"

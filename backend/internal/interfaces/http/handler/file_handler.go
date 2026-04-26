@@ -272,6 +272,8 @@ func (h *FileHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusUnprocessableEntity, "FILE_IS_DIRECTORY", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrACLDenied):
 		httpresp.Error(c, http.StatusForbidden, "ACL_DENIED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrSourceReadOnly):
+		httpresp.Error(c, http.StatusForbidden, "SOURCE_READ_ONLY", err.Error(), nil)
 	default:
 		httpresp.Error(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

@@ -47,6 +47,7 @@ type VFSService struct {
 	fileDrivers   map[string]FileDriver
 	fileOp        vfsFileOperator
 	aclAuthorizer *ACLAuthorizer
+	localDirWritable func(string) bool
 }
 
 // VFSServiceOption 定义 VFSService 的可选配置。
@@ -79,11 +80,21 @@ func WithVFSACLAuthorizer(authorizer *ACLAuthorizer) VFSServiceOption {
 	}
 }
 
+// WithVFSLocalDirWritable 覆盖本地目录可写探测能力，主要用于测试只读挂载。
+func WithVFSLocalDirWritable(checker func(string) bool) VFSServiceOption {
+	return func(s *VFSService) {
+		if checker != nil {
+			s.localDirWritable = checker
+		}
+	}
+}
+
 // NewVFSService 创建 VFS 服务。
 func NewVFSService(sourceRepo mountRegistrySourceRepository, options ...VFSServiceOption) *VFSService {
 	service := &VFSService{
-		registry:    NewMountRegistry(sourceRepo),
-		fileDrivers: make(map[string]FileDriver),
+		registry:         NewMountRegistry(sourceRepo),
+		fileDrivers:      make(map[string]FileDriver),
+		localDirWritable: probeLocalDirectoryWritable,
 	}
 	for _, option := range options {
 		option(service)
@@ -218,17 +229,21 @@ func (s *VFSService) List(ctx context.Context, currentPath string) (*appdto.VFSL
 		return nil, err
 	}
 
-	projectedDirs, err := s.registry.ProjectVirtualDirs(ctx, normalizedCurrentPath)
+	mounts, err := s.registry.ListEnabledMounts(ctx)
 	if err != nil {
 		return nil, err
 	}
-	mounts, err := s.registry.ListEnabledMounts(ctx)
+	visibleMounts, err := s.filterVisibleMounts(ctx, mounts)
+	if err != nil {
+		return nil, err
+	}
+	projectedDirs, err := projectVirtualDirsFromMounts(normalizedCurrentPath, visibleMounts)
 	if err != nil {
 		return nil, err
 	}
 
 	merged := make(map[string]appdto.VFSItem)
-	resolved, err := resolveVirtualPathByLongestPrefix(normalizedCurrentPath, mounts)
+	resolved, err := resolveVirtualPathByLongestPrefix(normalizedCurrentPath, visibleMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -412,6 +427,7 @@ func (s *VFSService) listMountedDirectory(ctx context.Context, currentPath strin
 			return nil, err
 		}
 
+		parentWritable := s.canWriteLocalDir(physicalPath)
 		items := make([]appdto.VFSItem, 0, len(entries))
 		for _, entry := range entries {
 			itemPath := joinVirtualPath(currentPath, entry.Name())
@@ -422,7 +438,9 @@ func (s *VFSService) listMountedDirectory(ctx context.Context, currentPath strin
 			if infoErr != nil {
 				return nil, infoErr
 			}
-			items = append(items, buildVFSItemFromLocal(resolved.Source.ID, itemPath, info))
+			item := buildVFSItemFromLocal(resolved.Source.ID, itemPath, info)
+			item.CanDelete = item.CanDelete && parentWritable
+			items = append(items, item)
 		}
 		return items, nil
 	default:
@@ -464,14 +482,43 @@ func (s *VFSService) filterReadableVFSItems(ctx context.Context, sourceID uint, 
 	return s.aclAuthorizer.FilterVFSItems(ctx, sourceID, items)
 }
 
+func (s *VFSService) filterVisibleMounts(ctx context.Context, mounts []MountEntry) ([]MountEntry, error) {
+	if s.aclAuthorizer == nil {
+		return mounts, nil
+	}
+	filtered := make([]MountEntry, 0, len(mounts))
+	for _, mount := range mounts {
+		if mount.Source == nil {
+			continue
+		}
+		visible, err := s.aclAuthorizer.CanSeeSource(ctx, mount.Source.ID)
+		if err != nil {
+			return nil, err
+		}
+		if visible {
+			filtered = append(filtered, mount)
+		}
+	}
+	return filtered, nil
+}
+
+func (s *VFSService) canWriteLocalDir(dir string) bool {
+	if s.localDirWritable == nil {
+		return true
+	}
+	return s.localDirWritable(dir)
+}
+
 func normalizeVFSWriteError(err error) error {
 	switch {
 	case errors.Is(err, ErrFileAlreadyExists),
 		errors.Is(err, ErrFileMoveConflict),
 		errors.Is(err, ErrFileCopyConflict):
 		return ErrNameConflict
+	case errors.Is(err, ErrSourceReadOnly):
+		return ErrSourceReadOnly
 	default:
-		return err
+		return normalizeLocalWriteError(err)
 	}
 }
 

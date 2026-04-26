@@ -83,12 +83,16 @@ func (r *MountRegistry) ProjectVirtualChildren(ctx context.Context, prefix strin
 
 // ProjectVirtualDirs 返回 prefix 下应投影出的直接虚拟目录节点。
 func (r *MountRegistry) ProjectVirtualDirs(ctx context.Context, prefix string) ([]ProjectedVirtualDir, error) {
-	normalizedPrefix, err := normalizeVirtualPath(prefix)
+	mounts, err := r.ListEnabledMounts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	mounts, err := r.ListEnabledMounts(ctx)
+	return projectVirtualDirsFromMounts(prefix, mounts)
+}
+
+func projectVirtualDirsFromMounts(prefix string, mounts []MountEntry) ([]ProjectedVirtualDir, error) {
+	normalizedPrefix, err := normalizeVirtualPath(prefix)
 	if err != nil {
 		return nil, err
 	}

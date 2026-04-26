@@ -633,6 +633,7 @@ func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask
 			now := time.Now()
 			task.FinishedAt = &now
 		} else {
+			task.ErrorMessage = nil
 			now := time.Now()
 			task.FinishedAt = &now
 		}
@@ -777,9 +778,13 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 	}
 	speedBytes := task.SpeedBytes
 	etaSeconds := task.ETASeconds
+	errorMessage := task.ErrorMessage
 	if isTerminalTaskStatus(task.Status) {
 		speedBytes = 0
 		etaSeconds = nil
+	}
+	if task.Status == "completed" {
+		errorMessage = nil
 	}
 
 	return appdto.DownloadTaskView{
@@ -799,7 +804,7 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 		TotalBytes:              task.TotalBytes,
 		SpeedBytes:              speedBytes,
 		ETASeconds:              etaSeconds,
-		ErrorMessage:            task.ErrorMessage,
+		ErrorMessage:            errorMessage,
 		CreatedAt:               task.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:               task.UpdatedAt.Format(time.RFC3339),
 		FinishedAt:              finishedAt,

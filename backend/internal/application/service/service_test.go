@@ -536,6 +536,61 @@ func TestTaskCompletedClearsRealtimeDownloadMetrics(t *testing.T) {
 	}
 }
 
+func TestTaskCompletedClearsStaleDownloaderErrorMessage(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "完成态错误清理目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	staleMessage := "file already exists"
+	downloader := &completedWritingDownloader{
+		filename:     "done-with-stale-error.bin",
+		content:      []byte("done"),
+		errorMessage: &staleMessage,
+	}
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/done-with-stale-error.bin",
+		SourceID: source.ID,
+		SavePath: "/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+	if got.ErrorMessage != nil {
+		t.Fatalf("expected completed task to clear stale error_message, got %q", *got.ErrorMessage)
+	}
+}
+
 func TestTaskGetSanitizesPersistedCompletedRealtimeMetrics(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -595,6 +650,65 @@ func TestTaskGetSanitizesPersistedCompletedRealtimeMetrics(t *testing.T) {
 	}
 	if got.SpeedBytes != 0 || got.ETASeconds != nil {
 		t.Fatalf("expected persisted completed task metrics sanitized, got speed=%d eta=%v", got.SpeedBytes, got.ETASeconds)
+	}
+}
+
+func TestTaskGetSanitizesPersistedCompletedErrorMessage(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	configJSON, err := marshalLocalSourceConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "完成态历史错误目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	staleMessage := "file already exists"
+	now := time.Now()
+	task := &entity.DownloadTask{
+		UserID:       42,
+		Type:         "download",
+		Status:       "completed",
+		SourceID:     source.ID,
+		SavePath:     "/downloads",
+		DisplayName:  "done.bin",
+		SourceURL:    "https://example.com/done.bin",
+		ExternalID:   "gid-completed-error",
+		ErrorMessage: &staleMessage,
+		FinishedAt:   &now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("taskRepo.Create() error = %v", err)
+	}
+
+	svc := NewTaskService(taskRepo, sourceRepo, nil)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	got, err := svc.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+	if got.ErrorMessage != nil {
+		t.Fatalf("expected persisted completed error_message sanitized, got %q", *got.ErrorMessage)
 	}
 }
 
@@ -1168,6 +1282,7 @@ type completedWritingDownloader struct {
 	content       []byte
 	downloadSpeed int64
 	etaSeconds    *int64
+	errorMessage   *string
 	addDir        string
 }
 
@@ -1190,6 +1305,7 @@ func (d *completedWritingDownloader) TellStatus(context.Context, string) (*Downl
 		TotalBytes:     &size,
 		DownloadSpeed:  d.downloadSpeed,
 		ETASeconds:     d.etaSeconds,
+		ErrorMessage:   d.errorMessage,
 		DisplayName:    d.filename,
 	}, nil
 }
@@ -1652,6 +1768,72 @@ func TestVFSListRealAndVirtualChildrenMergedWithMountPriority(t *testing.T) {
 	}
 	if collectVFSNames(listed.Items)[2] != "team" {
 		t.Fatalf("expected merged items to stay sorted, got %v", collectVFSNames(listed.Items))
+	}
+}
+
+func TestVFSListLocalReadOnlyDirectoryDisablesDeleteCapability(t *testing.T) {
+	source, basePath := newTestLocalSourceWithBase(t, 1, "只读文档", "/readonly")
+	if err := os.WriteFile(filepath.Join(basePath, "locked.txt"), []byte("locked"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(locked.txt) error = %v", err)
+	}
+
+	svc := NewVFSService(
+		mountRegistryTestRepo{sources: []*entity.StorageSource{source}},
+		WithVFSLocalDirWritable(func(string) bool { return false }),
+	)
+
+	listed, err := svc.List(context.Background(), "/readonly")
+	if err != nil {
+		t.Fatalf("List(/readonly) error = %v", err)
+	}
+
+	item := mustFindVFSItem(t, listed.Items, "locked.txt")
+	if item.CanDelete {
+		t.Fatalf("expected read-only local directory to disable can_delete, got %+v", item)
+	}
+}
+
+func TestFileMkdirReadOnlyLocalSourceReturnsSourceReadOnly(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "只读本地源",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/readonly",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	svc := NewFileService(
+		sourceRepo,
+		nil,
+		nil,
+		nil,
+		WithFileLocalDirWritable(func(string) bool { return false }),
+	)
+
+	_, err = svc.Mkdir(context.Background(), appdto.MkdirRequest{
+		SourceID:   source.ID,
+		ParentPath: "/",
+		Name:       "should-not-create",
+	})
+	if !errors.Is(err, ErrSourceReadOnly) {
+		t.Fatalf("expected ErrSourceReadOnly, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(basePath, "should-not-create")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("read-only mkdir should not create directory, stat err=%v", statErr)
 	}
 }
 

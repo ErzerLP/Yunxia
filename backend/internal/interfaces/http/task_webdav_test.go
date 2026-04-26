@@ -247,6 +247,7 @@ func TestNavigationSourcesACLVisibility(t *testing.T) {
 		"is_enabled":        true,
 		"is_webdav_exposed": false,
 		"webdav_read_only":  true,
+		"mount_path":        "/media",
 		"root_path":         "/",
 		"sort_order":        10,
 		"config":            map[string]any{"base_path": basePath},
@@ -276,6 +277,19 @@ func TestNavigationSourcesACLVisibility(t *testing.T) {
 	gotID := int(nav.Items[0]["id"].(float64))
 	if gotID != secondSourceID {
 		t.Fatalf("expected visible source=%d and hidden default=%d, got %+v", secondSourceID, defaultSourceID, nav.Items)
+	}
+
+	vfsRec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/", nil, userToken)
+	if vfsRec.Code != http.StatusOK {
+		t.Fatalf("vfs root list expected 200, got %d body=%s", vfsRec.Code, vfsRec.Body.String())
+	}
+	root := decodeEnvelope[vfsListData](t, vfsRec.Body.Bytes())
+	names := collectMapNames(root.Items)
+	if !containsString(names, "media") {
+		t.Fatalf("expected authorized /media mount visible in vfs root, got %+v", root.Items)
+	}
+	if containsString(names, "local") {
+		t.Fatalf("expected unauthorized default /local mount hidden in vfs root, got %+v", root.Items)
 	}
 }
 

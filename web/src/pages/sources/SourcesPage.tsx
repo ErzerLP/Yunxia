@@ -52,6 +52,28 @@ function getCreateSourceErrorMessage(err: unknown) {
   return rawMessage
 }
 
+function getLocalBasePath(config: Record<string, unknown> | undefined) {
+  const value = config?.base_path
+  return typeof value === 'string' && value.trim() ? value : ''
+}
+
+function LocalSourceBasePathRow({ sourceId }: { sourceId: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['source-detail', sourceId],
+    queryFn: () => sourceApi.get(sourceId),
+  })
+  const basePath = getLocalBasePath(data?.config)
+
+  return (
+    <div className="flex justify-between gap-3 text-sm">
+      <span className="shrink-0 text-muted-foreground">本地硬盘路径</span>
+      <span className="min-w-0 truncate text-right text-foreground" title={basePath || undefined}>
+        {basePath || (isLoading ? '加载中...' : '未配置')}
+      </span>
+    </div>
+  )
+}
+
 function EditSourceModal({
   onClose,
   onSuccess,
@@ -548,10 +570,19 @@ export function SourcesPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">路径</span>
-                    <span className="text-foreground truncate max-w-[180px]">{source.root_path}</span>
+                  <div className="flex justify-between gap-3 text-sm">
+                    <span className="shrink-0 text-muted-foreground">挂载路径</span>
+                    <span className="min-w-0 truncate text-right text-foreground" title={source.mount_path}>
+                      {source.mount_path}
+                    </span>
                   </div>
+                  <div className="flex justify-between gap-3 text-sm">
+                    <span className="shrink-0 text-muted-foreground">源内根路径</span>
+                    <span className="min-w-0 truncate text-right text-foreground" title={source.root_path}>
+                      {source.root_path}
+                    </span>
+                  </div>
+                  {source.driver_type === 'local' && <LocalSourceBasePathRow sourceId={source.id} />}
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">容量</span>
                     <span className="text-foreground">

@@ -211,6 +211,26 @@ assertNotIncludes(
   "const message = err instanceof Error ? err.message : '创建存储源失败'",
   '创建存储源 catch 不能直接把 err.message 暴露到弹窗和 toast。',
 )
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'LocalSourceBasePathRow',
+  '存储源卡片需要通过详情接口展示本地源 config.base_path。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  "queryKey: ['source-detail'",
+  '本地源卡片需要读取 /sources/:id 详情来拿 config.base_path。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'source.mount_path',
+  '存储源卡片必须显示实际挂载路径 mount_path，不能只显示 root_path。'
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  '本地硬盘路径',
+  '存储源卡片必须展示本地源的本地硬盘路径 base_path。',
+)
 
 // Regression checks for offline task status, public share routing, and transient empty file views.
 assertIncludes(

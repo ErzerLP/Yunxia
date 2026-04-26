@@ -360,6 +360,8 @@ func (h *VFSHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusUnprocessableEntity, "FILE_IS_DIRECTORY", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrACLDenied):
 		httpresp.Error(c, http.StatusForbidden, "ACL_DENIED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrSourceReadOnly):
+		httpresp.Error(c, http.StatusForbidden, "SOURCE_READ_ONLY", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrNoBackingStorage):
 		httpresp.Error(c, http.StatusConflict, "NO_BACKING_STORAGE", err.Error(), nil)
 	default:
