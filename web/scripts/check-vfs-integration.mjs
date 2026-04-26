@@ -93,10 +93,6 @@ assertIncludes(
   '公开分享密码验证后需要保留密码用于目录继续浏览和文件下载。',
 )
 
-console.log('VFS integration static checks passed')
-
-
-
 // Regression checks for reported frontend issues.
 assertNotIncludes(
   'vite.config.ts',
@@ -133,3 +129,42 @@ assertIncludes(
   'addToast',
   '传统文件页新建文件夹失败必须有可见错误提示。',
 )
+
+// WebDAV frontend management checks.
+assertIncludes(
+  'src/utils/webdav.ts',
+  'buildSourceWebDAVUrl',
+  '需要统一 helper 生成存储源 WebDAV 访问地址。',
+)
+assertIncludes(
+  'src/utils/webdav.ts',
+  'buildWebDAVBaseUrl',
+  '系统设置页需要能展示全局 WebDAV Base URL。',
+)
+assertIncludes(
+  'src/pages/settings/SettingsPage.tsx',
+  'buildWebDAVBaseUrl',
+  '系统设置页需要展示 WebDAV Base URL，而不仅是开关状态。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  "queryKey: ['system-config']",
+  '存储源页需要读取 webdav_prefix 来生成真实 WebDAV 地址。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'copyWebDAVUrl',
+  '存储源卡片需要提供复制 WebDAV 地址的入口。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'isWebDAVExposed',
+  '新增/编辑存储源需要提供 WebDAV 暴露开关。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'webDAVReadOnly',
+  '新增/编辑存储源需要提供 WebDAV 只读开关。',
+)
+
+console.log('VFS integration static checks passed')

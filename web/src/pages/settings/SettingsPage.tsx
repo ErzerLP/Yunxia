@@ -10,6 +10,7 @@ import {
   Pencil, X, Clock,
 } from 'lucide-react'
 import { cn, formatBytes } from '@/utils'
+import { buildWebDAVBaseUrl } from '@/utils/webdav'
 import { useHasCapability } from '@/hooks/useCapability'
 import type { SystemConfigPublic } from '@/types/api'
 
@@ -263,6 +264,7 @@ export function SettingsPage() {
     { id: 'dark' as const, label: '深色', icon: Moon },
     { id: 'system' as const, label: '跟随系统', icon: Monitor },
   ]
+  const webDAVBaseUrl = buildWebDAVBaseUrl(config?.webdav_prefix)
 
   return (
     <div className="flex flex-col h-full">
@@ -389,6 +391,12 @@ export function SettingsPage() {
                   <div>
                     <p className="font-medium text-foreground">WebDAV</p>
                     <p className="text-xs text-muted-foreground">WebDAV 服务状态</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Base URL：
+                      <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
+                        {webDAVBaseUrl}
+                      </code>
+                    </p>
                   </div>
                 </div>
                 <span className={cn('text-sm', config?.webdav_enabled ? 'text-emerald-500' : 'text-muted-foreground')}>

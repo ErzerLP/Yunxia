@@ -3,11 +3,14 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { sourceApi } from '@/api/source'
-import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil } from 'lucide-react'
+import { systemApi } from '@/api/system'
+import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil, Link2, Copy, Lock, Unlock } from 'lucide-react'
 import { cn, formatBytes } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
+import { useUIStore } from '@/stores/uiStore'
 import { useHasCapability } from '@/hooks/useCapability'
 import type { StorageSource } from '@/types/api'
+import { buildSourceWebDAVUrl } from '@/utils/webdav'
 
 function StatusBadge({ status }: { status: StorageSource['status'] }) {
   const config = {
@@ -25,32 +28,21 @@ function StatusBadge({ status }: { status: StorageSource['status'] }) {
 }
 
 function EditSourceModal({
-  isOpen,
   onClose,
   onSuccess,
   source,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
-  source: StorageSource | null
+  source: StorageSource
 }) {
-  const [name, setName] = useState('')
-  const [mountPath, setMountPath] = useState('')
-  const [rootPath, setRootPath] = useState('')
-  const [isEnabled, setIsEnabled] = useState(true)
+  const [name, setName] = useState(source.name)
+  const [mountPath, setMountPath] = useState(source.mount_path)
+  const [rootPath, setRootPath] = useState(source.root_path)
+  const [isEnabled, setIsEnabled] = useState(source.is_enabled)
+  const [isWebDAVExposed, setIsWebDAVExposed] = useState(source.is_webdav_exposed)
+  const [webDAVReadOnly, setWebDAVReadOnly] = useState(source.webdav_read_only)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen && source) {
-      setName(source.name)
-      setMountPath(source.mount_path)
-      setRootPath(source.root_path)
-      setIsEnabled(source.is_enabled)
-    }
-  }, [isOpen, source])
-
-  if (!isOpen || !source) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -62,6 +54,8 @@ function EditSourceModal({
         mount_path: mountPath,
         root_path: rootPath,
         is_enabled: isEnabled,
+        is_webdav_exposed: source.driver_type === 'local' ? isWebDAVExposed : false,
+        webdav_read_only: source.driver_type === 'local' ? webDAVReadOnly : true,
       })
       onSuccess()
       onClose()
@@ -123,6 +117,45 @@ function EditSourceModal({
             />
             <label htmlFor="is_enabled" className="text-sm text-foreground">启用</label>
           </div>
+          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">WebDAV 暴露</p>
+                <p className="text-xs text-muted-foreground">
+                  {source.driver_type === 'local' ? '允许 WebDAV 客户端访问该本地源' : '仅本地存储源支持 WebDAV'}
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={source.driver_type === 'local' && isWebDAVExposed}
+                disabled={source.driver_type !== 'local'}
+                onChange={(e) => setIsWebDAVExposed(e.target.checked)}
+                className="rounded border-border"
+              />
+            </div>
+            <label
+              className={cn(
+                'flex items-center gap-2 text-sm',
+                source.driver_type === 'local' && isWebDAVExposed
+                  ? 'text-foreground cursor-pointer'
+                  : 'text-muted-foreground cursor-not-allowed'
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={webDAVReadOnly}
+                disabled={source.driver_type !== 'local' || !isWebDAVExposed}
+                onChange={(e) => setWebDAVReadOnly(e.target.checked)}
+                className="rounded border-border"
+              />
+              只读访问
+            </label>
+            {source.webdav_slug && (
+              <p className="text-xs text-muted-foreground">
+                Slug：<code className="font-mono text-foreground">{source.webdav_slug}</code>
+              </p>
+            )}
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -148,23 +181,14 @@ function EditSourceModal({
   )
 }
 
-function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; onClose: () => void; onSuccess: () => void }) {
+function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [name, setName] = useState('')
   const [driverType, setDriverType] = useState<'local' | 's3'>('local')
   const [rootPath, setRootPath] = useState('/data')
   const [mountPath, setMountPath] = useState('/')
+  const [isWebDAVExposed, setIsWebDAVExposed] = useState(false)
+  const [webDAVReadOnly, setWebDAVReadOnly] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen) {
-      setName('')
-      setDriverType('local')
-      setRootPath('/data')
-      setMountPath('/')
-    }
-  }, [isOpen])
-
-  if (!isOpen) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -175,8 +199,8 @@ function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; on
         name: name.trim(),
         driver_type: driverType,
         is_enabled: true,
-        is_webdav_exposed: false,
-        webdav_read_only: false,
+        is_webdav_exposed: driverType === 'local' ? isWebDAVExposed : false,
+        webdav_read_only: driverType === 'local' ? webDAVReadOnly : true,
         mount_path: mountPath,
         root_path: rootPath,
         config: {},
@@ -253,6 +277,40 @@ function CreateSourceModal({ isOpen, onClose, onSuccess }: { isOpen: boolean; on
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">WebDAV 暴露</p>
+                <p className="text-xs text-muted-foreground">
+                  {driverType === 'local' ? '创建后可通过 WebDAV 客户端访问' : 'S3 暂不支持 WebDAV 暴露'}
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={driverType === 'local' && isWebDAVExposed}
+                disabled={driverType !== 'local'}
+                onChange={(e) => setIsWebDAVExposed(e.target.checked)}
+                className="rounded border-border"
+              />
+            </div>
+            <label
+              className={cn(
+                'flex items-center gap-2 text-sm',
+                driverType === 'local' && isWebDAVExposed
+                  ? 'text-foreground cursor-pointer'
+                  : 'text-muted-foreground cursor-not-allowed'
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={webDAVReadOnly}
+                disabled={driverType !== 'local' || !isWebDAVExposed}
+                onChange={(e) => setWebDAVReadOnly(e.target.checked)}
+                className="rounded border-border"
+              />
+              只读访问
+            </label>
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -283,6 +341,7 @@ export function SourcesPage() {
   const queryClient = useQueryClient()
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
   const { setCurrentSource, currentSource } = useFileStore()
+  const { addToast } = useUIStore()
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<StorageSource | null>(null)
 
@@ -301,6 +360,33 @@ export function SourcesPage() {
     queryKey: ['sources'],
     queryFn: () => sourceApi.list({ page: 1, page_size: 100, view: 'admin' }),
   })
+
+  const { data: systemConfig } = useQuery({
+    queryKey: ['system-config'],
+    queryFn: () => systemApi.getConfig(),
+    enabled: isAuthenticated,
+  })
+
+  const copyWebDAVUrl = async (url: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = url
+        textarea.setAttribute('readonly', '')
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      addToast('WebDAV 地址已复制', 'success')
+    } catch {
+      addToast('复制失败，请手动复制 WebDAV 地址', 'error')
+    }
+  }
 
   const handleTest = async (id: number) => {
     try {
@@ -365,17 +451,23 @@ export function SourcesPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {sources.map((source) => (
-              <div
-                key={source.id}
-                className={cn(
-                  'p-4 rounded-lg border transition-all cursor-pointer',
-                  currentSource?.id === source.id
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border bg-card hover:border-primary/30'
-                )}
-                onClick={() => setCurrentSource(source)}
-              >
+            {sources.map((source) => {
+              const webDAVUrl = source.is_webdav_exposed && source.webdav_slug
+                ? buildSourceWebDAVUrl(systemConfig?.webdav_prefix, source.webdav_slug)
+                : ''
+              const isWebDAVUsable = Boolean(systemConfig?.webdav_enabled && webDAVUrl)
+
+              return (
+                <div
+                  key={source.id}
+                  className={cn(
+                    'p-4 rounded-lg border transition-all cursor-pointer',
+                    currentSource?.id === source.id
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border bg-card hover:border-primary/30'
+                  )}
+                  onClick={() => setCurrentSource(source)}
+                >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -406,6 +498,57 @@ export function SourcesPage() {
                         className="h-full bg-primary rounded-full transition-all"
                         style={{ width: `${Math.min((source.used_bytes / source.total_bytes) * 100, 100)}%` }}
                       />
+                    </div>
+                  )}
+                  {webDAVUrl && (
+                    <div
+                      className={cn(
+                        'rounded-md border p-2 space-y-1.5',
+                        isWebDAVUsable
+                          ? 'border-primary/20 bg-primary/5'
+                          : 'border-border bg-muted/30'
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <Link2 className={cn('w-3.5 h-3.5', isWebDAVUsable ? 'text-primary' : 'text-muted-foreground')} />
+                        <span className="font-medium text-foreground">WebDAV 地址</span>
+                        <span
+                          className={cn(
+                            'ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5',
+                            source.webdav_read_only
+                              ? 'bg-amber-500/10 text-amber-500'
+                              : 'bg-emerald-500/10 text-emerald-500'
+                          )}
+                        >
+                          {source.webdav_read_only ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                          {source.webdav_read_only ? '只读' : '读写'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code
+                          className={cn(
+                            'min-w-0 flex-1 truncate rounded bg-background/80 px-2 py-1 font-mono text-[11px]',
+                            isWebDAVUsable ? 'text-foreground' : 'text-muted-foreground'
+                          )}
+                          title={webDAVUrl}
+                        >
+                          {webDAVUrl}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void copyWebDAVUrl(webDAVUrl)
+                          }}
+                          className="shrink-0 p-1.5 rounded-md hover:bg-accent text-muted-foreground hover:text-foreground"
+                          title="复制 WebDAV 地址"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      {!systemConfig?.webdav_enabled && (
+                        <p className="text-[11px] text-muted-foreground">全局 WebDAV 当前未启用</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -464,23 +607,27 @@ export function SourcesPage() {
                     </button>
                   )}
                 </div>
-              </div>
-            ))}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
 
-      <CreateSourceModal
-        isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
-      />
-      <EditSourceModal
-        isOpen={!!editTarget}
-        onClose={() => setEditTarget(null)}
-        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
-        source={editTarget}
-      />
+      {createModalOpen && (
+        <CreateSourceModal
+          onClose={() => setCreateModalOpen(false)}
+          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
+        />
+      )}
+      {editTarget && (
+        <EditSourceModal
+          key={editTarget.id}
+          onClose={() => setEditTarget(null)}
+          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
+          source={editTarget}
+        />
+      )}
     </div>
   )
 }
