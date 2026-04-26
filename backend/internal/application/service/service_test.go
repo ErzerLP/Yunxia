@@ -480,6 +480,124 @@ func TestTaskCreateDownloadsIntoStagingAndImportsCompletedLocalFile(t *testing.T
 	}
 }
 
+func TestTaskCompletedClearsRealtimeDownloadMetrics(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "完成态指标目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	eta := int64(1)
+	downloader := &completedWritingDownloader{
+		filename:      "done.bin",
+		content:       []byte("done"),
+		downloadSpeed: 10583607,
+		etaSeconds:    &eta,
+	}
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/done.bin",
+		SourceID: source.ID,
+		SavePath: "/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+	if got.SpeedBytes != 0 || got.ETASeconds != nil {
+		t.Fatalf("expected completed task to clear speed/eta, got speed=%d eta=%v", got.SpeedBytes, got.ETASeconds)
+	}
+}
+
+func TestTaskGetSanitizesPersistedCompletedRealtimeMetrics(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	configJSON, err := marshalLocalSourceConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "完成态历史指标目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	eta := int64(1)
+	now := time.Now()
+	task := &entity.DownloadTask{
+		UserID:          42,
+		Type:            "download",
+		Status:          "completed",
+		SourceID:        source.ID,
+		SavePath:        "/downloads",
+		DisplayName:     "stale.bin",
+		SourceURL:       "https://example.com/stale.bin",
+		ExternalID:      "gid-stale",
+		Progress:        100,
+		DownloadedBytes: 100,
+		SpeedBytes:      10583607,
+		ETASeconds:      &eta,
+		FinishedAt:      &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("taskRepo.Create() error = %v", err)
+	}
+
+	svc := NewTaskService(taskRepo, sourceRepo, nil)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	got, err := svc.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+	if got.SpeedBytes != 0 || got.ETASeconds != nil {
+		t.Fatalf("expected persisted completed task metrics sanitized, got speed=%d eta=%v", got.SpeedBytes, got.ETASeconds)
+	}
+}
+
 func TestTaskCreateSupportsNonLocalTargetByImportDriver(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1046,9 +1164,11 @@ func (taskServiceTestDownloader) Remove(context.Context, string) error {
 }
 
 type completedWritingDownloader struct {
-	filename string
-	content  []byte
-	addDir   string
+	filename      string
+	content       []byte
+	downloadSpeed int64
+	etaSeconds    *int64
+	addDir        string
 }
 
 func (d *completedWritingDownloader) AddURI(_ context.Context, _ string, dir string) (string, error) {
@@ -1068,6 +1188,8 @@ func (d *completedWritingDownloader) TellStatus(context.Context, string) (*Downl
 		Status:         "completed",
 		CompletedBytes: size,
 		TotalBytes:     &size,
+		DownloadSpeed:  d.downloadSpeed,
+		ETASeconds:     d.etaSeconds,
 		DisplayName:    d.filename,
 	}, nil
 }

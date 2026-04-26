@@ -875,6 +875,16 @@
   - `go test ./...`
   - `docker compose -f docker-compose.backend.yml config`
 
+#### 14.11 离线任务终态实时指标清理
+
+- 修正已完成任务仍返回下载中实时指标的问题：
+  - `completed` 任务持久化刷新时会清空 `speed_bytes` / `eta_seconds`
+  - API 输出终态任务时统一返回 `speed_bytes=0`、`eta_seconds=null`
+  - 对历史已完成但残留速度 / ETA 的任务同样在响应层做兼容清理
+- 新增回归验证：
+  - `TestTaskCompletedClearsRealtimeDownloadMetrics`
+  - `TestTaskGetSanitizesPersistedCompletedRealtimeMetrics`
+
 ---
 
 ## 维护约定

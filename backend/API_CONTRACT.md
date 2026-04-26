@@ -569,6 +569,7 @@ S3 finish Body 示例：
   - `resolved_inner_save_path`
 - 普通用户默认仅能看到 / 操作自己的任务
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
+- 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
 - 当前没有 `retry` 接口
 

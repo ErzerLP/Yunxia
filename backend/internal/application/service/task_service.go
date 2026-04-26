@@ -624,6 +624,8 @@ func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask
 		task.Progress = float64(status.CompletedBytes) * 100 / float64(*status.TotalBytes)
 	}
 	if status.Status == "completed" {
+		task.SpeedBytes = 0
+		task.ETASeconds = nil
 		if err := s.importCompletedTask(ctx, task); err != nil {
 			message := err.Error()
 			task.Status = "failed"
@@ -773,6 +775,12 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 		formatted := task.FinishedAt.Format(time.RFC3339)
 		finishedAt = &formatted
 	}
+	speedBytes := task.SpeedBytes
+	etaSeconds := task.ETASeconds
+	if isTerminalTaskStatus(task.Status) {
+		speedBytes = 0
+		etaSeconds = nil
+	}
 
 	return appdto.DownloadTaskView{
 		ID:                      task.ID,
@@ -789,8 +797,8 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 		Progress:                task.Progress,
 		DownloadedBytes:         task.DownloadedBytes,
 		TotalBytes:              task.TotalBytes,
-		SpeedBytes:              task.SpeedBytes,
-		ETASeconds:              task.ETASeconds,
+		SpeedBytes:              speedBytes,
+		ETASeconds:              etaSeconds,
 		ErrorMessage:            task.ErrorMessage,
 		CreatedAt:               task.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:               task.UpdatedAt.Format(time.RFC3339),
