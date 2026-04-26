@@ -828,26 +828,6 @@
 - 新增回归测试：
   - `TestVFSMkdirDeniedWhenUserOnlyHasReadACL`
 
-#### 14.9 AutoBangumi / qBittorrent 可选 sidecar 接入
-
-- `docker-compose.backend.yml` 新增可选 `bangumi` profile：
-  - `qbittorrent`
-  - `autobangumi`
-- 两个服务默认不会随普通 `docker compose up -d` 启动，需要显式使用：
-  - `docker compose --env-file backend/.env -f docker-compose.backend.yml --profile bangumi up -d`
-- `qbittorrent` 与 Yunxia/Aria2 共享 `backend-downloads:/downloads`。
-- 推荐 AutoBangumi 下载路径配置为：
-  - `/downloads/Bangumi`
-- 推荐在 Yunxia 创建本地存储源：
-  - `mount_path=/bangumi`
-  - `config.base_path=/downloads`
-  - `root_path=/Bangumi`
-- 当前接入定位：
-  - AutoBangumi 负责番剧 RSS 解析、订阅规则和整理。
-  - qBittorrent 负责 BT 下载。
-  - Yunxia 负责统一虚拟目录、分享、预览和权限。
-- 当前未把 AutoBangumi API 合入 Yunxia 后端，避免第一阶段引入额外账号、token 与任务状态同步复杂度。
-
 ---
 
 ## 维护约定

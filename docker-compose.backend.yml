@@ -76,49 +76,7 @@ services:
       - "${ARIA2_LISTEN_PORT:-6888}:6888"
       - "${ARIA2_LISTEN_PORT:-6888}:6888/udp"
 
-  qbittorrent:
-    image: "${YUNXIA_QBITTORRENT_IMAGE:-lscr.io/linuxserver/qbittorrent:latest}"
-    container_name: yunxia-qbittorrent
-    profiles:
-      - bangumi
-    restart: unless-stopped
-    environment:
-      TZ: "${TZ:-Asia/Shanghai}"
-      PUID: "${PUID:-1000}"
-      PGID: "${PGID:-1000}"
-      UMASK: "${UMASK:-022}"
-      WEBUI_PORT: "8080"
-    volumes:
-      - qbittorrent-config:/config
-      - backend-downloads:/downloads
-    ports:
-      - "${QBITTORRENT_WEBUI_PORT:-8081}:8080"
-      - "${QBITTORRENT_BT_PORT:-6889}:6889"
-      - "${QBITTORRENT_BT_PORT:-6889}:6889/udp"
-
-  autobangumi:
-    image: "${YUNXIA_AUTOBANGUMI_IMAGE:-ghcr.io/estrellaxd/auto_bangumi:latest}"
-    container_name: yunxia-autobangumi
-    profiles:
-      - bangumi
-    restart: unless-stopped
-    depends_on:
-      - qbittorrent
-    environment:
-      TZ: "${TZ:-Asia/Shanghai}"
-      PUID: "${PUID:-1000}"
-      PGID: "${PGID:-1000}"
-      UMASK: "${UMASK:-022}"
-    volumes:
-      - autobangumi-config:/app/config
-      - autobangumi-data:/app/data
-    ports:
-      - "${AUTOBANGUMI_PORT:-7892}:7892"
-
 volumes:
   backend-data:
   backend-downloads:
   aria2-config:
-  qbittorrent-config:
-  autobangumi-config:
-  autobangumi-data:
