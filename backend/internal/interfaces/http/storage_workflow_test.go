@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1184,6 +1185,9 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 	}
 
 	basePath := filepath.ToSlash(filepath.Join(t.TempDir(), "media-source"))
+	if err := os.MkdirAll(basePath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(media source) error = %v", err)
+	}
 	rec = performRequest(t, engine, http.MethodPost, "/api/v1/sources/test", map[string]any{
 		"name":              "媒体仓库",
 		"driver_type":       "local",
@@ -1225,7 +1229,34 @@ func TestSourceCRUDAndNavigationLifecycle(t *testing.T) {
 		t.Fatalf("expected created source mount/root path, got %+v", created.Source)
 	}
 
+	photosBasePath := filepath.ToSlash(filepath.Join(t.TempDir(), "photos-source"))
+	if err := os.MkdirAll(photosBasePath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(photos source) error = %v", err)
+	}
+	rec = performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
+		"name":              "照片仓库",
+		"driver_type":       "local",
+		"is_enabled":        true,
+		"is_webdav_exposed": false,
+		"webdav_read_only":  true,
+		"mount_path":        "/photos",
+		"root_path":         "/",
+		"sort_order":        11,
+		"config":            map[string]any{"base_path": photosBasePath},
+		"secret_patch":      map[string]any{},
+	}, accessToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("second local source create expected 201 without raw unique slug error, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	secondCreated := decodeEnvelope[sourceCreateData](t, rec.Body.Bytes())
+	if secondCreated.Source["webdav_slug"] == created.Source["webdav_slug"] {
+		t.Fatalf("expected unique webdav_slug for second local source, got first=%+v second=%+v", created.Source, secondCreated.Source)
+	}
+
 	conflictBasePath := filepath.ToSlash(filepath.Join(t.TempDir(), "conflict-source"))
+	if err := os.MkdirAll(conflictBasePath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(conflict source) error = %v", err)
+	}
 	rec = performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
 		"name":              "重复挂载仓库",
 		"driver_type":       "local",
@@ -1313,6 +1344,32 @@ func TestLocalSourceCreateInvalidPathReturnsClientError(t *testing.T) {
 		t.Fatalf("invalid local source expected 400, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	assertFailureCode(t, rec.Body.Bytes(), "PATH_INVALID")
+}
+
+func TestLocalSourceCreateRejectsMissingBasePath(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+	missingBasePath := filepath.ToSlash(filepath.Join(t.TempDir(), "not-exist-yunxia"))
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
+		"name":              "不存在目录源",
+		"driver_type":       "local",
+		"is_enabled":        true,
+		"is_webdav_exposed": false,
+		"webdav_read_only":  true,
+		"mount_path":        "/not-exist-yunxia",
+		"root_path":         "/",
+		"sort_order":        10,
+		"config":            map[string]any{"base_path": missingBasePath},
+		"secret_patch":      map[string]any{},
+	}, accessToken)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing base_path expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "PATH_INVALID")
+	if _, err := os.Stat(missingBasePath); !os.IsNotExist(err) {
+		t.Fatalf("missing base_path should not be auto-created, stat error=%v", err)
+	}
 }
 
 func TestLocalFileUploadAndDownloadLifecycle(t *testing.T) {

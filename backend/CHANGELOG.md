@@ -897,6 +897,18 @@
 - 新增回归验证：
   - `TestLocalSourceCreateInvalidPathReturnsClientError`
 
+#### 14.13 本地存储源 base_path 与 WebDAV slug 修正
+
+- 修正创建 local 存储源时 `config.base_path` 不存在仍返回 201 且自动创建目录的问题。
+  - 用户创建 / 测试 / 更新 local 源时，`config.base_path` 必须已存在且是目录。
+  - 不存在或不是目录时返回 HTTP `400`，错误码 `PATH_INVALID`。
+  - 默认本地源仍由系统初始化流程创建，不受该限制影响。
+- 修正多个中文命名 local 源会生成相同 `webdav_slug=source-local`，导致数据库唯一约束错误并返回 500 的问题。
+  - 创建源时后端会对 `webdav_slug` 自动去重，例如 `source-local`、`source-local-2`。
+- 新增 / 更新回归验证：
+  - `TestLocalSourceCreateRejectsMissingBasePath`
+  - `TestSourceCRUDAndNavigationLifecycle`
+
 ---
 
 ## 维护约定

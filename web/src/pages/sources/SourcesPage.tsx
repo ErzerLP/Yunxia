@@ -27,6 +27,31 @@ function StatusBadge({ status }: { status: StorageSource['status'] }) {
   )
 }
 
+function getCreateSourceErrorMessage(err: unknown) {
+  const fallback = '创建存储源失败'
+  const rawMessage = err instanceof Error ? err.message : ''
+  if (!rawMessage) return fallback
+
+  const message = rawMessage.toLowerCase()
+  if (
+    message.includes('web_dav_slug') &&
+    (message.includes('unique constraint') || message.includes('constraint failed'))
+  ) {
+    return 'WebDAV 访问标识冲突：请换一个包含英文字母或数字的存储源名称后重试，例如 local-disk-2。'
+  }
+  if (message.includes('source name conflict') || message.includes('storage_source_models.name')) {
+    return '存储源名称已存在，请换一个名称。'
+  }
+  if (message.includes('source mount path conflict') || message.includes('storage_source_models.mount_path')) {
+    return '挂载路径已被其他存储源占用，请换一个挂载路径。'
+  }
+  if (message.includes('unique constraint') || message.includes('constraint failed')) {
+    return '存储源配置存在重复项，请检查名称、挂载路径后重试。'
+  }
+
+  return rawMessage
+}
+
 function EditSourceModal({
   onClose,
   onSuccess,
@@ -219,7 +244,7 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
       onSuccess()
       onClose()
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : '创建存储源失败'
+      const message = getCreateSourceErrorMessage(err)
       setCreateError(message)
       addToast(message, 'error')
     } finally {
@@ -250,6 +275,9 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
               placeholder="例如：本地存储"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              建议包含英文字母或数字，便于生成唯一的 WebDAV 访问标识。
+            </p>
           </div>
           <div>
             <label className="text-sm text-muted-foreground mb-1 block">驱动类型</label>

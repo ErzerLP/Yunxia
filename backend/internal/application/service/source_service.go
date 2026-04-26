@@ -241,6 +241,15 @@ func (s *SourceService) Create(ctx context.Context, req appdto.SourceUpsertReque
 		})
 		return nil, err
 	}
+	if err := s.assignUniqueWebDAVSlug(ctx, source, 0); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "storage_source",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+		})
+		return nil, err
+	}
 	if err := s.validateSource(ctx, source); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "storage_source",
@@ -450,7 +459,7 @@ func (s *SourceService) buildSourceEntity(req appdto.SourceUpsertRequest, existi
 		if err != nil {
 			return nil, err
 		}
-		if err := os.MkdirAll(cfg.BasePath, 0o755); err != nil {
+		if err := validateLocalBasePath(cfg.BasePath); err != nil {
 			return nil, err
 		}
 		configJSON, err := marshalLocalSourceConfig(cfg.BasePath)
@@ -552,6 +561,18 @@ func parseLocalConfigMap(config map[string]any) (localSourceConfig, error) {
 	return localSourceConfig{BasePath: filepath.ToSlash(filepath.Clean(basePath))}, nil
 }
 
+func validateLocalBasePath(basePath string) error {
+	info, err := os.Stat(basePath)
+	if err != nil {
+		return ErrPathInvalid
+	}
+	if !info.IsDir() {
+		return ErrPathInvalid
+	}
+
+	return nil
+}
+
 func ensureDefaultLocalSource(ctx context.Context, repo domainrepo.SourceRepository, options SystemOptions) (*entity.StorageSource, error) {
 	enabled, err := repo.ListEnabled(ctx)
 	if err != nil {
@@ -631,6 +652,38 @@ func (s *SourceService) ensureMountPathAvailable(ctx context.Context, mountPath 
 	}
 
 	return nil
+}
+
+func (s *SourceService) assignUniqueWebDAVSlug(ctx context.Context, source *entity.StorageSource, excludeID uint) error {
+	sources, err := s.sourceRepo.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+
+	used := make(map[string]struct{}, len(sources))
+	for _, existing := range sources {
+		if existing.ID == excludeID || existing.WebDAVSlug == "" {
+			continue
+		}
+		used[existing.WebDAVSlug] = struct{}{}
+	}
+
+	base := source.WebDAVSlug
+	if base == "" {
+		base = defaultSourceMountSlug(source.DriverType)
+	}
+	if _, exists := used[base]; !exists {
+		source.WebDAVSlug = base
+		return nil
+	}
+
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s-%d", base, suffix)
+		if _, exists := used[candidate]; !exists {
+			source.WebDAVSlug = candidate
+			return nil
+		}
+	}
 }
 
 func (s *SourceService) validateSource(ctx context.Context, source *entity.StorageSource) error {

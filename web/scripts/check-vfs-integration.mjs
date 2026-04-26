@@ -191,6 +191,26 @@ assertIncludes(
   "addToast(message, 'error')",
   '创建存储源失败必须弹出错误 toast，不能静默停留在弹窗。',
 )
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'getCreateSourceErrorMessage',
+  '创建存储源失败提示必须经过前端脱敏/友好化，不能直接展示后端数据库错误。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'web_dav_slug',
+  '创建第二个本地源遇到 web_dav_slug 唯一约束时，前端必须转换为用户可理解的提示。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'WebDAV 访问标识冲突',
+  '创建第二个本地源遇到 WebDAV slug 冲突时不能弹出 UNIQUE constraint 数据库原文。',
+)
+assertNotIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  "const message = err instanceof Error ? err.message : '创建存储源失败'",
+  '创建存储源 catch 不能直接把 err.message 暴露到弹窗和 toast。',
+)
 
 // Regression checks for offline task status, public share routing, and transient empty file views.
 assertIncludes(

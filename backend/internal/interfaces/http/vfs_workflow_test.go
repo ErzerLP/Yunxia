@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -360,6 +361,9 @@ func createLocalSourceWithMountForTest(t *testing.T, engine *gin.Engine, accessT
 	t.Helper()
 
 	basePath := filepath.ToSlash(filepath.Join(t.TempDir(), name))
+	if err := os.MkdirAll(basePath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(local source %s) error = %v", name, err)
+	}
 	rec := performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
 		"name":              name,
 		"driver_type":       "local",

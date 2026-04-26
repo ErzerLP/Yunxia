@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -237,6 +238,9 @@ func TestNavigationSourcesACLVisibility(t *testing.T) {
 	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "nav-user", "strong-password-456")
 
 	basePath := filepath.ToSlash(filepath.Join(t.TempDir(), "library-source"))
+	if err := os.MkdirAll(basePath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(library source) error = %v", err)
+	}
 	createRec := performRequest(t, engine, http.MethodPost, "/api/v1/sources", map[string]any{
 		"name":              "媒体仓库",
 		"driver_type":       "local",
