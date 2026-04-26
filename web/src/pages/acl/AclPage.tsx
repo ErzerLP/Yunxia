@@ -45,40 +45,6 @@ function SubjectBadge({ type }: { type: AclRule['subject_type'] }) {
   )
 }
 
-function PermissionsDisplay({ perms }: { perms: AclRule['permissions'] | undefined }) {
-  const labels = [
-    { key: 'read', label: '读' },
-    { key: 'write', label: '写' },
-    { key: 'delete', label: '删' },
-    { key: 'share', label: '分享' },
-  ] as const
-  return (
-    <div className="flex items-center gap-1">
-      {labels.map(({ key, label }) => {
-        const enabled = perms?.[key] ?? false
-        if (enabled) {
-          return (
-            <span
-              key={key}
-              className="text-xs px-1.5 py-0.5 rounded border bg-primary/10 text-primary border-primary/20"
-            >
-              {label}
-            </span>
-          )
-        }
-        return (
-          <span
-            key={key}
-            className="text-xs px-1.5 py-0.5 rounded border bg-muted text-muted-foreground/40 border-transparent line-through"
-          >
-            {label}
-          </span>
-        )
-      })}
-    </div>
-  )
-}
-
 function AclRuleModal({
   isOpen,
   onClose,
@@ -497,8 +463,29 @@ export function AclPage() {
                       <EffectBadge effect={rule.effect} />
                     </td>
                     <td className="px-4 py-2.5">
-                      <PermissionsDisplay perms={rule.permissions} />
-                      <span className="text-[10px] text-muted-foreground/60 ml-2 font-mono">
+                      <div className="flex items-center gap-1">
+                        {[
+                          { key: 'read' as const, label: '读' },
+                          { key: 'write' as const, label: '写' },
+                          { key: 'delete' as const, label: '删' },
+                          { key: 'share' as const, label: '分享' },
+                        ].filter(({ key }) => rule.permissions?.[key] ?? false)
+                          .map(({ key, label }) => (
+                            <span
+                              key={key}
+                              className="text-xs px-1.5 py-0.5 rounded border bg-primary/10 text-primary border-primary/20"
+                            >
+                              {label}
+                            </span>
+                          ))}
+                        {!rule.permissions?.read &&
+                          !rule.permissions?.write &&
+                          !rule.permissions?.delete &&
+                          !rule.permissions?.share && (
+                            <span className="text-xs text-muted-foreground">无</span>
+                          )}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground/60 ml-0 font-mono block mt-1">
                         {JSON.stringify(rule.permissions)}
                       </span>
                     </td>

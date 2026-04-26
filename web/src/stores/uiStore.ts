@@ -8,6 +8,7 @@ interface SidebarState {
 
 interface PreviewState {
   isOpen: boolean
+  mode: 'v1' | 'v2'
   filePath: string | null
   sourceId: number | null
   fileName: string | null
@@ -23,7 +24,7 @@ interface UIState {
   toasts: ToastItem[]
   toggleSidebar: () => void
   setSidebarActive: (item: string) => void
-  openPreview: (file: { path: string; source_id: number; name: string; mime_type: string }) => void
+  openPreview: (file: { path: string; source_id?: number | null; name: string; mime_type: string; mode?: 'v1' | 'v2' }) => void
   closePreview: () => void
   setTheme: (theme: 'light' | 'dark' | 'system') => void
   setUploadModalOpen: (open: boolean) => void
@@ -44,6 +45,7 @@ export const useUIStore = create<UIState>((set) => ({
   },
   preview: {
     isOpen: false,
+    mode: 'v1',
     filePath: null,
     sourceId: null,
     fileName: null,
@@ -65,8 +67,9 @@ export const useUIStore = create<UIState>((set) => ({
     set({
       preview: {
         isOpen: true,
+        mode: file.mode || 'v1',
         filePath: file.path,
-        sourceId: file.source_id,
+        sourceId: file.source_id ?? null,
         fileName: file.name,
         mimeType: file.mime_type,
       },
@@ -75,6 +78,7 @@ export const useUIStore = create<UIState>((set) => ({
     set({
       preview: {
         isOpen: false,
+        mode: 'v1',
         filePath: null,
         sourceId: null,
         fileName: null,

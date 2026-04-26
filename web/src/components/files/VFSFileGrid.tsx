@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Folder, FileText, Image, Film, Music, File } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
+import { shareApi } from '@/api/share'
+import { sourceApi } from '@/api/source'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { formatBytes, getFileIconClass, cn } from '@/utils'
+import { buildVfsShareRequest, toFrontendShareLink } from '@/utils/vfs'
 import { FileContextMenu } from './FileContextMenu'
 import { VFSRenameModal } from './VFSRenameModal'
 import { VFSDeleteConfirmModal } from './VFSDeleteConfirmModal'
@@ -40,8 +43,8 @@ function FileIcon({ item, className }: { item: VFSItem; className?: string }) {
 }
 
 export function VFSFileGrid() {
-  const { currentVirtualPath, vfsItems, setVfsItems, setLoading, selectedFiles, navigateVirtualTo } = useFileStore()
-  const { openPreview } = useUIStore()
+  const { currentVirtualPath, vfsItems, setVfsItems, setCurrentPermissions, setLoading, selectedFiles, navigateVirtualTo } = useFileStore()
+  const { openPreview, addToast } = useUIStore()
   const queryClient = useQueryClient()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: VFSItem } | null>(null)
   const [renameTarget, setRenameTarget] = useState<VFSItem | null>(null)
@@ -58,11 +61,17 @@ export function VFSFileGrid() {
       }),
   })
 
+  const { data: sourcesData } = useQuery({
+    queryKey: ['sources-vfs-share'],
+    queryFn: () => sourceApi.list({ view: 'navigation' }),
+  })
+
   useEffect(() => {
     if (data) {
       setVfsItems(data.items)
+      setCurrentPermissions(data.current_permissions ?? null)
     }
-  }, [data, setVfsItems])
+  }, [data, setVfsItems, setCurrentPermissions])
 
   useEffect(() => {
     setLoading(isLoading)
@@ -74,9 +83,10 @@ export function VFSFileGrid() {
     } else {
       openPreview({
         path: item.path,
-        source_id: item.source_id || 0,
+        source_id: item.source_id,
         name: item.name,
         mime_type: item.mime_type,
+        mode: 'v2',
       })
     }
   }
@@ -86,9 +96,37 @@ export function VFSFileGrid() {
     setContextMenu({ x: e.clientX, y: e.clientY, item })
   }
 
-  const handleDownload = (item: VFSItem) => {
-    const url = fileV2Api.download(item.path)
-    window.open(url, '_blank')
+  const handleDownload = async (item: VFSItem) => {
+    try {
+      const res = await fileV2Api.accessUrl({
+        path: item.path,
+        purpose: 'download',
+        disposition: 'attachment',
+      })
+      window.open(res.url, '_blank')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '获取下载链接失败'
+      addToast(msg, 'error')
+    }
+  }
+
+  const handleShare = async (item: VFSItem) => {
+    const payload = buildVfsShareRequest(item, sourcesData?.items || [])
+    if (!payload) {
+      addToast('无法直接分享纯虚拟目录，请进入具体挂载点后再分享', 'error')
+      return
+    }
+
+    try {
+      const res = await shareApi.create(payload)
+      const link = toFrontendShareLink(res.share.link)
+      await navigator.clipboard.writeText(link)
+      addToast('分享链接已创建并复制', 'success')
+      queryClient.invalidateQueries({ queryKey: ['shares'] })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '创建分享失败'
+      addToast(msg, 'error')
+    }
   }
 
   const handleRename = (item: VFSItem) => {
@@ -178,14 +216,16 @@ export function VFSFileGrid() {
           onClose={() => setContextMenu(null)}
           onPreview={contextMenu.item.entry_kind === 'file' ? () => openPreview({
             path: contextMenu.item.path,
-            source_id: contextMenu.item.source_id || 0,
+            source_id: contextMenu.item.source_id,
             name: contextMenu.item.name,
             mime_type: contextMenu.item.mime_type,
+            mode: 'v2',
           }) : undefined}
           onDownload={contextMenu.item.entry_kind === 'file' ? () => handleDownload(contextMenu.item) : undefined}
           onRename={() => handleRename(contextMenu.item)}
           onCopy={() => handleCopy(contextMenu.item)}
           onMove={() => handleMove(contextMenu.item)}
+          onShare={() => handleShare(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
         />
       )}

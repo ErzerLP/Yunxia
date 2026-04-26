@@ -40,7 +40,7 @@ function FileIcon({ item }: { item: FileItem }) {
 }
 
 export function FileList() {
-  const { currentSource, currentPath, files, setFiles, setLoading, toggleSelection, selectedFiles, navigateTo } = useFileStore()
+  const { currentSource, currentPath, files, setFiles, setCurrentPermissions, setLoading, toggleSelection, selectedFiles, navigateTo } = useFileStore()
   const { openPreview } = useUIStore()
   const queryClient = useQueryClient()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: FileItem } | null>(null)
@@ -63,8 +63,9 @@ export function FileList() {
   useEffect(() => {
     if (data) {
       setFiles(data.items)
+      setCurrentPermissions(data.current_permissions ?? null)
     }
-  }, [data, setFiles])
+  }, [data, setFiles, setCurrentPermissions])
 
   useEffect(() => {
     setLoading(isLoading)

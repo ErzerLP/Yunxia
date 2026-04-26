@@ -6,6 +6,7 @@ import { useFileStore } from '@/stores/fileStore'
 import { uploadApi } from '@/api/upload'
 import { computeFileHash, formatBytes } from '@/utils'
 import { cn } from '@/utils'
+import type { PartInstruction, UploadFinishRequest, UploadInitRequest } from '@/types/api'
 
 interface UploadFile {
   id: string
@@ -18,41 +19,77 @@ interface UploadFile {
   speed: number
 }
 
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+) {
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length)
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex]
+        nextIndex += 1
+        await worker(item)
+      }
+    }),
+  )
+}
+
+function buildUploadInitRequest(params: {
+  mode: 'v1' | 'v2'
+  sourceId?: number
+  currentPath: string
+  currentVirtualPath: string
+  item: UploadFile
+  hash: string
+}): UploadInitRequest {
+  const base = {
+    filename: params.item.name,
+    file_size: params.item.size,
+    file_hash: params.hash,
+    last_modified_at: new Date(params.item.file.lastModified).toISOString(),
+  }
+
+  if (params.mode === 'v2') {
+    return {
+      ...base,
+      target_virtual_parent_path: params.currentVirtualPath,
+    }
+  }
+
+  return {
+    ...base,
+    source_id: params.sourceId,
+    path: params.currentPath,
+  }
+}
+
 export function UploadModal() {
   const { isUploadModalOpen, setUploadModalOpen } = useUIStore()
-  const { currentSource, currentPath } = useFileStore()
+  const { mode, currentSource, currentPath, currentVirtualPath } = useFileStore()
   const queryClient = useQueryClient()
   const [files, setFiles] = useState<UploadFile[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const addFiles = useCallback((newFiles: FileList | null) => {
-    if (!newFiles) return
-    const items: UploadFile[] = Array.from(newFiles).map((file) => ({
-      id: Math.random().toString(36).slice(2),
-      file,
-      name: file.name,
-      size: file.size,
-      progress: 0,
-      status: 'pending',
-      speed: 0,
-    }))
-    setFiles((prev) => [...prev, ...items])
-    // Auto-start uploads
-    items.forEach((item) => startUpload(item))
-  }, [])
+  const refreshAfterUpload = useCallback((sourceId?: number) => {
+    if (mode === 'v2') {
+      queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })
+      return
+    }
+    queryClient.invalidateQueries({ queryKey: ['files', sourceId ?? currentSource?.id, currentPath] })
+  }, [currentPath, currentSource?.id, currentVirtualPath, mode, queryClient])
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault()
-      setIsDragging(false)
-      addFiles(e.dataTransfer.files)
-    },
-    [addFiles]
-  )
-
-  const startUpload = async (item: UploadFile) => {
-    if (!currentSource) return
+  const startUpload = useCallback(async (item: UploadFile) => {
+    if (mode === 'v1' && !currentSource) {
+      setFiles((prev) =>
+        prev.map((f) => (f.id === item.id ? { ...f, status: 'error' as const, error: '请选择存储源' } : f))
+      )
+      return
+    }
 
     setFiles((prev) =>
       prev.map((f) => (f.id === item.id ? { ...f, status: 'hashing' as const } : f))
@@ -73,18 +110,20 @@ export function UploadModal() {
     )
 
     try {
-      const initRes = await uploadApi.init({
-        source_id: currentSource.id,
-        path: currentPath,
-        filename: item.name,
-        file_size: item.size,
-        file_hash: hash,
-      })
+      const initRes = await uploadApi.init(buildUploadInitRequest({
+        mode,
+        sourceId: currentSource?.id,
+        currentPath,
+        currentVirtualPath,
+        item,
+        hash,
+      }))
 
       if (initRes.is_fast_upload && initRes.file) {
         setFiles((prev) =>
           prev.map((f) => (f.id === item.id ? { ...f, status: 'success' as const, progress: 100 } : f))
         )
+        refreshAfterUpload(initRes.file.source_id)
         return
       }
 
@@ -94,65 +133,103 @@ export function UploadModal() {
       const totalChunks = upload.total_chunks
       const concurrency = transport.concurrency
 
-      const uploadedChunks = new Set(upload.uploaded_chunks)
-      const chunkTasks: { index: number; start: number; end: number }[] = []
+      const finishRequest: UploadFinishRequest = {
+        upload_id: upload.upload_id,
+      }
 
-      for (let i = 0; i < totalChunks; i++) {
-        if (!uploadedChunks.has(i)) {
-          chunkTasks.push({
-            index: i,
-            start: i * chunkSize,
-            end: Math.min((i + 1) * chunkSize, item.size),
+      if (transport.mode === 'direct_parts') {
+        const instructions = initRes.part_instructions || []
+        const completedParts: { index: number; etag: string }[] = []
+        let completedPartsCount = 0
+
+        await runWithConcurrency<PartInstruction>(instructions, concurrency, async (instruction) => {
+          const chunk = item.file.slice(instruction.byte_range.start, instruction.byte_range.end + 1)
+          const response = await fetch(instruction.url, {
+            method: instruction.method || 'PUT',
+            headers: instruction.headers,
+            body: chunk,
           })
-        }
-      }
+          if (!response.ok) {
+            throw new Error(`分片 ${instruction.index + 1} 上传失败：HTTP ${response.status}`)
+          }
+          const etag = response.headers.get('ETag') || response.headers.get('etag')
+          if (!etag) {
+            throw new Error(`分片 ${instruction.index + 1} 上传完成但响应缺少 ETag`)
+          }
+          completedParts.push({ index: instruction.index, etag })
+          completedPartsCount += 1
+          const progress = Math.round((completedPartsCount / instructions.length) * 100)
+          setFiles((prev) =>
+            prev.map((f) => (f.id === item.id ? { ...f, progress } : f))
+          )
+        })
 
-      let completedChunks = uploadedChunks.size
+        finishRequest.parts = completedParts.sort((a, b) => a.index - b.index)
+      } else {
+        const uploadedChunks = new Set(upload.uploaded_chunks)
+        const chunkTasks: { index: number; start: number; end: number }[] = []
 
-      const runChunk = async (task: (typeof chunkTasks)[0]) => {
-        const chunk = item.file.slice(task.start, task.end)
-        await uploadApi.uploadChunk(upload.upload_id, task.index, chunk)
-        completedChunks++
-        const progress = Math.round((completedChunks / totalChunks) * 100)
-        setFiles((prev) =>
-          prev.map((f) => (f.id === item.id ? { ...f, progress } : f))
-        )
-      }
-
-      const pool = async () => {
-        const executing: Promise<void>[] = []
-        for (const task of chunkTasks) {
-          const p = runChunk(task)
-          executing.push(p)
-          if (executing.length >= concurrency) {
-            await Promise.race(executing)
-            executing.splice(
-              0,
-              executing.length,
-              ...executing.filter((e) => e !== p)
-            )
+        for (let i = 0; i < totalChunks; i++) {
+          if (!uploadedChunks.has(i)) {
+            chunkTasks.push({
+              index: i,
+              start: i * chunkSize,
+              end: Math.min((i + 1) * chunkSize, item.size),
+            })
           }
         }
-        await Promise.all(executing)
+
+        let completedChunks = uploadedChunks.size
+
+        await runWithConcurrency(chunkTasks, concurrency, async (task) => {
+          const chunk = item.file.slice(task.start, task.end)
+          await uploadApi.uploadChunk(upload.upload_id, task.index, chunk)
+          completedChunks++
+          const progress = Math.round((completedChunks / totalChunks) * 100)
+          setFiles((prev) =>
+            prev.map((f) => (f.id === item.id ? { ...f, progress } : f))
+          )
+        })
       }
 
-      await pool()
-
-      await uploadApi.finish({
-        upload_id: upload.upload_id,
-      })
+      const finishRes = await uploadApi.finish(finishRequest)
 
       setFiles((prev) =>
         prev.map((f) => (f.id === item.id ? { ...f, status: 'success' as const, progress: 100 } : f))
       )
-      queryClient.invalidateQueries({ queryKey: ['files', currentSource?.id, currentPath] })
+      refreshAfterUpload(finishRes.file.source_id)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '上传失败'
       setFiles((prev) =>
         prev.map((f) => (f.id === item.id ? { ...f, status: 'error' as const, error: msg } : f))
       )
     }
-  }
+  }, [currentPath, currentSource, currentVirtualPath, mode, refreshAfterUpload])
+
+  const addFiles = useCallback((newFiles: FileList | null) => {
+    if (!newFiles) return
+    const items: UploadFile[] = Array.from(newFiles).map((file) => ({
+      id: Math.random().toString(36).slice(2),
+      file,
+      name: file.name,
+      size: file.size,
+      progress: 0,
+      status: 'pending',
+      speed: 0,
+    }))
+    setFiles((prev) => [...prev, ...items])
+    // Auto-start uploads
+    items.forEach((item) => startUpload(item))
+  }, [startUpload])
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setIsDragging(false)
+      addFiles(e.dataTransfer.files)
+    },
+    [addFiles]
+  )
 
   const startAll = () => {
     files.filter((f) => f.status === 'pending').forEach((f) => startUpload(f))

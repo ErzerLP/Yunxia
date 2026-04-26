@@ -6,6 +6,7 @@ import {
   Copy,
   Trash2,
   FolderInput,
+  Link,
 } from 'lucide-react'
 import { cn } from '@/utils'
 
@@ -28,6 +29,7 @@ interface FileContextMenuProps {
   onRename?: () => void
   onCopy?: () => void
   onMove?: () => void
+  onShare?: () => void
   onDelete?: () => void
 }
 
@@ -42,6 +44,7 @@ export function FileContextMenu({
   onRename,
   onCopy,
   onMove,
+  onShare,
   onDelete,
 }: FileContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
@@ -73,7 +76,10 @@ export function FileContextMenu({
     ...(onMove
       ? [{ id: 'move', label: '移动到', icon: FolderInput, onClick: onMove }]
       : []),
-    ...(onCopy || onMove ? [{ id: 'sep2', label: '', icon: () => null, onClick: () => {} }] : []),
+    ...(onShare
+      ? [{ id: 'share', label: '分享并复制链接', icon: Link, onClick: onShare }]
+      : []),
+    ...(onCopy || onMove || onShare ? [{ id: 'sep2', label: '', icon: () => null, onClick: () => {} }] : []),
     ...(onDelete
       ? [{
           id: 'delete',

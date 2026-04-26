@@ -109,17 +109,22 @@ export function ShareAccessPage() {
   const [passwordError, setPasswordError] = useState<string | null>(null)
   const [isVerifying, setIsVerifying] = useState(false)
   const [needsPassword, setNeedsPassword] = useState(false)
+  const [verifiedPassword, setVerifiedPassword] = useState<string | undefined>(undefined)
 
   const loadShare = async (password?: string) => {
     if (!token) return
+    const effectivePassword = password ?? verifiedPassword
     setIsLoading(true)
     setError(null)
     try {
-      const res = await sharePublicApi.open(token, password, currentPath)
+      const res = await sharePublicApi.open(token, effectivePassword, currentPath)
       if (!res || !res.share) {
         setError('分享数据格式错误')
         setIsLoading(false)
         return
+      }
+      if (password) {
+        setVerifiedPassword(password)
       }
       setShareInfo({
         name: res.share.name,
@@ -132,8 +137,39 @@ export function ShareAccessPage() {
       setNeedsPassword(false)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '分享加载失败'
+      if (msg === 'SHARE_FILE_REDIRECT') {
+        if (password) {
+          setVerifiedPassword(password)
+        }
+        setShareInfo({
+          name: '单个文件分享',
+          is_dir: false,
+          has_password: !!effectivePassword,
+          expires_at: null,
+        })
+        setItems([{
+          name: '下载文件',
+          path: currentPath || '/',
+          parent_path: '/',
+          is_dir: false,
+          preview_type: '',
+          size: 0,
+          mime_type: '',
+          extension: '',
+          modified_at: '',
+          created_at: '',
+          can_preview: false,
+          can_download: true,
+          thumbnail_url: null,
+        }])
+        setNeedsPassword(false)
+        return
+      }
       if (msg.toLowerCase().includes('password') || msg.toLowerCase().includes('unauthorized')) {
         setNeedsPassword(true)
+        if (effectivePassword) {
+          setPasswordError('密码错误或已过期')
+        }
       } else {
         setError(msg)
       }
@@ -161,7 +197,7 @@ export function ShareAccessPage() {
     if (!item.is_dir || !token) return
     setIsLoading(true)
     try {
-      const res = await sharePublicApi.open(token, undefined, item.path)
+      const res = await sharePublicApi.open(token, verifiedPassword, item.path)
       if (res.share) {
         setShareInfo({
           name: res.share.name,
@@ -185,7 +221,7 @@ export function ShareAccessPage() {
     const parent = currentPath.split('/').slice(0, -1).join('/') || '/'
     setIsLoading(true)
     try {
-      const res = await sharePublicApi.open(token, undefined, parent)
+      const res = await sharePublicApi.open(token, verifiedPassword, parent)
       if (res.share) {
         setShareInfo({
           name: res.share.name,
@@ -206,29 +242,20 @@ export function ShareAccessPage() {
 
   const handleDownload = async (item: PublicShareEntry) => {
     if (!token) return
-    try {
-      const res = await sharePublicApi.open(token, undefined, item.path)
-      // For file downloads, backend returns redirect URL
-      if ((res as unknown as { redirect_url?: string }).redirect_url) {
-        window.open((res as unknown as { redirect_url: string }).redirect_url, '_blank')
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '获取下载链接失败'
-      setError(msg)
-    }
+    window.open(sharePublicApi.getOpenUrl(token, {
+      password: verifiedPassword,
+      path: item.path,
+      disposition: 'attachment',
+    }), '_blank')
   }
 
   const handlePreview = async (item: PublicShareEntry) => {
     if (!token || !item.can_preview) return
-    try {
-      const res = await sharePublicApi.open(token, undefined, item.path)
-      if ((res as unknown as { redirect_url?: string }).redirect_url) {
-        window.open((res as unknown as { redirect_url: string }).redirect_url, '_blank')
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '获取预览链接失败'
-      setError(msg)
-    }
+    window.open(sharePublicApi.getOpenUrl(token, {
+      password: verifiedPassword,
+      path: item.path,
+      disposition: 'inline',
+    }), '_blank')
   }
 
   if (isLoading && !shareInfo && !needsPassword) {

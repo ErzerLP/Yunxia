@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, FolderPlus } from 'lucide-react'
 import { fileApi } from '@/api/file'
+import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 interface MkdirModalProps {
@@ -14,11 +15,14 @@ interface MkdirModalProps {
 export function MkdirModal({ isOpen, onClose, sourceId, parentPath, onSuccess }: MkdirModalProps) {
   const [name, setName] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const { addToast } = useUIStore()
 
   useEffect(() => {
     if (isOpen) {
       setName('')
+      setError(null)
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [isOpen])
@@ -32,12 +36,15 @@ export function MkdirModal({ isOpen, onClose, sourceId, parentPath, onSuccess }:
     }
 
     setIsSubmitting(true)
+    setError(null)
     try {
       await fileApi.mkdir({ source_id: sourceId, parent_path: parentPath, name: trimmed })
       onSuccess?.()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '创建失败'
+      setError(msg)
+      addToast(msg, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -68,6 +75,7 @@ export function MkdirModal({ isOpen, onClose, sourceId, parentPath, onSuccess }:
             className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             placeholder="文件夹名称"
           />
+          {error && <p className="text-sm text-destructive mt-2">{error}</p>}
           <div className="flex justify-end gap-2 mt-4">
             <button
               type="button"

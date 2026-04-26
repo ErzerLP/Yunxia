@@ -42,6 +42,7 @@ export function VFSMkdirModal({ isOpen, onClose, parentPath, onSuccess }: VFSMkd
       onSuccess?.()
       onClose()
     } catch (err: unknown) {
+      console.error('mkdir error:', err)
       const msg = err instanceof Error ? err.message : '创建失败'
       setError(msg)
       addToast(msg, 'error')

@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useAuthStore } from '@/stores/authStore'
 import { fileApi } from '@/api/file'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SourceSelector } from './SourceSelector'
@@ -18,8 +19,9 @@ import { MkdirModal } from './MkdirModal'
 import { cn } from '@/utils'
 
 export function FileToolbar() {
-  const { currentSource, currentPath, viewMode, setViewMode, navigateUp, setFiles } = useFileStore()
+  const { currentSource, currentPath, currentPermissions, viewMode, setViewMode, navigateUp, setFiles } = useFileStore()
   const { setUploadModalOpen } = useUIStore()
+  const { user } = useAuthStore()
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
@@ -27,6 +29,10 @@ export function FileToolbar() {
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const canGoUp = currentPath !== '/'
+  const canWriteCurrentDirectory =
+    user?.role_key === 'super_admin' ||
+    user?.role_key === 'admin' ||
+    currentPermissions?.write === true
 
   const { refetch } = useQuery({
     queryKey: ['files-search', currentSource?.id, searchQuery],
@@ -95,27 +101,31 @@ export function FileToolbar() {
 
       <div className="w-px h-5 bg-border mx-1" />
 
-      <button
-        onClick={() => setUploadModalOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-      >
-        <Upload className="w-4 h-4" />
-        <span>上传</span>
-      </button>
+      {canWriteCurrentDirectory && (
+        <button
+          onClick={() => setUploadModalOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          <Upload className="w-4 h-4" />
+          <span>上传</span>
+        </button>
+      )}
 
-      <button
-        onClick={() => setMkdirOpen(true)}
-        disabled={!currentSource}
-        className={cn(
-          'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-          currentSource
-            ? 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-            : 'text-muted-foreground/30 cursor-not-allowed'
-        )}
-      >
-        <FolderPlus className="w-4 h-4" />
-        <span>新建文件夹</span>
-      </button>
+      {canWriteCurrentDirectory && (
+        <button
+          onClick={() => setMkdirOpen(true)}
+          disabled={!currentSource}
+          className={cn(
+            'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+            currentSource
+              ? 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+              : 'text-muted-foreground/30 cursor-not-allowed'
+          )}
+        >
+          <FolderPlus className="w-4 h-4" />
+          <span>新建文件夹</span>
+        </button>
+      )}
 
       <button
         onClick={() => {

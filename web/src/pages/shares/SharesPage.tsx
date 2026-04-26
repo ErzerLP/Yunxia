@@ -23,6 +23,7 @@ import {
 import { formatDate, getFileIconClass } from '@/utils'
 import { cn } from '@/utils'
 import { useHasCapability } from '@/hooks/useCapability'
+import { toFrontendShareLink } from '@/utils/vfs'
 import type { Share } from '@/types/api'
 
 const iconMap = {
@@ -349,7 +350,7 @@ export function SharesPage() {
   }
 
   const handleCopyLink = (link: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}${link}`).then(() => {
+    navigator.clipboard.writeText(toFrontendShareLink(link)).then(() => {
       addToast('链接已复制到剪贴板', 'success')
     })
   }

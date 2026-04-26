@@ -21,9 +21,10 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
-      '/s/': {
+      '/__public_share': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/__public_share/, '/s'),
       },
     },
   },

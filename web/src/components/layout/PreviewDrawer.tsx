@@ -1,33 +1,49 @@
 import { X, Music, File } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { fileApi } from '@/api/file'
+import { fileV2Api } from '@/api/fileV2'
 import { useEffect, useState } from 'react'
 import { cn } from '@/utils'
 
 export function PreviewDrawer() {
   const { preview, closePreview } = useUIStore()
-  const { isOpen, filePath, sourceId, fileName, mimeType } = preview
+  const { isOpen, mode, filePath, sourceId, fileName, mimeType } = preview
   const [url, setUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!isOpen || !filePath || !sourceId) {
+    if (!isOpen || !filePath || (mode === 'v1' && !sourceId)) {
       setUrl(null)
       return
     }
 
     let revoked = false
     setLoading(true)
-    fileApi
-      .getAccessUrl({
-        source_id: sourceId,
-        path: filePath,
-        purpose: 'preview',
-        disposition: 'inline',
-      })
+    setUrl(null)
+
+    const request =
+      mode === 'v2'
+        ? fileV2Api.accessUrl({
+            path: filePath,
+            purpose: 'preview',
+            disposition: 'inline',
+          })
+        : fileApi.getAccessUrl({
+            source_id: sourceId!,
+            path: filePath,
+            purpose: 'preview',
+            disposition: 'inline',
+          })
+
+    request
       .then((res) => {
         if (!revoked) {
           setUrl(res.url)
+        }
+      })
+      .catch(() => {
+        if (!revoked) {
+          setUrl(null)
         }
       })
       .finally(() => setLoading(false))
@@ -36,7 +52,7 @@ export function PreviewDrawer() {
       revoked = true
       if (url) URL.revokeObjectURL(url)
     }
-  }, [isOpen, filePath, sourceId])
+  }, [isOpen, mode, filePath, sourceId])
 
   if (!isOpen) return null
 

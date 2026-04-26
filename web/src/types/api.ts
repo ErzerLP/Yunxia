@@ -180,10 +180,18 @@ export interface FileItem {
   thumbnail_url: string | null;
 }
 
+export interface PathPermissions {
+  read: boolean;
+  write: boolean;
+  delete: boolean;
+  share: boolean;
+}
+
 export interface FileListResult {
   items: FileItem[];
   current_path: string;
   current_source_id: number;
+  current_permissions?: PathPermissions;
 }
 
 export interface ListFilesParams extends PaginationParams {
@@ -496,6 +504,7 @@ export interface VFSItem {
 export interface VFSListResult {
   items: VFSItem[];
   current_path: string;
+  current_permissions?: PathPermissions;
 }
 
 export interface VFSAccessUrlRequest {

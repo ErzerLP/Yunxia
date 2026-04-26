@@ -7,7 +7,7 @@ export interface ListVFSParams extends PaginationParams {
 
 export interface SearchVFSParams extends PaginationParams {
   keyword: string;
-  path_prefix?: string;
+  path?: string;
 }
 
 export interface VFSMkdirRequest {
@@ -43,19 +43,19 @@ export const fileV2Api = {
     v2Client.get<VFSListResult>('/fs/search', { params }),
 
   mkdir: (data: VFSMkdirRequest) =>
-    v2Client.post<{ item: VFSItem }>('/fs/mkdir', data),
+    v2Client.post<{ created: VFSItem }>('/fs/mkdir', data),
 
   rename: (data: VFSRenameRequest) =>
-    v2Client.post<{ item: VFSItem }>('/fs/rename', data),
+    v2Client.post<{ old_path: string; new_path: string; file: VFSItem }>('/fs/rename', data),
 
   move: (data: VFSMoveRequest) =>
-    v2Client.post<{ moved: number }>('/fs/move', data),
+    v2Client.post<{ old_path: string; new_path: string; moved: boolean }>('/fs/move', data),
 
   copy: (data: VFSCopyRequest) =>
-    v2Client.post<{ copied: number; item?: VFSItem }>('/fs/copy', data),
+    v2Client.post<{ source_path: string; new_path: string; copied: boolean }>('/fs/copy', data),
 
   delete: (data: VFSDeleteRequest) =>
-    v2Client.delete<{ deleted: number }>('/fs', { data }),
+    v2Client.delete<{ deleted: boolean; delete_mode: string; path: string; deleted_at: string }>('/fs', { data }),
 
   accessUrl: (data: VFSAccessUrlRequest) =>
     v2Client.post<AccessUrlResponse>('/fs/access-url', data),

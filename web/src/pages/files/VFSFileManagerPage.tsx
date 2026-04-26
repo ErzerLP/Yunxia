@@ -10,7 +10,11 @@ import { useFileStore } from '@/stores/fileStore'
 export function VFSFileManagerPage() {
   const navigate = useNavigate()
   const { isAuthenticated, isLoading } = useAuthStore()
-  const { viewMode } = useFileStore()
+  const { viewMode, setMode } = useFileStore()
+
+  useEffect(() => {
+    setMode('v2')
+  }, [setMode])
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {

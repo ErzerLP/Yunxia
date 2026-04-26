@@ -40,7 +40,7 @@ function FileIcon({ item, className }: { item: FileItem; className?: string }) {
 }
 
 export function FileGrid() {
-  const { currentSource, currentPath, files, setFiles, setLoading, selectedFiles, navigateTo } = useFileStore()
+  const { currentSource, currentPath, files, setFiles, setCurrentPermissions, setLoading, selectedFiles, navigateTo } = useFileStore()
   const { openPreview } = useUIStore()
   const queryClient = useQueryClient()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: FileItem } | null>(null)
@@ -63,8 +63,9 @@ export function FileGrid() {
   useEffect(() => {
     if (data) {
       setFiles(data.items)
+      setCurrentPermissions(data.current_permissions ?? null)
     }
-  }, [data, setFiles])
+  }, [data, setFiles, setCurrentPermissions])
 
   useEffect(() => {
     setLoading(isLoading)

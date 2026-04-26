@@ -11,14 +11,16 @@ import {
 } from 'lucide-react'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
+import { useAuthStore } from '@/stores/authStore'
 import { fileV2Api } from '@/api/fileV2'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { VFSMkdirModal } from './VFSMkdirModal'
 import { cn } from '@/utils'
 
 export function VFSFileToolbar() {
-  const { currentVirtualPath, viewMode, setViewMode, navigateVirtualUp, setVfsItems } = useFileStore()
+  const { currentVirtualPath, currentPermissions, viewMode, setViewMode, navigateVirtualUp, setVfsItems } = useFileStore()
   const { setUploadModalOpen } = useUIStore()
+  const { user } = useAuthStore()
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
@@ -26,13 +28,17 @@ export function VFSFileToolbar() {
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const canGoUp = currentVirtualPath !== '/'
+  const canWriteCurrentDirectory =
+    user?.role_key === 'super_admin' ||
+    user?.role_key === 'admin' ||
+    currentPermissions?.write === true
 
   const { refetch } = useQuery({
     queryKey: ['vfs-search', searchQuery],
     queryFn: () =>
       fileV2Api.search({
         keyword: searchQuery,
-        path_prefix: currentVirtualPath,
+        path: currentVirtualPath,
         page: 1,
         page_size: 100,
       }),
@@ -91,21 +97,25 @@ export function VFSFileToolbar() {
 
       <div className="w-px h-5 bg-border mx-1" />
 
-      <button
-        onClick={() => setUploadModalOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-      >
-        <Upload className="w-4 h-4" />
-        <span>上传</span>
-      </button>
+      {canWriteCurrentDirectory && (
+        <button
+          onClick={() => setUploadModalOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+        >
+          <Upload className="w-4 h-4" />
+          <span>上传</span>
+        </button>
+      )}
 
-      <button
-        onClick={() => setMkdirOpen(true)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-      >
-        <FolderPlus className="w-4 h-4" />
-        <span>新建文件夹</span>
-      </button>
+      {canWriteCurrentDirectory && (
+        <button
+          onClick={() => setMkdirOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <FolderPlus className="w-4 h-4" />
+          <span>新建文件夹</span>
+        </button>
+      )}
 
       <button
         onClick={() => queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })}
