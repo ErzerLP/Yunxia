@@ -71,6 +71,8 @@ export function FileGrid() {
     setLoading(isLoading)
   }, [isLoading, setLoading])
 
+  const displayedFiles = data?.items ?? files
+
   const handleClick = (item: FileItem) => {
     if (item.is_dir) {
       navigateTo(item.path)
@@ -139,7 +141,7 @@ export function FileGrid() {
     )
   }
 
-  if (files.length === 0) {
+  if (displayedFiles.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         当前目录为空
@@ -150,7 +152,7 @@ export function FileGrid() {
   return (
     <div className="flex-1 overflow-auto scrollbar-thin p-4">
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-        {files.map((item) => {
+        {displayedFiles.map((item) => {
           const selected = selectedFiles.has(item.path)
           return (
             <div

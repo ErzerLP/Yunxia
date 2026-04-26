@@ -77,6 +77,8 @@ export function VFSFileList() {
     setLoading(isLoading)
   }, [isLoading, setLoading])
 
+  const displayedVfsItems = data?.items ?? vfsItems
+
   const handleClick = (item: VFSItem) => {
     if (item.entry_kind === 'directory') {
       navigateVirtualTo(item.path)
@@ -161,7 +163,7 @@ export function VFSFileList() {
     )
   }
 
-  if (vfsItems.length === 0) {
+  if (displayedVfsItems.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         当前目录为空
@@ -210,10 +212,10 @@ export function VFSFileList() {
                 <input
                   type="checkbox"
                   className="rounded border-border"
-                  checked={selectedFiles.size === vfsItems.length && vfsItems.length > 0}
+                  checked={selectedFiles.size === displayedVfsItems.length && displayedVfsItems.length > 0}
                   onChange={(e) => {
                     if (e.target.checked) {
-                      useFileStore.getState().selectAll(vfsItems.map((f) => f.path))
+                      useFileStore.getState().selectAll(displayedVfsItems.map((f) => f.path))
                     } else {
                       useFileStore.getState().clearSelection()
                     }
@@ -227,7 +229,7 @@ export function VFSFileList() {
             </tr>
           </thead>
           <tbody>
-            {vfsItems.map((item) => {
+            {displayedVfsItems.map((item) => {
               const selected = selectedFiles.has(item.path)
               return (
                 <tr

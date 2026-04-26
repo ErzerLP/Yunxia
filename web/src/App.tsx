@@ -12,12 +12,19 @@ export default function App() {
 
   useEffect(() => {
     const init = async () => {
+      const isPublicShareRoute = /^\/s\/[^/]+/.test(location.pathname)
+
       try {
         const status = await setupApi.getStatus()
         if (status.setup_required) {
           if (location.pathname !== '/setup') {
             navigate('/setup', { replace: true })
           }
+          setLoading(false)
+          return
+        }
+
+        if (isPublicShareRoute) {
           setLoading(false)
           return
         }

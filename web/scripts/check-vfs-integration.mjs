@@ -167,4 +167,46 @@ assertIncludes(
   '新增/编辑存储源需要提供 WebDAV 只读开关。',
 )
 
+// Regression checks for offline task status, public share routing, and transient empty file views.
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  'getTaskProgressPercent',
+  '离线下载页需要对 completed/paused/running 等状态统一计算并展示进度。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  'STATUS_LABELS',
+  '离线下载任务卡片需要显示明确状态文本，不能只靠图标。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  "task.status === 'completed'",
+  '完成任务需要显示已完成/100%/下载字节等完成状态。',
+)
+assertIncludes(
+  'src/App.tsx',
+  'isPublicShareRoute',
+  '前端全局鉴权初始化必须放行 /s/:token 公开分享页面。',
+)
+assertIncludes(
+  'src/components/files/FileList.tsx',
+  'displayedFiles',
+  '传统文件列表应优先渲染本次 query data，避免 store effect 尚未同步时误显示空目录。',
+)
+assertIncludes(
+  'src/components/files/FileGrid.tsx',
+  'displayedFiles',
+  '传统文件网格应优先渲染本次 query data，避免 store effect 尚未同步时误显示空目录。',
+)
+assertIncludes(
+  'src/components/files/VFSFileList.tsx',
+  'displayedVfsItems',
+  'VFS 文件列表应优先渲染本次 query data，避免 store effect 尚未同步时误显示空目录。',
+)
+assertIncludes(
+  'src/components/files/VFSFileGrid.tsx',
+  'displayedVfsItems',
+  'VFS 文件网格应优先渲染本次 query data，避免 store effect 尚未同步时误显示空目录。',
+)
+
 console.log('VFS integration static checks passed')

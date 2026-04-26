@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { X, Pencil } from 'lucide-react'
 import { fileApi } from '@/api/file'
 import { cn } from '@/utils'
@@ -15,14 +15,6 @@ interface RenameModalProps {
 export function RenameModal({ isOpen, onClose, sourceId, path, currentName, onSuccess }: RenameModalProps) {
   const [newName, setNewName] = useState(currentName)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (isOpen) {
-      setNewName(currentName)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }, [isOpen, currentName])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -62,7 +54,7 @@ export function RenameModal({ isOpen, onClose, sourceId, path, currentName, onSu
 
         <form onSubmit={handleSubmit} className="p-4">
           <input
-            ref={inputRef}
+            autoFocus
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}

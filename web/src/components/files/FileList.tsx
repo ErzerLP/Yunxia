@@ -71,6 +71,8 @@ export function FileList() {
     setLoading(isLoading)
   }, [isLoading, setLoading])
 
+  const displayedFiles = data?.items ?? files
+
   const handleClick = (item: FileItem) => {
     if (item.is_dir) {
       navigateTo(item.path)
@@ -139,7 +141,7 @@ export function FileList() {
     )
   }
 
-  if (files.length === 0) {
+  if (displayedFiles.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         当前目录为空
@@ -190,10 +192,10 @@ export function FileList() {
                 <input
                   type="checkbox"
                   className="rounded border-border"
-                  checked={selectedFiles.size === files.length && files.length > 0}
+                  checked={selectedFiles.size === displayedFiles.length && displayedFiles.length > 0}
                   onChange={(e) => {
                     if (e.target.checked) {
-                      useFileStore.getState().selectAll(files.map((f) => f.path))
+                      useFileStore.getState().selectAll(displayedFiles.map((f) => f.path))
                     } else {
                       useFileStore.getState().clearSelection()
                     }
@@ -207,7 +209,7 @@ export function FileList() {
             </tr>
           </thead>
           <tbody>
-            {files.map((item) => {
+            {displayedFiles.map((item) => {
               const selected = selectedFiles.has(item.path)
               return (
                 <tr

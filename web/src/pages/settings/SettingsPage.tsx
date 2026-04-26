@@ -39,38 +39,17 @@ function StatCard({
 }
 
 function ConfigEditModal({
-  isOpen,
   onClose,
   config,
   onSuccess,
 }: {
-  isOpen: boolean
   onClose: () => void
-  config: SystemConfigPublic | null
+  config: SystemConfigPublic
   onSuccess: () => void
 }) {
   const { addToast } = useUIStore()
-  const [form, setForm] = useState<SystemConfigPublic>({
-    site_name: '云匣',
-    multi_user_enabled: false,
-    default_source_id: 0,
-    max_upload_size: 104857600,
-    default_chunk_size: 5242880,
-    webdav_enabled: false,
-    webdav_prefix: '/webdav',
-    theme: 'system',
-    language: 'zh-CN',
-    time_zone: 'Asia/Shanghai',
-  })
+  const [form, setForm] = useState<SystemConfigPublic>(config)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen && config) {
-      setForm(config)
-    }
-  }, [isOpen, config])
-
-  if (!isOpen || !config) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -466,12 +445,13 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <ConfigEditModal
-        isOpen={editModalOpen}
-        onClose={() => setEditModalOpen(false)}
-        config={config || null}
-        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['system-config'] })}
-      />
+      {editModalOpen && config && (
+        <ConfigEditModal
+          onClose={() => setEditModalOpen(false)}
+          config={config}
+          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['system-config'] })}
+        />
+      )}
     </div>
   )
 }

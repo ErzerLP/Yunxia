@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -46,61 +46,29 @@ function SubjectBadge({ type }: { type: AclRule['subject_type'] }) {
 }
 
 function AclRuleModal({
-  isOpen,
   onClose,
   onSuccess,
   rule,
   sources,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
   rule: AclRule | null
   sources: StorageSource[]
 }) {
   const { addToast } = useUIStore()
-  const [sourceId, setSourceId] = useState('')
-  const [path, setPath] = useState('/')
-  const [subjectType, setSubjectType] = useState<'user' | 'role'>('user')
-  const [subjectId, setSubjectId] = useState('')
-  const [effect, setEffect] = useState<'allow' | 'deny'>('allow')
-  const [priority, setPriority] = useState('0')
-  const [read, setRead] = useState(true)
-  const [write, setWrite] = useState(false)
-  const [deleteP, setDeleteP] = useState(false)
-  const [share, setShare] = useState(false)
-  const [inherit, setInherit] = useState(true)
+  const [sourceId, setSourceId] = useState(rule ? String(rule.source_id) : sources[0]?.id ? String(sources[0].id) : '')
+  const [path, setPath] = useState(rule?.path ?? '/')
+  const [subjectType, setSubjectType] = useState<'user' | 'role'>(rule?.subject_type ?? 'user')
+  const [subjectId, setSubjectId] = useState(rule ? String(rule.subject_id) : '')
+  const [effect, setEffect] = useState<'allow' | 'deny'>(rule?.effect ?? 'allow')
+  const [priority, setPriority] = useState(rule ? String(rule.priority) : '0')
+  const [read, setRead] = useState(rule?.permissions.read ?? true)
+  const [write, setWrite] = useState(rule?.permissions.write ?? false)
+  const [deleteP, setDeleteP] = useState(rule?.permissions.delete ?? false)
+  const [share, setShare] = useState(rule?.permissions.share ?? false)
+  const [inherit, setInherit] = useState(rule?.inherit_to_children ?? true)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen && rule) {
-      setSourceId(String(rule.source_id))
-      setPath(rule.path)
-      setSubjectType(rule.subject_type)
-      setSubjectId(String(rule.subject_id))
-      setEffect(rule.effect)
-      setPriority(String(rule.priority))
-      setRead(rule.permissions.read)
-      setWrite(rule.permissions.write)
-      setDeleteP(rule.permissions.delete)
-      setShare(rule.permissions.share)
-      setInherit(rule.inherit_to_children)
-    } else if (isOpen) {
-      setSourceId(sources[0]?.id ? String(sources[0].id) : '')
-      setPath('/')
-      setSubjectType('user')
-      setSubjectId('')
-      setEffect('allow')
-      setPriority('0')
-      setRead(true)
-      setWrite(false)
-      setDeleteP(false)
-      setShare(false)
-      setInherit(true)
-    }
-  }, [isOpen, rule, sources])
-
-  if (!isOpen) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -329,23 +297,18 @@ export function AclPage() {
     enabled: canRead,
   })
 
-  const sources = sourcesData?.items || []
-
-  useEffect(() => {
-    if (sources.length > 0 && currentSourceId === null) {
-      setCurrentSourceId(sources[0].id)
-    }
-  }, [sources, currentSourceId])
+  const sources = useMemo(() => sourcesData?.items ?? [], [sourcesData?.items])
+  const selectedSourceId = currentSourceId ?? sources[0]?.id ?? null
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['acl-rules', currentSourceId],
+    queryKey: ['acl-rules', selectedSourceId],
     queryFn: () =>
       aclApi.list({
-        source_id: currentSourceId!,
+        source_id: selectedSourceId!,
         page: 1,
         page_size: 100,
       }),
-    enabled: canRead && currentSourceId !== null,
+    enabled: canRead && selectedSourceId !== null,
   })
 
   const handleDelete = async (id: number) => {
@@ -353,7 +316,7 @@ export function AclPage() {
     try {
       await aclApi.delete(id)
       addToast('规则已删除', 'success')
-      queryClient.invalidateQueries({ queryKey: ['acl-rules', currentSourceId] })
+      queryClient.invalidateQueries({ queryKey: ['acl-rules', selectedSourceId] })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '删除失败'
       addToast(msg, 'error')
@@ -377,7 +340,7 @@ export function AclPage() {
           <h1 className="text-lg font-semibold text-foreground">ACL 管理</h1>
           {sources.length > 0 && (
             <select
-              value={currentSourceId ?? ''}
+              value={selectedSourceId ?? ''}
               onChange={(e) => setCurrentSourceId(Number(e.target.value))}
               className="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             >
@@ -402,7 +365,7 @@ export function AclPage() {
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin p-4">
-        {currentSourceId === null ? (
+        {selectedSourceId === null ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
             <Shield className="w-12 h-12 opacity-30" />
             <p>请选择存储源</p>
@@ -523,13 +486,15 @@ export function AclPage() {
         )}
       </div>
 
-      <AclRuleModal
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onSuccess={() => queryClient.invalidateQueries({ queryKey: ['acl-rules', currentSourceId] })}
-        rule={editTarget}
-        sources={sources}
-      />
+      {modalOpen && (
+        <AclRuleModal
+          key={editTarget?.id ?? 'create'}
+          onClose={() => setModalOpen(false)}
+          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['acl-rules', selectedSourceId] })}
+          rule={editTarget}
+          sources={sources}
+        />
+      )}
     </div>
   )
 }

@@ -18,9 +18,57 @@ import {
   HardDrive,
   Server,
 } from 'lucide-react'
-import { formatBytes, formatDate, formatDuration, formatSpeed } from '@/utils'
+import { cn, formatBytes, formatDate, formatDuration, formatSpeed } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
 import type { DownloadTask } from '@/types/api'
+
+const STATUS_LABELS: Record<DownloadTask['status'], string> = {
+  pending: 'pending · 等待中',
+  running: 'running · 下载中',
+  paused: 'paused · 已暂停',
+  completed: 'completed · 已完成',
+  failed: 'failed · 失败',
+  canceled: 'canceled · 已取消',
+}
+
+const STATUS_BADGE_CLASSES: Record<DownloadTask['status'], string> = {
+  pending: 'bg-muted text-muted-foreground',
+  running: 'bg-primary/10 text-primary',
+  paused: 'bg-amber-500/10 text-amber-500',
+  completed: 'bg-emerald-500/10 text-emerald-500',
+  failed: 'bg-destructive/10 text-destructive',
+  canceled: 'bg-muted text-muted-foreground',
+}
+
+function getTaskProgressPercent(task: DownloadTask) {
+  if (task.status === 'completed') return 100
+  if (Number.isFinite(task.progress) && task.progress > 0) {
+    return Math.min(Math.max(task.progress, 0), 100)
+  }
+  if (task.total_bytes && task.downloaded_bytes > 0) {
+    return Math.min(Math.max((task.downloaded_bytes / task.total_bytes) * 100, 0), 100)
+  }
+  return 0
+}
+
+function getTaskBytesLabel(task: DownloadTask) {
+  const downloaded = task.downloaded_bytes || 0
+  if (task.total_bytes) {
+    return `${formatBytes(downloaded)} / ${formatBytes(task.total_bytes)}（${downloaded} / ${task.total_bytes} bytes）`
+  }
+  if (downloaded > 0) {
+    return `已下载 ${formatBytes(downloaded)}（${downloaded} bytes）`
+  }
+  return '等待获取文件大小'
+}
+
+function shouldShowTaskProgress(task: DownloadTask) {
+  return task.status === 'running'
+    || task.status === 'paused'
+    || task.status === 'completed'
+    || task.status === 'failed'
+    || task.downloaded_bytes > 0
+}
 
 function StatusIcon({ status }: { status: DownloadTask['status'] }) {
   switch (status) {
@@ -40,41 +88,23 @@ function StatusIcon({ status }: { status: DownloadTask['status'] }) {
 }
 
 function CreateTaskModal({
-  isOpen,
   onClose,
   onSubmit,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSubmit: (url: string, sourceId: number, savePath: string) => void
 }) {
-  const [url, setUrl] = useState('')
-  const [sourceId, setSourceId] = useState('')
-  const [savePath, setSavePath] = useState('/')
   const { currentSource } = useFileStore()
+  const [url, setUrl] = useState('')
+  const [sourceId, setSourceId] = useState(currentSource ? String(currentSource.id) : '')
+  const [savePath, setSavePath] = useState('/')
 
   const { data: sourcesData } = useQuery({
     queryKey: ['sources-task-modal'],
     queryFn: () => sourceApi.list({ page: 1, page_size: 100 }),
-    enabled: isOpen,
   })
   const sources = sourcesData?.items || []
-
-  useEffect(() => {
-    if (isOpen) {
-      setUrl('')
-      setSavePath('/')
-      if (currentSource) {
-        setSourceId(String(currentSource.id))
-      } else if (sources.length > 0) {
-        setSourceId(String(sources[0].id))
-      } else {
-        setSourceId('')
-      }
-    }
-  }, [isOpen, currentSource, sources])
-
-  if (!isOpen) return null
+  const effectiveSourceId = sourceId || (sources[0]?.id ? String(sources[0].id) : '')
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -108,7 +138,7 @@ function CreateTaskModal({
             <div className="relative">
               <Server className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <select
-                value={sourceId}
+                value={effectiveSourceId}
                 onChange={(e) => setSourceId(e.target.value)}
                 className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring appearance-none"
               >
@@ -139,12 +169,12 @@ function CreateTaskModal({
             </button>
             <button
               onClick={() => {
-                const sid = parseInt(sourceId, 10)
+                const sid = parseInt(effectiveSourceId, 10)
                 if (url.trim() && sid > 0) {
                   onSubmit(url.trim(), sid, savePath)
                 }
               }}
-              disabled={!url.trim() || !sourceId}
+              disabled={!url.trim() || !effectiveSourceId}
               className="px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               创建任务
@@ -242,18 +272,32 @@ export function TasksPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {tasks.map((task) => (
-              <div
-                key={task.id}
-                className="p-4 rounded-lg border border-border bg-card"
-              >
+            {tasks.map((task) => {
+              const progressPercent = getTaskProgressPercent(task)
+              const showProgress = shouldShowTaskProgress(task)
+
+              return (
+                <div
+                  key={task.id}
+                  className="p-4 rounded-lg border border-border bg-card"
+                >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <StatusIcon status={task.status} />
                     <div className="min-w-0">
-                      <h3 className="font-medium text-foreground truncate">
-                        {task.display_name}
-                      </h3>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <h3 className="font-medium text-foreground truncate">
+                          {task.display_name}
+                        </h3>
+                        <span
+                          className={cn(
+                            'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium',
+                            STATUS_BADGE_CLASSES[task.status]
+                          )}
+                        >
+                          {STATUS_LABELS[task.status]}
+                        </span>
+                      </div>
                       <p className="text-xs text-muted-foreground truncate mt-0.5">
                         {task.source_url}
                       </p>
@@ -290,21 +334,34 @@ export function TasksPage() {
                   </div>
                 </div>
 
-                {task.status === 'running' && task.total_bytes && (
+                {showProgress && (
                   <div className="mb-3">
                     <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                      <span>{formatBytes(task.downloaded_bytes)} / {formatBytes(task.total_bytes)}</span>
-                      <span>{Math.round(task.progress)}%</span>
+                      <span>{getTaskBytesLabel(task)}</span>
+                      <span>{Math.round(progressPercent)}%</span>
                     </div>
                     <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-primary rounded-full transition-all"
-                        style={{ width: `${task.progress}%` }}
+                        className={cn(
+                          'h-full rounded-full transition-all',
+                          task.status === 'completed' ? 'bg-emerald-500' : 'bg-primary'
+                        )}
+                        style={{ width: `${progressPercent}%` }}
                       />
                     </div>
                     <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                      <span>{formatSpeed(task.speed_bytes)}</span>
-                      <span>剩余 {formatDuration(task.eta_seconds)}</span>
+                      <span>
+                        {task.status === 'completed'
+                          ? '下载已完成'
+                          : formatSpeed(task.speed_bytes)}
+                      </span>
+                      <span>
+                        {task.status === 'completed'
+                          ? '100%'
+                          : task.eta_seconds !== null
+                            ? `剩余 ${formatDuration(task.eta_seconds)}`
+                            : '剩余时间未知'}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -316,18 +373,23 @@ export function TasksPage() {
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
                   <span>保存至: {task.save_path}</span>
                   <span>创建于: {formatDate(task.created_at)}</span>
+                  {task.status === 'completed' && task.finished_at && (
+                    <span>完成于: {formatDate(task.finished_at)}</span>
+                  )}
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
 
-      <CreateTaskModal
-        isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onSubmit={handleCreate}
-      />
+      {createModalOpen && (
+        <CreateTaskModal
+          onClose={() => setCreateModalOpen(false)}
+          onSubmit={handleCreate}
+        />
+      )}
     </div>
   )
 }

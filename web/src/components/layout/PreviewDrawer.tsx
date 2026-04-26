@@ -2,57 +2,35 @@ import { X, Music, File } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { fileApi } from '@/api/file'
 import { fileV2Api } from '@/api/fileV2'
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/utils'
 
 export function PreviewDrawer() {
   const { preview, closePreview } = useUIStore()
   const { isOpen, mode, filePath, sourceId, fileName, mimeType } = preview
-  const [url, setUrl] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const canLoadPreview = isOpen && !!filePath && (mode === 'v2' || !!sourceId)
 
-  useEffect(() => {
-    if (!isOpen || !filePath || (mode === 'v1' && !sourceId)) {
-      setUrl(null)
-      return
-    }
-
-    let revoked = false
-    setLoading(true)
-    setUrl(null)
-
-    const request =
-      mode === 'v2'
-        ? fileV2Api.accessUrl({
-            path: filePath,
-            purpose: 'preview',
-            disposition: 'inline',
-          })
-        : fileApi.getAccessUrl({
-            source_id: sourceId!,
-            path: filePath,
-            purpose: 'preview',
-            disposition: 'inline',
-          })
-
-    request
-      .then((res) => {
-        if (!revoked) {
-          setUrl(res.url)
-        }
-      })
-      .catch(() => {
-        if (!revoked) {
-          setUrl(null)
-        }
-      })
-      .finally(() => setLoading(false))
-
-    return () => {
-      revoked = true
-      if (url) URL.revokeObjectURL(url)
-    }
-  }, [isOpen, mode, filePath, sourceId])
+  const { data: previewUrl, isLoading: loading } = useQuery({
+    queryKey: ['preview-url', mode, sourceId, filePath],
+    queryFn: async () => {
+      const res =
+        mode === 'v2'
+          ? await fileV2Api.accessUrl({
+              path: filePath!,
+              purpose: 'preview',
+              disposition: 'inline',
+            })
+          : await fileApi.getAccessUrl({
+              source_id: sourceId!,
+              path: filePath!,
+              purpose: 'preview',
+              disposition: 'inline',
+            })
+      return res.url
+    },
+    enabled: canLoadPreview,
+  })
+  const url = previewUrl ?? null
 
   if (!isOpen) return null
 

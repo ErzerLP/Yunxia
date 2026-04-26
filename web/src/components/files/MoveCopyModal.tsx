@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { X, Folder, ArrowRight, Copy, FolderInput } from 'lucide-react'
 import { fileApi } from '@/api/file'
-import { useFileStore } from '@/stores/fileStore'
 import { cn } from '@/utils'
 
 interface MoveCopyModalProps {
@@ -24,42 +24,26 @@ export function MoveCopyModal({
   onSuccess,
 }: MoveCopyModalProps) {
   const [currentPath, setCurrentPath] = useState('/')
-  const [folders, setFolders] = useState<{ name: string; path: string }[]>([])
-  const [isLoading, setIsLoading] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const { currentSource } = useFileStore()
 
-  useEffect(() => {
-    if (isOpen) {
-      setCurrentPath('/')
-      loadFolders('/')
-    }
-  }, [isOpen])
-
-  const loadFolders = async (path: string) => {
-    if (!currentSource) return
-    setIsLoading(true)
-    try {
+  const { data: folders = [], isLoading } = useQuery({
+    queryKey: ['move-copy-folders', sourceId, currentPath],
+    queryFn: async () => {
       const res = await fileApi.list({
         source_id: sourceId,
-        path,
+        path: currentPath,
         page: 1,
         page_size: 100,
       })
-      const dirs = res.items
+      return res.items
         .filter((item) => item.is_dir)
         .map((item) => ({ name: item.name, path: item.path }))
-      setFolders(dirs)
-    } catch {
-      setFolders([])
-    } finally {
-      setIsLoading(false)
-    }
-  }
+    },
+    enabled: isOpen,
+  })
 
   const navigateTo = (path: string) => {
     setCurrentPath(path)
-    loadFolders(path)
   }
 
   const navigateUp = () => {

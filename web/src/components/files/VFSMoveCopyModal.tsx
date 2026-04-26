@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { X, Folder, ArrowRight, Copy, FolderInput } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { cn } from '@/utils'
@@ -21,35 +22,21 @@ export function VFSMoveCopyModal({
   onSuccess,
 }: VFSMoveCopyModalProps) {
   const [currentPath, setCurrentPath] = useState('/')
-  const [folders, setFolders] = useState<{ name: string; path: string }[]>([])
-  const [isLoading, setIsLoading] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  useEffect(() => {
-    if (isOpen) {
-      setCurrentPath('/')
-      loadFolders('/')
-    }
-  }, [isOpen])
-
-  const loadFolders = async (path: string) => {
-    setIsLoading(true)
-    try {
-      const res = await fileV2Api.list({ path, page: 1, page_size: 100 })
-      const dirs = res.items
+  const { data: folders = [], isLoading } = useQuery({
+    queryKey: ['vfs-move-copy-folders', currentPath],
+    queryFn: async () => {
+      const res = await fileV2Api.list({ path: currentPath, page: 1, page_size: 100 })
+      return res.items
         .filter((item) => item.entry_kind === 'directory')
         .map((item) => ({ name: item.name, path: item.path }))
-      setFolders(dirs)
-    } catch {
-      setFolders([])
-    } finally {
-      setIsLoading(false)
-    }
-  }
+    },
+    enabled: isOpen,
+  })
 
   const navigateTo = (path: string) => {
     setCurrentPath(path)
-    loadFolders(path)
   }
 
   const navigateUp = () => {

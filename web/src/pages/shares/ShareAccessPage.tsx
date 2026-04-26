@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { sharePublicApi } from '@/api/sharePublic'
 import type { PublicShareEntry } from '@/api/sharePublic'
@@ -111,13 +111,13 @@ export function ShareAccessPage() {
   const [needsPassword, setNeedsPassword] = useState(false)
   const [verifiedPassword, setVerifiedPassword] = useState<string | undefined>(undefined)
 
-  const loadShare = async (password?: string) => {
+  const loadShare = useCallback(async (pathToLoad = '/', password?: string) => {
     if (!token) return
-    const effectivePassword = password ?? verifiedPassword
+    const effectivePassword = password
     setIsLoading(true)
     setError(null)
     try {
-      const res = await sharePublicApi.open(token, effectivePassword, currentPath)
+      const res = await sharePublicApi.open(token, effectivePassword, pathToLoad)
       if (!res || !res.share) {
         setError('分享数据格式错误')
         setIsLoading(false)
@@ -149,7 +149,7 @@ export function ShareAccessPage() {
         })
         setItems([{
           name: '下载文件',
-          path: currentPath || '/',
+          path: pathToLoad || '/',
           parent_path: '/',
           is_dir: false,
           preview_type: '',
@@ -176,19 +176,22 @@ export function ShareAccessPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [token])
 
   useEffect(() => {
     if (token) {
-      loadShare()
+      const timer = window.setTimeout(() => {
+        void loadShare('/')
+      }, 0)
+      return () => window.clearTimeout(timer)
     }
-  }, [token])
+  }, [loadShare, token])
 
   const handleVerifyPassword = (password: string) => {
     if (!token) return
     setIsVerifying(true)
     setPasswordError(null)
-    loadShare(password).finally(() => {
+    loadShare(currentPath, password).finally(() => {
       setIsVerifying(false)
     })
   }
@@ -197,17 +200,7 @@ export function ShareAccessPage() {
     if (!item.is_dir || !token) return
     setIsLoading(true)
     try {
-      const res = await sharePublicApi.open(token, verifiedPassword, item.path)
-      if (res.share) {
-        setShareInfo({
-          name: res.share.name,
-          is_dir: res.share.is_dir,
-          has_password: res.share.has_password,
-          expires_at: res.share.expires_at,
-        })
-      }
-      setItems(res.items || [])
-      setCurrentPath(res.current_path || '/')
+      await loadShare(item.path, verifiedPassword)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败'
       setError(msg)
@@ -221,17 +214,7 @@ export function ShareAccessPage() {
     const parent = currentPath.split('/').slice(0, -1).join('/') || '/'
     setIsLoading(true)
     try {
-      const res = await sharePublicApi.open(token, verifiedPassword, parent)
-      if (res.share) {
-        setShareInfo({
-          name: res.share.name,
-          is_dir: res.share.is_dir,
-          has_password: res.share.has_password,
-          expires_at: res.share.expires_at,
-        })
-      }
-      setItems(res.items || [])
-      setCurrentPath(res.current_path || '/')
+      await loadShare(parent, verifiedPassword)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败'
       setError(msg)

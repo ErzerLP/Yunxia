@@ -38,11 +38,9 @@ const roleBadgeClass: Record<string, string> = {
 }
 
 function CreateUserModal({
-  isOpen,
   onClose,
   onSuccess,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
 }) {
@@ -51,17 +49,6 @@ function CreateUserModal({
   const [email, setEmail] = useState('')
   const [roleKey, setRoleKey] = useState('user')
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen) {
-      setUsername('')
-      setPassword('')
-      setEmail('')
-      setRoleKey('user')
-    }
-  }, [isOpen])
-
-  if (!isOpen) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -175,30 +162,18 @@ function CreateUserModal({
 }
 
 function EditUserModal({
-  isOpen,
   onClose,
   onSuccess,
   user,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
-  user: UserType | null
+  user: UserType
 }) {
-  const [email, setEmail] = useState('')
-  const [roleKey, setRoleKey] = useState('user')
-  const [status, setStatus] = useState<'active' | 'locked'>('active')
+  const [email, setEmail] = useState(user.email || '')
+  const [roleKey, setRoleKey] = useState(user.role_key)
+  const [status, setStatus] = useState<'active' | 'locked'>(user.status)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen && user) {
-      setEmail(user.email || '')
-      setRoleKey(user.role_key)
-      setStatus(user.status)
-    }
-  }, [isOpen, user])
-
-  if (!isOpen || !user) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -330,24 +305,16 @@ function EditUserModal({
 }
 
 function ResetPasswordModal({
-  isOpen,
   onClose,
   onSuccess,
   user,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
-  user: UserType | null
+  user: UserType
 }) {
   const [password, setPassword] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen) setPassword('')
-  }, [isOpen])
-
-  if (!isOpen || !user) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -584,29 +551,34 @@ export function UsersPage() {
         )}
       </div>
 
-      <CreateUserModal
-        isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ['users'] })
-          addToast('用户创建成功', 'success')
-        }}
-      />
-      <EditUserModal
-        isOpen={!!editTarget}
-        onClose={() => setEditTarget(null)}
-        onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ['users'] })
-          addToast('用户更新成功', 'success')
-        }}
-        user={editTarget}
-      />
-      <ResetPasswordModal
-        isOpen={!!resetTarget}
-        onClose={() => setResetTarget(null)}
-        onSuccess={() => addToast('密码重置成功', 'success')}
-        user={resetTarget}
-      />
+      {createModalOpen && (
+        <CreateUserModal
+          onClose={() => setCreateModalOpen(false)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['users'] })
+            addToast('用户创建成功', 'success')
+          }}
+        />
+      )}
+      {editTarget && (
+        <EditUserModal
+          key={editTarget.id}
+          onClose={() => setEditTarget(null)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['users'] })
+            addToast('用户更新成功', 'success')
+          }}
+          user={editTarget}
+        />
+      )}
+      {resetTarget && (
+        <ResetPasswordModal
+          key={resetTarget.id}
+          onClose={() => setResetTarget(null)}
+          onSuccess={() => addToast('密码重置成功', 'success')}
+          user={resetTarget}
+        />
+      )}
     </div>
   )
 }

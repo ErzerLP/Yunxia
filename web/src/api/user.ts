@@ -11,7 +11,7 @@ export const userApi = {
   delete: (id: number) =>
     apiClient.delete<{ deleted: boolean; id: number }>(`/users/${id}`),
   resetPassword: (id: number, password: string) =>
-    apiClient.post<{}>(`/users/${id}/reset-password`, { password }),
+    apiClient.post<Record<string, never>>(`/users/${id}/reset-password`, { password }),
   revokeTokens: (id: number) =>
-    apiClient.post<{}>(`/users/${id}/revoke-tokens`, {}),
+    apiClient.post<Record<string, never>>(`/users/${id}/revoke-tokens`, {}),
 }

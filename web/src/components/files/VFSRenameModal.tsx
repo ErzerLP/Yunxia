@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { X, Pencil } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { cn } from '@/utils'
@@ -14,14 +14,6 @@ interface VFSRenameModalProps {
 export function VFSRenameModal({ isOpen, onClose, path, currentName, onSuccess }: VFSRenameModalProps) {
   const [newName, setNewName] = useState(currentName)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (isOpen) {
-      setNewName(currentName)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }, [isOpen, currentName])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -61,7 +53,7 @@ export function VFSRenameModal({ isOpen, onClose, path, currentName, onSuccess }
 
         <form onSubmit={handleSubmit} className="p-4">
           <input
-            ref={inputRef}
+            autoFocus
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}

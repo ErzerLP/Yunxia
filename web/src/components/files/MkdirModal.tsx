@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState } from 'react'
 import { X, FolderPlus } from 'lucide-react'
 import { fileApi } from '@/api/file'
 import { useUIStore } from '@/stores/uiStore'
@@ -16,16 +16,7 @@ export function MkdirModal({ isOpen, onClose, sourceId, parentPath, onSuccess }:
   const [name, setName] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
   const { addToast } = useUIStore()
-
-  useEffect(() => {
-    if (isOpen) {
-      setName('')
-      setError(null)
-      setTimeout(() => inputRef.current?.focus(), 50)
-    }
-  }, [isOpen])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -68,7 +59,7 @@ export function MkdirModal({ isOpen, onClose, sourceId, parentPath, onSuccess }:
 
         <form onSubmit={handleSubmit} className="p-4">
           <input
-            ref={inputRef}
+            autoFocus
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}

@@ -13,20 +13,8 @@ import { UsersPage } from '@/pages/users/UsersPage'
 import { AclPage } from '@/pages/acl/AclPage'
 import { AuditPage } from '@/pages/audit/AuditPage'
 import { ShareAccessPage } from '@/pages/shares/ShareAccessPage'
-import { useCapabilityGuard } from '@/hooks/useCapability'
+import { CapabilityRoute } from './CapabilityRoute'
 import App from '@/App'
-
-function CapabilityRoute({ cap, children }: { cap: string; children: React.ReactNode }) {
-  const { allowed, isLoading } = useCapabilityGuard(cap)
-  if (isLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-      </div>
-    )
-  }
-  return allowed ? <>{children}</> : null
-}
 
 export const router = createBrowserRouter([
   {

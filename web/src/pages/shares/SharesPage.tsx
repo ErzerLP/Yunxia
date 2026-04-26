@@ -54,31 +54,19 @@ function ShareIcon({ share }: { share: Share }) {
 }
 
 function EditShareModal({
-  isOpen,
   onClose,
   onSuccess,
   share,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
-  share: Share | null
+  share: Share
 }) {
   const [expiresIn, setExpiresIn] = useState('')
   const [password, setPassword] = useState('')
   const [removePassword, setRemovePassword] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const { addToast } = useUIStore()
-
-  useEffect(() => {
-    if (isOpen && share) {
-      setExpiresIn('')
-      setPassword('')
-      setRemovePassword(false)
-    }
-  }, [isOpen, share])
-
-  if (!isOpen || !share) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -183,11 +171,9 @@ function EditShareModal({
 }
 
 function CreateShareModal({
-  isOpen,
   onClose,
   onSuccess,
 }: {
-  isOpen: boolean
   onClose: () => void
   onSuccess: () => void
 }) {
@@ -196,17 +182,6 @@ function CreateShareModal({
   const [expiresIn, setExpiresIn] = useState('')
   const [password, setPassword] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (isOpen) {
-      setSourceId('')
-      setPath('/')
-      setExpiresIn('')
-      setPassword('')
-    }
-  }, [isOpen])
-
-  if (!isOpen) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -441,22 +416,25 @@ export function SharesPage() {
         )}
       </div>
 
-      <CreateShareModal
-        isOpen={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ['shares'] })
-          addToast('分享创建成功', 'success')
-        }}
-      />
-      <EditShareModal
-        isOpen={!!editTarget}
-        onClose={() => setEditTarget(null)}
-        onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ['shares'] })
-        }}
-        share={editTarget}
-      />
+      {createModalOpen && (
+        <CreateShareModal
+          onClose={() => setCreateModalOpen(false)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['shares'] })
+            addToast('分享创建成功', 'success')
+          }}
+        />
+      )}
+      {editTarget && (
+        <EditShareModal
+          key={editTarget.id}
+          onClose={() => setEditTarget(null)}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['shares'] })
+          }}
+          share={editTarget}
+        />
+      )}
     </div>
   )
 }
