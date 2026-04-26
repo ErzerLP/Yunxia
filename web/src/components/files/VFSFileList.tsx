@@ -59,6 +59,7 @@ export function VFSFileList() {
         page: 1,
         page_size: 100,
       }),
+    refetchOnMount: 'always',
   })
 
   const { data: sourcesData } = useQuery({

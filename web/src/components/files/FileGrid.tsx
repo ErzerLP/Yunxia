@@ -58,6 +58,7 @@ export function FileGrid() {
         page_size: 100,
       }),
     enabled: !!currentSource,
+    refetchOnMount: 'always',
   })
 
   useEffect(() => {

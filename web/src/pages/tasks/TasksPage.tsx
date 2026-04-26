@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { QueryClient } from '@tanstack/react-query'
 import { taskApi } from '@/api/task'
 import { sourceApi } from '@/api/source'
 import {
@@ -68,6 +69,15 @@ function shouldShowTaskProgress(task: DownloadTask) {
     || task.status === 'completed'
     || task.status === 'failed'
     || task.downloaded_bytes > 0
+}
+
+function getCompletedTaskRefreshKey(task: DownloadTask) {
+  return `${task.id}:${task.finished_at ?? task.updated_at}`
+}
+
+function invalidateCompletedTaskFileQueries(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: ['files'] })
+  void queryClient.invalidateQueries({ queryKey: ['vfs'] })
 }
 
 function StatusIcon({ status }: { status: DownloadTask['status'] }) {
@@ -191,6 +201,7 @@ export function TasksPage() {
   const queryClient = useQueryClient()
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
   const [createModalOpen, setCreateModalOpen] = useState(false)
+  const refreshedCompletedTasksRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -203,6 +214,25 @@ export function TasksPage() {
     queryFn: () => taskApi.list({ page: 1, page_size: 100 }),
     refetchInterval: 3000,
   })
+  const taskItems = useMemo(() => data?.items ?? [], [data?.items])
+
+  useEffect(() => {
+    let hasNewCompletedTask = false
+
+    for (const task of taskItems) {
+      if (task.status !== 'completed') continue
+
+      const key = getCompletedTaskRefreshKey(task)
+      if (refreshedCompletedTasksRef.current.has(key)) continue
+
+      refreshedCompletedTasksRef.current.add(key)
+      hasNewCompletedTask = true
+    }
+
+    if (hasNewCompletedTask) {
+      invalidateCompletedTaskFileQueries(queryClient)
+    }
+  }, [queryClient, taskItems])
 
   const handleCreate = async (url: string, sourceId: number, savePath: string) => {
     try {
@@ -249,7 +279,7 @@ export function TasksPage() {
     )
   }
 
-  const tasks = data?.items || []
+  const tasks = taskItems
 
   return (
     <div className="flex flex-col h-full">

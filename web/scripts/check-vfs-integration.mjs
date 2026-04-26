@@ -208,5 +208,40 @@ assertIncludes(
   'displayedVfsItems',
   'VFS 文件网格应优先渲染本次 query data，避免 store effect 尚未同步时误显示空目录。',
 )
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  'invalidateCompletedTaskFileQueries',
+  '离线下载任务完成后必须让文件页/VFS 页缓存失效，切换页面时能看到新文件。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  "queryKey: ['files']",
+  '离线下载任务完成后必须失效传统文件列表查询缓存。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  "queryKey: ['vfs']",
+  '离线下载任务完成后必须失效 VFS 文件列表查询缓存。',
+)
+assertIncludes(
+  'src/components/files/FileList.tsx',
+  "refetchOnMount: 'always'",
+  '传统文件列表进入页面时必须强制刷新，避免使用 staleTime 内的旧缓存。',
+)
+assertIncludes(
+  'src/components/files/FileGrid.tsx',
+  "refetchOnMount: 'always'",
+  '传统文件网格进入页面时必须强制刷新，避免使用 staleTime 内的旧缓存。',
+)
+assertIncludes(
+  'src/components/files/VFSFileList.tsx',
+  "refetchOnMount: 'always'",
+  'VFS 文件列表进入页面时必须强制刷新，避免使用 staleTime 内的旧缓存。',
+)
+assertIncludes(
+  'src/components/files/VFSFileGrid.tsx',
+  "refetchOnMount: 'always'",
+  'VFS 文件网格进入页面时必须强制刷新，避免使用 staleTime 内的旧缓存。',
+)
 
 console.log('VFS integration static checks passed')
