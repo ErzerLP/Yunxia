@@ -67,6 +67,41 @@ assertIncludes(
   "setMode('v2')",
   '进入 VFS 页面时必须把文件 Store 切换到 v2 模式，上传弹窗才能传虚拟路径。',
 )
+assertNotIncludes(
+  'src/components/layout/Sidebar.tsx',
+  "label: '虚拟目录'",
+  '侧边栏文件相关入口只保留“文件”标签，不再展示“虚拟目录”标签。',
+)
+assertNotIncludes(
+  'src/components/layout/Sidebar.tsx',
+  "id: 'vfs'",
+  '侧边栏不应再使用单独的 vfs 导航项。',
+)
+assertIncludes(
+  'src/components/layout/Sidebar.tsx',
+  "id: 'files'",
+  '侧边栏必须保留唯一的文件入口。',
+)
+assertIncludes(
+  'src/components/layout/Sidebar.tsx',
+  "label: '文件'",
+  '侧边栏文件入口展示名称必须是“文件”。',
+)
+assertIncludes(
+  'src/router/index.tsx',
+  '<Navigate to="/files" replace />',
+  '首页默认入口应进入文件页。',
+)
+assertRegex(
+  'src/router/index.tsx',
+  /path:\s*['"]files['"],\s*element:\s*<VFSFileManagerPage\s*\/>/,
+  '文件页 /files 必须使用虚拟目录页面，而不是传统存储源选择页面。',
+)
+assertRegex(
+  'src/router/index.tsx',
+  /path:\s*['"]files\/\*['"],\s*element:\s*<VFSFileManagerPage\s*\/>/,
+  '文件页子路径 /files/* 必须使用虚拟目录页面。',
+)
 assertIncludes(
   'src/pages/files/FileManagerPage.tsx',
   "setMode('v1')",

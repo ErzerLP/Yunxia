@@ -1,12 +1,11 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-import { FolderOpen, HardDrive, Download, Trash2, Link, Settings, Menu, ChevronLeft, Users, FolderTree, Shield, ScrollText } from 'lucide-react'
+import { HardDrive, Download, Trash2, Link, Settings, Menu, ChevronLeft, Users, FolderTree, Shield, ScrollText } from 'lucide-react'
 import { useAuthStore } from '@/stores/authStore'
 import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 const navItems = [
-  { id: 'files', label: '文件', icon: FolderOpen, path: '/files' },
-  { id: 'vfs', label: '虚拟目录', icon: FolderTree, path: '/vfs' },
+  { id: 'files', label: '文件', icon: FolderTree, path: '/files' },
   { id: 'sources', label: '存储源', icon: HardDrive, path: '/sources', capability: 'source.read' },
   { id: 'tasks', label: '离线下载', icon: Download, path: '/tasks', capability: 'task.read_all' },
   { id: 'trash', label: '回收站', icon: Trash2, path: '/trash' },

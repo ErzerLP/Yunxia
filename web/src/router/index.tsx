@@ -2,7 +2,6 @@ import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { SetupPage } from '@/pages/setup/SetupPage'
 import { LoginPage } from '@/pages/auth/LoginPage'
-import { FileManagerPage } from '@/pages/files/FileManagerPage'
 import { VFSFileManagerPage } from '@/pages/files/VFSFileManagerPage'
 import { SourcesPage } from '@/pages/sources/SourcesPage'
 import { TasksPage } from '@/pages/tasks/TasksPage'
@@ -42,10 +41,10 @@ export const router = createBrowserRouter([
         element: <AppLayout />,
         children: [
           { index: true, element: <Navigate to="/files" replace /> },
-          { path: 'files', element: <FileManagerPage /> },
-          { path: 'files/*', element: <FileManagerPage /> },
-          { path: 'vfs', element: <VFSFileManagerPage /> },
-          { path: 'vfs/*', element: <VFSFileManagerPage /> },
+          { path: 'files', element: <VFSFileManagerPage /> },
+          { path: 'files/*', element: <VFSFileManagerPage /> },
+          { path: 'vfs', element: <Navigate to="/files" replace /> },
+          { path: 'vfs/*', element: <Navigate to="/files" replace /> },
           { path: 'sources', element: <CapabilityRoute cap="source.read"><SourcesPage /></CapabilityRoute> },
           { path: 'tasks', element: <CapabilityRoute cap="task.read_all"><TasksPage /></CapabilityRoute> },
           { path: 'trash', element: <TrashPage /> },
