@@ -315,6 +315,21 @@ assertIncludes(
 )
 assertIncludes(
   'src/pages/tasks/TasksPage.tsx',
+  'getTaskSavePathLabel',
+  '离线下载任务卡片保存路径需要统一使用展示 helper。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  'save_virtual_path',
+  '离线下载任务保存路径展示必须优先使用后端返回的虚拟路径 save_virtual_path。',
+)
+assertNotIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  '保存至: {task.save_path}',
+  '离线下载任务卡片不能只显示原始 save_path，否则 VFS 目标会误显示为 /。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
   "queryKey: ['files']",
   '离线下载任务完成后必须失效传统文件列表查询缓存。',
 )
@@ -342,6 +357,68 @@ assertIncludes(
   'src/components/files/VFSFileGrid.tsx',
   "refetchOnMount: 'always'",
   'VFS 文件网格进入页面时必须强制刷新，避免使用 staleTime 内的旧缓存。',
+)
+
+// Regression checks for login-related form accessibility.
+assertIncludes(
+  'src/pages/auth/LoginPage.tsx',
+  'htmlFor="login-username"',
+  '登录页用户名 label 必须用 htmlFor 关联输入框。',
+)
+assertIncludes(
+  'src/pages/auth/LoginPage.tsx',
+  'id="login-username"',
+  '登录页用户名输入框必须提供 id。',
+)
+assertIncludes(
+  'src/pages/auth/LoginPage.tsx',
+  'name="username"',
+  '登录页用户名输入框必须提供 name。',
+)
+assertIncludes(
+  'src/pages/auth/LoginPage.tsx',
+  'autoComplete="current-password"',
+  '登录页密码框必须声明 current-password autocomplete。',
+)
+assertIncludes(
+  'src/pages/auth/LoginPage.tsx',
+  'id="login-password"',
+  '登录页密码输入框必须提供 id。',
+)
+assertIncludes(
+  'src/pages/setup/SetupPage.tsx',
+  'htmlFor="setup-password"',
+  '初始化页密码 label 必须用 htmlFor 关联输入框。',
+)
+assertIncludes(
+  'src/pages/setup/SetupPage.tsx',
+  'id="setup-username"',
+  '初始化页用户名输入框必须提供 id。',
+)
+assertIncludes(
+  'src/pages/setup/SetupPage.tsx',
+  'name="confirmPassword"',
+  '初始化页确认密码输入框必须提供 name。',
+)
+assertIncludes(
+  'src/pages/setup/SetupPage.tsx',
+  'autoComplete="new-password"',
+  '初始化页新密码和确认密码必须声明 new-password autocomplete。',
+)
+assertIncludes(
+  'src/pages/shares/ShareAccessPage.tsx',
+  'htmlFor="share-access-password"',
+  '公开分享密码表单必须用 label 关联密码框。',
+)
+assertIncludes(
+  'src/pages/shares/ShareAccessPage.tsx',
+  'id="share-access-password"',
+  '公开分享密码框必须提供 id。',
+)
+assertIncludes(
+  'src/pages/shares/ShareAccessPage.tsx',
+  'name="password"',
+  '公开分享密码框必须提供 name，避免浏览器表单可访问性提示。',
 )
 
 console.log('VFS integration static checks passed')

@@ -73,13 +73,17 @@ function PasswordForm({
           <p className="text-sm text-muted-foreground text-center">请输入访问密码以查看分享内容</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-3">
+          <label htmlFor="share-access-password" className="sr-only">访问密码</label>
           <input
+            id="share-access-password"
+            name="password"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="访问密码"
             className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             autoFocus
+            autoComplete="current-password"
           />
           {error && <p className="text-sm text-destructive">{error}</p>}
           <button

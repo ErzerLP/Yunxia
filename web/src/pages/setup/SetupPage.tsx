@@ -72,32 +72,39 @@ export function SetupPage() {
           )}
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-card-foreground">用户名</label>
+            <label htmlFor="setup-username" className="text-sm font-medium text-card-foreground">用户名</label>
             <input
+              id="setup-username"
+              name="username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="请输入用户名"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               required
+              autoComplete="username"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-card-foreground">密码</label>
+            <label htmlFor="setup-password" className="text-sm font-medium text-card-foreground">密码</label>
             <div className="relative">
               <input
+                id="setup-password"
+                name="password"
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="至少6位字符"
                 className="w-full px-3 py-2 pr-10 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 required
+                autoComplete="new-password"
               />
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label={showPassword ? '隐藏密码' : '显示密码'}
               >
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -105,25 +112,31 @@ export function SetupPage() {
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-card-foreground">确认密码</label>
+            <label htmlFor="setup-confirm-password" className="text-sm font-medium text-card-foreground">确认密码</label>
             <input
+              id="setup-confirm-password"
+              name="confirmPassword"
               type={showPassword ? 'text' : 'password'}
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="再次输入密码"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               required
+              autoComplete="new-password"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-card-foreground">邮箱（可选）</label>
+            <label htmlFor="setup-email" className="text-sm font-medium text-card-foreground">邮箱（可选）</label>
             <input
+              id="setup-email"
+              name="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="your@email.com"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              autoComplete="email"
             />
           </div>
 

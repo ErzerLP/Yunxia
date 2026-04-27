@@ -63,6 +63,10 @@ function getTaskBytesLabel(task: DownloadTask) {
   return '等待获取文件大小'
 }
 
+function getTaskSavePathLabel(task: DownloadTask) {
+  return task.save_virtual_path || task.save_path || '/'
+}
+
 function shouldShowTaskProgress(task: DownloadTask) {
   return task.status === 'running'
     || task.status === 'paused'
@@ -401,7 +405,7 @@ export function TasksPage() {
                 )}
 
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <span>保存至: {task.save_path}</span>
+                  <span>保存至: {getTaskSavePathLabel(task)}</span>
                   <span>创建于: {formatDate(task.created_at)}</span>
                   {task.status === 'completed' && task.finished_at && (
                     <span>完成于: {formatDate(task.finished_at)}</span>
