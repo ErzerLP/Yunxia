@@ -458,6 +458,10 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 	now := time.Now()
 	before := taskAuditView(task)
 	task.Status = "canceled"
+	message := "download canceled by user"
+	task.ErrorMessage = &message
+	task.SpeedBytes = 0
+	task.ETASeconds = nil
 	task.FinishedAt = &now
 	task.UpdatedAt = now
 	if err := s.taskRepo.Update(ctx, task); err != nil {
@@ -676,6 +680,26 @@ func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask
 	if status.TotalBytes != nil && *status.TotalBytes > 0 {
 		task.Progress = float64(status.CompletedBytes) * 100 / float64(*status.TotalBytes)
 	}
+	if status.Status == "failed" {
+		if task.ErrorMessage == nil || strings.TrimSpace(*task.ErrorMessage) == "" {
+			message := "download failed"
+			task.ErrorMessage = &message
+		}
+		task.SpeedBytes = 0
+		task.ETASeconds = nil
+		now := time.Now()
+		task.FinishedAt = &now
+	}
+	if status.Status == "canceled" {
+		if task.ErrorMessage == nil || strings.TrimSpace(*task.ErrorMessage) == "" {
+			message := "download canceled by downloader"
+			task.ErrorMessage = &message
+		}
+		task.SpeedBytes = 0
+		task.ETASeconds = nil
+		now := time.Now()
+		task.FinishedAt = &now
+	}
 	if status.Status == "completed" {
 		task.SpeedBytes = 0
 		task.ETASeconds = nil
@@ -838,6 +862,12 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 	}
 	if task.Status == "completed" {
 		errorMessage = nil
+	} else if task.Status == "failed" && (errorMessage == nil || strings.TrimSpace(*errorMessage) == "") {
+		message := "download failed"
+		errorMessage = &message
+	} else if task.Status == "canceled" && (errorMessage == nil || strings.TrimSpace(*errorMessage) == "") {
+		message := "download canceled"
+		errorMessage = &message
 	}
 
 	return appdto.DownloadTaskView{

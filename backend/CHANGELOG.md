@@ -5,9 +5,45 @@
 ## 当前快照
 
 - 后端根目录：`backend/`
-- 技术栈：Go 1.25、Gin、GORM、SQLite、JWT、bcrypt、Aria2、AWS SDK for Go v2
-- 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、分享/ACL/上传链路已全部接入新权限模型
+- 技术栈：Go 1.25、Gin、GORM、SQLite、JWT、bcrypt、Aria2、qBittorrent、AWS SDK for Go v2
+- 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、RSS/qBittorrent、分享/ACL/上传链路已全部接入新权限模型
 - 当前验证：`cd backend && go test ./...` 已通过
+
+---
+
+## 2026-04-30
+
+### RSS / qBittorrent 回归修正
+
+- 修正 Mikan RSS 发布时间解析：
+  - 兼容 Mikan `torrent/pubDate` 扩展字段
+  - 同步识别 Mikan `torrent/link`，作为 `.torrent` 下载候选
+  - 支持无时区 ISO 时间，例如 `2026-04-25T18:39:13.708`
+  - 无时区时间按 `Asia/Shanghai` 解析后输出 RFC3339
+- 修正 RSS 关键词短数字误命中：
+  - `must_contain: ["05", "1080p"]` 中的 `05` 现在按集数语义只匹配标题集数
+  - 不再因为 URL、torrent hash、发布时间等元信息包含 `05` 而误匹配第 02 集
+  - 普通文本关键词仍可匹配标题和链接元数据
+- 修正 `.torrent` URL 入队到 qBittorrent 后很快变成 `canceled` 的问题：
+  - `.torrent` URL 现在由后端先下载 torrent 文件
+  - 再通过 qBittorrent Web API multipart `torrents` 文件字段提交
+  - qBittorrent tag 暂时不可见时不再立即映射为 `canceled`
+- 补强任务终态错误信息：
+  - 下载器返回 `failed` / `canceled` 且无错误原因时，后端补默认 `error_message`
+  - 用户主动取消任务时持久化 `download canceled by user`
+- 新增 / 更新回归验证：
+  - `TestFetcherParsesMikanTorrentPubDate`
+  - `TestRSSSubscriptionShortNumericKeywordMatchesEpisodeInTitleOnly`
+  - `TestRSSSubscriptionShortNumericKeywordIgnoresDatesAndResolution`
+  - `TestRSSSubscriptionShortNumericKeywordMatchesExplicitEpisodeForms`
+  - `TestRSSSubscriptionShortNumericKeywordIgnoresTitleHash`
+  - `TestRSSSubscriptionRegexModeCanStillMatchMetadata`
+  - `TestQBittorrentClientAddTorrentURLUploadsDownloadedTorrentFile`
+  - `TestQBittorrentClientAddTorrentURLFetchFailureDoesNotPostAdd`
+  - `TestQBittorrentClientTellStatusKeepsMissingTagPending`
+  - `TestTaskRefreshSetsTerminalErrorMessage`
+  - `TestTaskCancelSetsTerminalErrorMessage`
+  - `go test -count=1 ./...`
 
 ---
 

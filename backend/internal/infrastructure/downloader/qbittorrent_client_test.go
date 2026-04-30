@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,14 +20,17 @@ func TestQBittorrentClientAddURISendsSavePathAndTag(t *testing.T) {
 			loginCalled = true
 			_, _ = writer.Write([]byte("Ok."))
 		case "/api/v2/torrents/add":
-			body, err := io.ReadAll(request.Body)
+			mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 			if err != nil {
-				t.Fatalf("io.ReadAll() error = %v", err)
+				t.Fatalf("mime.ParseMediaType() error = %v", err)
 			}
-			captured, err = url.ParseQuery(string(body))
-			if err != nil {
-				t.Fatalf("url.ParseQuery() error = %v", err)
+			if mediaType != "multipart/form-data" {
+				t.Fatalf("expected multipart/form-data, got %q", mediaType)
 			}
+			if err := request.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm() error = %v", err)
+			}
+			captured = request.MultipartForm.Value
 			_, _ = writer.Write([]byte("Ok."))
 		default:
 			t.Fatalf("unexpected path %s", request.URL.Path)
@@ -53,6 +57,97 @@ func TestQBittorrentClientAddURISendsSavePathAndTag(t *testing.T) {
 	}
 	if captured.Get("tags") != externalID {
 		t.Fatalf("expected tags to match external id, got %q / %q", captured.Get("tags"), externalID)
+	}
+}
+
+func TestQBittorrentClientAddTorrentURLUploadsDownloadedTorrentFile(t *testing.T) {
+	var capturedValues url.Values
+	var capturedFileName string
+	var capturedFileBody string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = writer.Write([]byte("Ok."))
+		case "/files/show.torrent":
+			_, _ = writer.Write([]byte("d8:announce13:http://tracker4:infod4:name4:showee"))
+		case "/api/v2/torrents/add":
+			mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+			if err != nil {
+				t.Fatalf("mime.ParseMediaType() error = %v", err)
+			}
+			if mediaType != "multipart/form-data" {
+				t.Fatalf("expected multipart/form-data, got %q", mediaType)
+			}
+			if err := request.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm() error = %v", err)
+			}
+			capturedValues = request.MultipartForm.Value
+			files := request.MultipartForm.File["torrents"]
+			if len(files) != 1 {
+				t.Fatalf("expected one torrents file, got %d", len(files))
+			}
+			capturedFileName = files[0].Filename
+			file, err := files[0].Open()
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			defer file.Close()
+			body, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("ReadAll() error = %v", err)
+			}
+			capturedFileBody = string(body)
+			_, _ = writer.Write([]byte("Ok."))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "admin", "adminadmin")
+	externalID, err := client.AddURI(context.Background(), server.URL+"/files/show.torrent?passkey=abc", "/downloads/staging/task_1")
+	if err != nil {
+		t.Fatalf("AddURI() error = %v", err)
+	}
+	if capturedValues.Get("urls") != "" {
+		t.Fatalf("torrent URL should be uploaded as file, got urls=%q", capturedValues.Get("urls"))
+	}
+	if capturedValues.Get("savepath") != "/downloads/staging/task_1" {
+		t.Fatalf("unexpected savepath = %q", capturedValues.Get("savepath"))
+	}
+	if capturedValues.Get("tags") != externalID {
+		t.Fatalf("expected tags to match external id, got %q / %q", capturedValues.Get("tags"), externalID)
+	}
+	if capturedFileName != "show.torrent" {
+		t.Fatalf("unexpected uploaded filename %q", capturedFileName)
+	}
+	if capturedFileBody != "d8:announce13:http://tracker4:infod4:name4:showee" {
+		t.Fatalf("unexpected uploaded body %q", capturedFileBody)
+	}
+}
+
+func TestQBittorrentClientAddTorrentURLFetchFailureDoesNotPostAdd(t *testing.T) {
+	addCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/files/missing.torrent":
+			http.Error(writer, "missing", http.StatusNotFound)
+		case "/api/v2/torrents/add":
+			addCalled = true
+			t.Fatalf("torrent add should not be called when backend fetch fails")
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "admin", "adminadmin")
+	_, err := client.AddURI(context.Background(), server.URL+"/files/missing.torrent", "/downloads/staging/task_1")
+	if err == nil || !strings.Contains(err.Error(), "torrent fetch status 404") {
+		t.Fatalf("expected torrent fetch status error, got %v", err)
+	}
+	if addCalled {
+		t.Fatalf("torrent add should not be called")
 	}
 }
 
@@ -105,5 +200,44 @@ func TestMapQBitTorrentStatusMapsCompletedTorrent(t *testing.T) {
 	}
 	if status.DisplayName != "show.mkv" {
 		t.Fatalf("unexpected display name %q", status.DisplayName)
+	}
+}
+
+func TestQBittorrentClientTellStatusKeepsMissingTagPending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = writer.Write([]byte("Ok."))
+		case "/api/v2/torrents/info":
+			_, _ = writer.Write([]byte("[]"))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "admin", "adminadmin")
+	status, err := client.TellStatus(context.Background(), "yunxia-task-missing")
+	if err != nil {
+		t.Fatalf("TellStatus() error = %v", err)
+	}
+	if status.Status != "pending" {
+		t.Fatalf("expected pending for temporarily invisible tag, got %q", status.Status)
+	}
+	if status.ErrorMessage == nil || !strings.Contains(*status.ErrorMessage, "not visible yet") {
+		t.Fatalf("expected diagnostic error message, got %+v", status.ErrorMessage)
+	}
+}
+
+func TestMapQBitTorrentStatusSetsFailedErrorMessage(t *testing.T) {
+	status := mapQBitTorrentStatus(qbitTorrentInfo{
+		Name:  "show.mkv",
+		State: "missingFiles",
+	})
+	if status.Status != "failed" {
+		t.Fatalf("expected failed, got %q", status.Status)
+	}
+	if status.ErrorMessage == nil || !strings.Contains(*status.ErrorMessage, "missingFiles") {
+		t.Fatalf("expected failed state error message, got %+v", status.ErrorMessage)
 	}
 }

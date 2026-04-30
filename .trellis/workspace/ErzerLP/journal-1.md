@@ -13,3 +13,4 @@
 2026-04-29 Spec update: when creating new backend/project coordination docs, check and update the relevant index document in the same change when needed.
 2026-04-29 Handoff format update: backend/FRONTEND_HANDOFF.md now uses a top adaptation index, fixed status enum, stable anchors, and per-entry frontend checklist; backend spec updated to require this format.
 2026-04-29 Docs/spec update: added FRONTEND_HANDOFF search/maintenance rules, fixed API_CONTRACT newline artifact, and documented index-sync requirements in DOCS-INDEX/docs README plus backend quality spec.
+2026-04-30 RSS bugfix: parsed Mikan torrent/pubDate, constrained short numeric RSS keywords to title episode tokens, changed .torrent URL ingestion to backend fetch + qBittorrent multipart upload, and kept missing qBit tag pending instead of false canceled; added API/changelog/spec notes.

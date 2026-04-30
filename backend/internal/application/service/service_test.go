@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -842,6 +843,124 @@ func TestTaskCreateAcceptsTargetVirtualParentPath(t *testing.T) {
 	}
 }
 
+func TestTaskRefreshSetsTerminalErrorMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		wantPrefix string
+	}{
+		{name: "failed", status: "failed", wantPrefix: "download failed"},
+		{name: "canceled", status: "canceled", wantPrefix: "download canceled by downloader"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, cleanup := openTestDB(t)
+			defer cleanup()
+
+			sourceRepo := gorm.NewSourceRepository(db)
+			taskRepo := gorm.NewTaskRepository(db)
+
+			basePath := t.TempDir()
+			configJSON, err := marshalLocalSourceConfig(basePath)
+			if err != nil {
+				t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+			}
+			source := &entity.StorageSource{
+				Name:       "下载目标",
+				DriverType: "local",
+				Status:     "online",
+				IsEnabled:  true,
+				MountPath:  "/local",
+				RootPath:   "/",
+				ConfigJSON: configJSON,
+			}
+			if err := sourceRepo.Create(context.Background(), source); err != nil {
+				t.Fatalf("sourceRepo.Create() error = %v", err)
+			}
+
+			downloader := fixedStatusDownloader{status: tt.status}
+			svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")))
+			ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+			created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+				Type:     "download",
+				URL:      "https://example.com/archive.zip",
+				SourceID: source.ID,
+				SavePath: "/downloads",
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			got, err := svc.Get(ctx, created.ID)
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if got.Status != tt.status {
+				t.Fatalf("expected status %q, got %+v", tt.status, got)
+			}
+			if got.ErrorMessage == nil || !strings.HasPrefix(*got.ErrorMessage, tt.wantPrefix) {
+				t.Fatalf("expected terminal error message %q, got %+v", tt.wantPrefix, got.ErrorMessage)
+			}
+			if got.FinishedAt == nil {
+				t.Fatalf("expected terminal task to set finished_at")
+			}
+		})
+	}
+}
+
+func TestTaskCancelSetsTerminalErrorMessage(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "下载目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := fixedStatusDownloader{status: "running"}
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/archive.zip",
+		SourceID: source.ID,
+		SavePath: "/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if _, err := svc.Cancel(ctx, created.ID, false); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "canceled" {
+		t.Fatalf("expected canceled, got %+v", got)
+	}
+	if got.ErrorMessage == nil || *got.ErrorMessage != "download canceled by user" {
+		t.Fatalf("expected user cancel error message, got %+v", got.ErrorMessage)
+	}
+}
+
 func TestUserServiceManagementLifecycle(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1282,7 +1401,7 @@ type completedWritingDownloader struct {
 	content       []byte
 	downloadSpeed int64
 	etaSeconds    *int64
-	errorMessage   *string
+	errorMessage  *string
 	addDir        string
 }
 
@@ -1319,6 +1438,30 @@ func (d *completedWritingDownloader) Resume(context.Context, string) error {
 }
 
 func (d *completedWritingDownloader) Remove(context.Context, string) error {
+	return nil
+}
+
+type fixedStatusDownloader struct {
+	status string
+}
+
+func (d fixedStatusDownloader) AddURI(context.Context, string, string) (string, error) {
+	return "gid-fixed-status", nil
+}
+
+func (d fixedStatusDownloader) TellStatus(context.Context, string) (*DownloadStatus, error) {
+	return &DownloadStatus{Status: d.status}, nil
+}
+
+func (d fixedStatusDownloader) Pause(context.Context, string) error {
+	return nil
+}
+
+func (d fixedStatusDownloader) Resume(context.Context, string) error {
+	return nil
+}
+
+func (d fixedStatusDownloader) Remove(context.Context, string) error {
 	return nil
 }
 

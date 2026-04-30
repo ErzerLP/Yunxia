@@ -32,6 +32,13 @@ const (
 
 const defaultRSSRefreshIntervalSeconds = 1800
 
+var (
+	rssShortNumericKeywordPattern = regexp.MustCompile(`^[0-9]{1,2}$`)
+	rssDigitRunPattern            = regexp.MustCompile(`[0-9]+`)
+	rssDateLikePattern            = regexp.MustCompile(`[0-9]{4}[-/.年][0-9]{1,2}[-/.月][0-9]{1,2}(?:日)?`)
+	rssMonthDayLikePattern        = regexp.MustCompile(`(?:^|[^0-9])[0-9]{1,2}[-/.月][0-9]{1,2}(?:日)?(?:$|[^0-9])`)
+)
+
 // RSSFetchedItem 表示 RSS fetcher 解析出的原始条目。
 type RSSFetchedItem struct {
 	Title       string
@@ -876,19 +883,20 @@ func rssSubscriptionMatchesItem(subscription *entity.RSSSubscription, item *enti
 	if subscription == nil || item == nil {
 		return false
 	}
-	text := strings.TrimSpace(item.Title + " " + item.Link + " " + item.DownloadURL)
-	if !matchAllRSSPatterns(text, subscription.MustContain, subscription.UseRegex, subscription.CaseSensitive) {
+	title := strings.TrimSpace(item.Title)
+	metadata := strings.TrimSpace(item.Link + " " + item.DownloadURL)
+	if !matchAllRSSPatterns(title, metadata, subscription.MustContain, subscription.UseRegex, subscription.CaseSensitive) {
 		return false
 	}
-	if matchAnyRSSPattern(text, subscription.MustNotContain, subscription.UseRegex, subscription.CaseSensitive) {
+	if matchAnyRSSPattern(title, metadata, subscription.MustNotContain, subscription.UseRegex, subscription.CaseSensitive) {
 		return false
 	}
 	return true
 }
 
-func matchAllRSSPatterns(text string, patterns []string, useRegex bool, caseSensitive bool) bool {
+func matchAllRSSPatterns(title string, metadata string, patterns []string, useRegex bool, caseSensitive bool) bool {
 	for _, pattern := range trimStringList(patterns) {
-		matched, err := matchRSSPattern(text, pattern, useRegex, caseSensitive)
+		matched, err := matchRSSPattern(title, metadata, pattern, useRegex, caseSensitive)
 		if err != nil || !matched {
 			return false
 		}
@@ -896,9 +904,9 @@ func matchAllRSSPatterns(text string, patterns []string, useRegex bool, caseSens
 	return true
 }
 
-func matchAnyRSSPattern(text string, patterns []string, useRegex bool, caseSensitive bool) bool {
+func matchAnyRSSPattern(title string, metadata string, patterns []string, useRegex bool, caseSensitive bool) bool {
 	for _, pattern := range trimStringList(patterns) {
-		matched, err := matchRSSPattern(text, pattern, useRegex, caseSensitive)
+		matched, err := matchRSSPattern(title, metadata, pattern, useRegex, caseSensitive)
 		if err == nil && matched {
 			return true
 		}
@@ -906,10 +914,11 @@ func matchAnyRSSPattern(text string, patterns []string, useRegex bool, caseSensi
 	return false
 }
 
-func matchRSSPattern(text string, pattern string, useRegex bool, caseSensitive bool) (bool, error) {
+func matchRSSPattern(title string, metadata string, pattern string, useRegex bool, caseSensitive bool) (bool, error) {
 	if pattern == "" {
 		return true, nil
 	}
+	text := strings.TrimSpace(title + " " + metadata)
 	if useRegex {
 		expr := pattern
 		if !caseSensitive {
@@ -917,11 +926,103 @@ func matchRSSPattern(text string, pattern string, useRegex bool, caseSensitive b
 		}
 		return regexp.MatchString(expr, text)
 	}
+	if isShortNumericRSSKeyword(pattern) {
+		return matchShortNumericRSSKeyword(title, pattern), nil
+	}
 	if !caseSensitive {
-		text = strings.ToLower(text)
+		title = strings.ToLower(title)
+		metadata = strings.ToLower(metadata)
 		pattern = strings.ToLower(pattern)
 	}
-	return strings.Contains(text, pattern), nil
+	return strings.Contains(title, pattern) || strings.Contains(metadata, pattern), nil
+}
+
+func isShortNumericRSSKeyword(pattern string) bool {
+	return rssShortNumericKeywordPattern.MatchString(strings.TrimSpace(pattern))
+}
+
+func matchShortNumericRSSKeyword(title string, pattern string) bool {
+	want := normalizeRSSNumber(pattern)
+	if want == "" {
+		return false
+	}
+	if matchExplicitRSSEpisodeNumber(title, want) {
+		return true
+	}
+	for _, loc := range rssDigitRunPattern.FindAllStringIndex(title, -1) {
+		token := title[loc[0]:loc[1]]
+		if len(token) > 3 || normalizeRSSNumber(token) != want {
+			continue
+		}
+		if isRSSNumericRunMetadata(title, loc[0], loc[1]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func matchExplicitRSSEpisodeNumber(title string, normalizedNumber string) bool {
+	escapedNumber := regexp.QuoteMeta(normalizedNumber)
+	patterns := []string{
+		`(?i)\bS[0-9]{1,2}E0*` + escapedNumber + `\b`,
+		`(?i)\bEP(?:ISODE)?\.?\s*0*` + escapedNumber + `\b`,
+		`(?i)\bE0*` + escapedNumber + `\b`,
+		`第\s*0*` + escapedNumber + `\s*(?:集|话|話|回)`,
+	}
+	for _, pattern := range patterns {
+		if regexp.MustCompile(pattern).MatchString(title) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRSSNumericRunMetadata(title string, start int, end int) bool {
+	if isRSSNumericRunInRegexp(title, start, end, rssDateLikePattern) ||
+		isRSSNumericRunInRegexp(title, start, end, rssMonthDayLikePattern) {
+		return true
+	}
+	if start > 0 && isASCIIAlphaNum(title[start-1]) {
+		return true
+	}
+	if end < len(title) {
+		next := title[end]
+		if isASCIIAlphaNum(next) && !hasRSSVersionSuffix(title, end) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRSSNumericRunInRegexp(title string, start int, end int, expr *regexp.Regexp) bool {
+	for _, loc := range expr.FindAllStringIndex(title, -1) {
+		if start >= loc[0] && end <= loc[1] {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRSSVersionSuffix(title string, index int) bool {
+	return index+1 < len(title) &&
+		(title[index] == 'v' || title[index] == 'V') &&
+		title[index+1] >= '0' && title[index+1] <= '9'
+}
+
+func normalizeRSSNumber(value string) string {
+	trimmed := strings.TrimSpace(value)
+	trimmed = strings.TrimLeft(trimmed, "0")
+	if trimmed == "" {
+		return "0"
+	}
+	return trimmed
+}
+
+func isASCIIAlphaNum(value byte) bool {
+	return (value >= '0' && value <= '9') ||
+		(value >= 'a' && value <= 'z') ||
+		(value >= 'A' && value <= 'Z')
 }
 
 func validateRSSRulePatterns(mustContain []string, mustNotContain []string, useRegex bool) error {

@@ -20,6 +20,7 @@ Primary sources:
 | [Error Handling](./error-handling.md) | Sentinel errors, response envelope, handler mapping | Filled |
 | [Logging Guidelines](./logging-guidelines.md) | `slog`, access log, request IDs, audit logging | Filled |
 | [Quality Guidelines](./quality-guidelines.md) | Backend review checklist, tests, forbidden patterns, frontend handoff/index maintenance | Filled |
+| [RSS Guidelines](./rss-guidelines.md) | RSS parsing, subscription matching, qBittorrent torrent ingestion | Filled |
 
 ## Pre-Development Checklist
 
@@ -31,6 +32,7 @@ Before backend coding, read:
 - `quality-guidelines.md`
 - `database-guidelines.md` when touching persistence, entities, repositories, migrations/AutoMigrate, upload/task/share/audit stored fields
 - `logging-guidelines.md` when touching middleware, audit, background workers, or operational events
+- `rss-guidelines.md` when touching RSS feed parsing, subscription matching, qBittorrent routing/client behavior, or BT task status mapping
 - `backend/API_CONTRACT.md` when changing any route, DTO, response field, error code, or frontend-facing behavior
 - For frontend-facing backend changes, also prepare frontend handoff notes in `backend/API_CONTRACT.md`: purpose, routes, payloads, response shape, errors, permissions, and recommended UI flow. Use `backend/FRONTEND_HANDOFF.md` as the fixed handoff document. Maintain its top `待适配索引`, fixed status values, stable anchors, and per-entry frontend checklist; append detailed updates at the end instead of creating one-off docs. When adding a new document, update the relevant index document when needed so the document remains discoverable.
 

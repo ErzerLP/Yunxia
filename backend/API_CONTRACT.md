@@ -1,6 +1,6 @@
 # Yunxia Backend API Contract
 
-> 更新时间：2026-04-29
+> 更新时间：2026-04-30
 > 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询 + RSS/qBittorrent MVP）
 > 真相源：`backend/internal/interfaces/http/router.go`、`backend/internal/interfaces/http/handler/*.go`、`backend/internal/application/dto/*.go`、`backend/internal/application/service/*_service.go`
 
@@ -583,6 +583,7 @@ S3 finish Body 示例：
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
 - `completed` 任务返回时 `error_message` 固定为 `null`；若导入失败，任务会转为 `failed` 并返回失败原因
+- `failed` / `canceled` 任务会返回明确 `error_message`；下载器未返回原因时后端补默认原因，用户主动取消时为 `download canceled by user`
 - `DownloadTaskView.downloader_type` 当前可能为 `aria2` 或 `qbittorrent`
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
 - 当前没有 `retry` 接口
@@ -628,6 +629,12 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 约束：
 
 - 第一版只自动入队 `magnet:?` 和 `.torrent` URL；普通 HTTP/直链条目标记为 `unsupported`，不创建 RSS 下载任务。
+- 下载链接解析会检查 RSS item `link`、`enclosure.url` 和 Mikan 扩展 `torrent/link`；只要其中存在 `magnet:?` 或 `.torrent` URL 即可入队。
+- RSS 时间解析顺序：RSS 顶层 `pubDate`、Mikan torrent 扩展 `torrent/pubDate`、`date`、Atom `published/updated`；仍无法识别时 `published_at=null`。
+- 非正则关键词匹配：
+  - 普通文本关键词会匹配标题与链接元数据。
+  - 1~2 位纯数字关键词按“集数”语义处理，只匹配标题中的集数 token / `SxxEyy` / `EPyy` / `第 yy 集`，不会匹配 URL、hash、发布时间或 `1080p` 等元信息。
+- `.torrent` URL 入队时后端会先下载 torrent 文件，再以 multipart 文件方式提交给 qBittorrent；避免 qBittorrent 异步拉 URL 失败后任务被误判为取消。
 - 每个订阅固定一个 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
 - 创建/更新订阅会校验目标 VFS 目录可解析、有 backing storage、当前用户具备写权限且底层源可写。
 - RSS 条目去重优先使用 GUID；无 GUID 时使用 source + link + title 哈希。

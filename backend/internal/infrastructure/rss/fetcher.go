@@ -64,15 +64,22 @@ type xmlFeed struct {
 }
 
 type xmlRSSItem struct {
-	Title      string         `xml:"title"`
-	Link       string         `xml:"link"`
-	GUID       string         `xml:"guid"`
-	PubDate    string         `xml:"pubDate"`
-	Enclosures []xmlEnclosure `xml:"enclosure"`
+	Title      string          `xml:"title"`
+	Link       string          `xml:"link"`
+	GUID       string          `xml:"guid"`
+	PubDate    string          `xml:"pubDate"`
+	Date       string          `xml:"date"`
+	Torrent    xmlMikanTorrent `xml:"torrent"`
+	Enclosures []xmlEnclosure  `xml:"enclosure"`
 }
 
 type xmlEnclosure struct {
 	URL string `xml:"url,attr"`
+}
+
+type xmlMikanTorrent struct {
+	Link    string `xml:"link"`
+	PubDate string `xml:"pubDate"`
 }
 
 type xmlAtomEntry struct {
@@ -90,16 +97,26 @@ type xmlAtomLink struct {
 
 func convertRSSItem(item xmlRSSItem) appsvc.RSSFetchedItem {
 	enclosures := make([]string, 0, len(item.Enclosures))
+	if strings.TrimSpace(item.Torrent.Link) != "" {
+		enclosures = append(enclosures, strings.TrimSpace(item.Torrent.Link))
+	}
 	for _, enclosure := range item.Enclosures {
 		if strings.TrimSpace(enclosure.URL) != "" {
 			enclosures = append(enclosures, strings.TrimSpace(enclosure.URL))
 		}
 	}
+	published := parseFeedTime(item.PubDate)
+	if published == nil {
+		published = parseFeedTime(item.Torrent.PubDate)
+	}
+	if published == nil {
+		published = parseFeedTime(item.Date)
+	}
 	return appsvc.RSSFetchedItem{
 		Title:       strings.TrimSpace(item.Title),
 		Link:        strings.TrimSpace(item.Link),
 		GUID:        strings.TrimSpace(item.GUID),
-		PublishedAt: parseFeedTime(item.PubDate),
+		PublishedAt: published,
 		Enclosures:  enclosures,
 	}
 }
@@ -135,9 +152,25 @@ func parseFeedTime(value string) *time.Time {
 	if trimmed == "" {
 		return nil
 	}
-	layouts := []string{time.RFC1123Z, time.RFC1123, time.RFC3339, time.RFC3339Nano}
+	layouts := []string{time.RFC1123Z, time.RFC1123, time.RFC3339, time.RFC3339Nano, time.RFC822Z, time.RFC822, time.RFC850, time.ANSIC, time.UnixDate}
 	for _, layout := range layouts {
 		parsed, err := time.Parse(layout, trimmed)
+		if err == nil {
+			return &parsed
+		}
+	}
+	// Mikan 的 torrent 扩展 pubDate 常见为无时区 ISO 时间，按站点所在的 +08:00 解析。
+	noZoneLayouts := []string{
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05.999",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006/01/02 15:04:05",
+	}
+	mikanLocation := time.FixedZone("Asia/Shanghai", 8*60*60)
+	for _, layout := range noZoneLayouts {
+		parsed, err := time.ParseInLocation(layout, trimmed, mikanLocation)
 		if err == nil {
 			return &parsed
 		}

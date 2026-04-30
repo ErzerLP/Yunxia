@@ -1,13 +1,16 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -15,6 +18,8 @@ import (
 
 	appsvc "yunxia/internal/application/service"
 )
+
+const maxTorrentFileBytes = 64 << 20
 
 // QBittorrentClient 实现 qBittorrent Web API 下载器。
 type QBittorrentClient struct {
@@ -58,14 +63,25 @@ func (c *QBittorrentClient) Health(ctx context.Context) error {
 // AddURI 添加 magnet 或 torrent URL。
 func (c *QBittorrentClient) AddURI(ctx context.Context, uri string, dir string) (string, error) {
 	tag := "yunxia-task-" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	form := url.Values{}
-	form.Set("urls", uri)
-	if dir != "" {
-		form.Set("savepath", dir)
+	fields := map[string]string{
+		"tags":   tag,
+		"paused": "false",
 	}
-	form.Set("tags", tag)
-	form.Set("paused", "false")
-	if err := c.postForm(ctx, "/api/v2/torrents/add", form); err != nil {
+	if dir != "" {
+		fields["savepath"] = dir
+	}
+	if appsvc.ClassifyDownloadLink(uri) == appsvc.RSSLinkTypeTorrent {
+		torrentFile, err := c.fetchTorrentFile(ctx, uri)
+		if err != nil {
+			return "", err
+		}
+		if err := c.postMultipart(ctx, "/api/v2/torrents/add", fields, []multipartUploadFile{torrentFile}); err != nil {
+			return "", err
+		}
+		return tag, nil
+	}
+	fields["urls"] = uri
+	if err := c.postMultipart(ctx, "/api/v2/torrents/add", fields, nil); err != nil {
 		return "", err
 	}
 	return tag, nil
@@ -78,7 +94,8 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
 		return nil, err
 	}
 	if torrent == nil {
-		return &appsvc.DownloadStatus{Status: "canceled"}, nil
+		message := fmt.Sprintf("qbittorrent torrent with tag %q is not visible yet", externalID)
+		return &appsvc.DownloadStatus{Status: "pending", ErrorMessage: &message}, nil
 	}
 	return mapQBitTorrentStatus(*torrent), nil
 }
@@ -194,20 +211,130 @@ func (c *QBittorrentClient) postForm(ctx context.Context, path string, form url.
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		bodyText := strings.TrimSpace(string(body))
+		if bodyText != "" {
+			return fmt.Errorf("qbittorrent %s status %d: %s", path, response.StatusCode, bodyText)
+		}
 		return fmt.Errorf("qbittorrent %s status %d", path, response.StatusCode)
 	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return err
 	}
-	if strings.HasPrefix(strings.TrimSpace(string(body)), "Fails.") {
-		return fmt.Errorf("qbittorrent %s failed", path)
+	bodyText := strings.TrimSpace(string(body))
+	if strings.HasPrefix(bodyText, "Fails.") {
+		return fmt.Errorf("qbittorrent %s failed: %s", path, bodyText)
 	}
 	return nil
 }
 
+func (c *QBittorrentClient) postMultipart(ctx context.Context, requestPath string, fields map[string]string, files []multipartUploadFile) error {
+	if err := c.login(ctx); err != nil {
+		return err
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			return err
+		}
+	}
+	for _, file := range files {
+		part, err := writer.CreateFormFile(file.fieldName, file.fileName)
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(file.content); err != nil {
+			return err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(requestPath), &body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := c.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		bodyText := strings.TrimSpace(string(body))
+		if bodyText != "" {
+			return fmt.Errorf("qbittorrent %s status %d: %s", requestPath, response.StatusCode, bodyText)
+		}
+		return fmt.Errorf("qbittorrent %s status %d", requestPath, response.StatusCode)
+	}
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		return err
+	}
+	bodyText := strings.TrimSpace(string(bodyBytes))
+	if strings.HasPrefix(bodyText, "Fails.") {
+		return fmt.Errorf("qbittorrent %s failed: %s", requestPath, bodyText)
+	}
+	return nil
+}
+
+func (c *QBittorrentClient) fetchTorrentFile(ctx context.Context, rawURL string) (multipartUploadFile, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return multipartUploadFile{}, err
+	}
+	request.Header.Set("User-Agent", "Yunxia qBittorrent/1.0")
+	response, err := c.client.Do(request)
+	if err != nil {
+		return multipartUploadFile{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return multipartUploadFile{}, fmt.Errorf("torrent fetch status %d", response.StatusCode)
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, maxTorrentFileBytes+1))
+	if err != nil {
+		return multipartUploadFile{}, err
+	}
+	if len(content) > maxTorrentFileBytes {
+		return multipartUploadFile{}, fmt.Errorf("torrent file exceeds %d bytes", maxTorrentFileBytes)
+	}
+	if len(content) == 0 {
+		return multipartUploadFile{}, fmt.Errorf("torrent file is empty")
+	}
+	return multipartUploadFile{
+		fieldName: "torrents",
+		fileName:  torrentFileName(rawURL),
+		content:   content,
+	}, nil
+}
+
+func torrentFileName(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "download.torrent"
+	}
+	fileName := path.Base(parsed.Path)
+	if fileName == "." || fileName == "/" || strings.TrimSpace(fileName) == "" {
+		return "download.torrent"
+	}
+	if !strings.HasSuffix(strings.ToLower(fileName), ".torrent") {
+		return fileName + ".torrent"
+	}
+	return fileName
+}
+
 func (c *QBittorrentClient) endpoint(path string) string {
 	return c.apiURL + path
+}
+
+type multipartUploadFile struct {
+	fieldName string
+	fileName  string
+	content   []byte
 }
 
 type qbitTorrentInfo struct {
@@ -232,6 +359,11 @@ func mapQBitTorrentStatus(raw qbitTorrentInfo) *appsvc.DownloadStatus {
 	if raw.ETA > 0 && raw.ETA < 8640000 {
 		etaSeconds = &raw.ETA
 	}
+	var errorMessage *string
+	if status == "failed" {
+		message := fmt.Sprintf("qbittorrent torrent state %q", raw.State)
+		errorMessage = &message
+	}
 	return &appsvc.DownloadStatus{
 		Status:         status,
 		CompletedBytes: raw.Downloaded,
@@ -239,6 +371,7 @@ func mapQBitTorrentStatus(raw qbitTorrentInfo) *appsvc.DownloadStatus {
 		DownloadSpeed:  raw.DLSpeed,
 		ETASeconds:     etaSeconds,
 		DisplayName:    raw.Name,
+		ErrorMessage:   errorMessage,
 	}
 }
 
