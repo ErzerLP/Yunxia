@@ -244,6 +244,41 @@ func RegisterTaskRoutes(
 	authorized.DELETE("/tasks/:id", taskHandler.Cancel)
 }
 
+// RegisterRSSRoutes 注册 RSS 番剧订阅下载相关路由。
+func RegisterRSSRoutes(
+	r *gin.Engine,
+	rssHandler *handler.RSSHandler,
+	authMiddleware *middleware.AuthMiddleware,
+	auditRecorder *appaudit.Recorder,
+	rootLogger *slog.Logger,
+) {
+	api := r.Group("/api/v1")
+
+	authorized := api.Group("")
+	authorized.Use(authMiddleware.RequireAuth())
+
+	rssRead := authorized.Group("/rss")
+	rssRead.Use(middleware.RequireCapability(permission.CapabilityRSSRead))
+	rssRead.GET("/sources", rssHandler.ListSources)
+	rssRead.GET("/sources/:id", rssHandler.GetSource)
+	rssRead.GET("/subscriptions", rssHandler.ListSubscriptions)
+	rssRead.GET("/subscriptions/:id", rssHandler.GetSubscription)
+	rssRead.GET("/items", rssHandler.ListItems)
+	rssRead.GET("/qbittorrent/health", rssHandler.QBitHealth)
+
+	rssManage := authorized.Group("/rss")
+	rssManage.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "rss", "manage", permission.CapabilityRSSManage))
+	rssManage.POST("/sources", rssHandler.CreateSource)
+	rssManage.PATCH("/sources/:id", rssHandler.UpdateSource)
+	rssManage.DELETE("/sources/:id", rssHandler.DeleteSource)
+	rssManage.POST("/sources/:id/refresh", rssHandler.RefreshSource)
+	rssManage.POST("/subscriptions", rssHandler.CreateSubscription)
+	rssManage.PATCH("/subscriptions/:id", rssHandler.UpdateSubscription)
+	rssManage.DELETE("/subscriptions/:id", rssHandler.DeleteSubscription)
+	rssManage.POST("/subscriptions/:id/run", rssHandler.RunSubscription)
+	rssManage.POST("/items/:id/download", rssHandler.DownloadItem)
+}
+
 // RegisterShareRoutes 注册分享相关路由。
 func RegisterShareRoutes(
 	r *gin.Engine,

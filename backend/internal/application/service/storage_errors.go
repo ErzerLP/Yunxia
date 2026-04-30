@@ -49,6 +49,10 @@ var (
 	ErrUploadTooLarge = errors.New("upload too large")
 	// ErrTaskInvalidState 表示任务状态不允许当前操作。
 	ErrTaskInvalidState = errors.New("task invalid state")
+	// ErrDownloadLinkUnsupported 表示下载链接类型不受当前下载器支持。
+	ErrDownloadLinkUnsupported = errors.New("download link unsupported")
+	// ErrRSSRegexInvalid 表示 RSS 订阅正则规则非法。
+	ErrRSSRegexInvalid = errors.New("rss regex invalid")
 	// ErrUserNameConflict 表示用户名冲突。
 	ErrUserNameConflict = errors.New("user name conflict")
 	// ErrUserRoleInvalid 表示用户角色非法。

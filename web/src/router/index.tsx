@@ -11,6 +11,7 @@ import { SettingsPage } from '@/pages/settings/SettingsPage'
 import { UsersPage } from '@/pages/users/UsersPage'
 import { AclPage } from '@/pages/acl/AclPage'
 import { AuditPage } from '@/pages/audit/AuditPage'
+import { RssPage } from '@/pages/rss/RssPage'
 import { ShareAccessPage } from '@/pages/shares/ShareAccessPage'
 import { CapabilityRoute } from './CapabilityRoute'
 import App from '@/App'
@@ -47,6 +48,7 @@ export const router = createBrowserRouter([
           { path: 'vfs/*', element: <Navigate to="/files" replace /> },
           { path: 'sources', element: <CapabilityRoute cap="source.read"><SourcesPage /></CapabilityRoute> },
           { path: 'tasks', element: <CapabilityRoute cap="task.read_all"><TasksPage /></CapabilityRoute> },
+          { path: 'rss', element: <CapabilityRoute cap="rss.read"><RssPage /></CapabilityRoute> },
           { path: 'trash', element: <TrashPage /> },
           { path: 'shares', element: <CapabilityRoute cap="share.read_all"><SharesPage /></CapabilityRoute> },
           { path: 'settings', element: <CapabilityRoute cap="system.config.read"><SettingsPage /></CapabilityRoute> },

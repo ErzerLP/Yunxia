@@ -27,6 +27,8 @@ const (
 	CapabilityTaskManageAll      = "task.manage_all"
 	CapabilityShareReadAll       = "share.read_all"
 	CapabilityShareManageAll     = "share.manage_all"
+	CapabilityRSSRead            = "rss.read"
+	CapabilityRSSManage          = "rss.manage"
 	CapabilityAuditRead          = "audit.read"
 	CapabilityAuditReadSensitive = "audit.read_sensitive"
 )
@@ -54,6 +56,8 @@ var allCapabilities = []string{
 	CapabilityTaskManageAll,
 	CapabilityShareReadAll,
 	CapabilityShareManageAll,
+	CapabilityRSSRead,
+	CapabilityRSSManage,
 	CapabilityAuditRead,
 	CapabilityAuditReadSensitive,
 }

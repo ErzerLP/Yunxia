@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend spec index for review scope."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Review placement of RSS/qBittorrent code."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Review GORM models, repos, and migrations."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Review API error mapping for invalid RSS/qBittorrent/VFS cases."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review worker and integration logging."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review tests and backend quality requirements."}
+{"file":"backend/API_CONTRACT.md","reason":"Review API contract updates for RSS endpoints and task downloader behavior."}
+{"file":".trellis/tasks/04-29-rss-anime-download/research/autobangumi-qbittorrent-rss.md","reason":"Review implementation against researched qBittorrent/AutoBangumi constraints."}

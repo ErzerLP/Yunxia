@@ -138,6 +138,8 @@ func (h *TaskHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusForbidden, "PERMISSION_DENIED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		httpresp.Error(c, http.StatusServiceUnavailable, "DOWNLOADER_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrDownloadLinkUnsupported):
+		httpresp.Error(c, http.StatusUnprocessableEntity, "DOWNLOAD_LINK_UNSUPPORTED", err.Error(), nil)
 	default:
 		httpresp.Error(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

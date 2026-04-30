@@ -49,13 +49,15 @@ type TaskImportDriver interface {
 
 // TaskService 负责离线下载任务接口。
 type TaskService struct {
-	taskRepo      domainrepo.TaskRepository
-	sourceRepo    domainrepo.SourceRepository
-	aclAuthorizer *ACLAuthorizer
-	downloader    Downloader
-	stagingRoot   string
-	importDrivers map[string]TaskImportDriver
-	vfsResolver   interface {
+	taskRepo       domainrepo.TaskRepository
+	sourceRepo     domainrepo.SourceRepository
+	aclAuthorizer  *ACLAuthorizer
+	downloader     Downloader
+	downloadRouter *DownloaderRouter
+	stagingRoot    string
+	stagingRoots   map[string]string
+	importDrivers  map[string]TaskImportDriver
+	vfsResolver    interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
 	logger        *slog.Logger
@@ -74,12 +76,14 @@ type resolvedTaskTarget struct {
 // NewTaskService 创建任务服务。
 func NewTaskService(taskRepo domainrepo.TaskRepository, sourceRepo domainrepo.SourceRepository, downloader Downloader, options ...TaskServiceOption) *TaskService {
 	service := &TaskService{
-		taskRepo:      taskRepo,
-		sourceRepo:    sourceRepo,
-		downloader:    downloader,
-		stagingRoot:   filepath.Join(os.TempDir(), "yunxia-download-staging"),
-		importDrivers: make(map[string]TaskImportDriver),
-		logger:        newServiceLogger("service.task"),
+		taskRepo:       taskRepo,
+		sourceRepo:     sourceRepo,
+		downloader:     downloader,
+		downloadRouter: NewDownloaderRouter(downloader),
+		stagingRoot:    filepath.Join(os.TempDir(), "yunxia-download-staging"),
+		stagingRoots:   make(map[string]string),
+		importDrivers:  make(map[string]TaskImportDriver),
+		logger:         newServiceLogger("service.task"),
 	}
 	for _, option := range options {
 		option(service)
@@ -108,16 +112,6 @@ func (s *TaskService) List(ctx context.Context) (*appdto.TaskListResponse, error
 
 // Create 创建任务。
 func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) (*appdto.DownloadTaskView, error) {
-	if s.downloader == nil {
-		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
-			ResourceType: "task",
-			Action:       "create",
-			Result:       appaudit.ResultFailed,
-			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
-			SourceID:     &req.SourceID,
-		})
-		return nil, ErrSourceDriverUnsupported
-	}
 	target, err := s.resolveCreateTarget(ctx, req)
 	if err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
@@ -154,8 +148,20 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		})
 		return nil, err
 	}
+	downloaderType, selectedDownloader, err := s.selectDownloaderForURL(req.URL)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    taskCreateErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  target.saveVirtualPath,
+		})
+		return nil, err
+	}
 
-	stagingDir := s.newTaskStagingDir()
+	stagingDir := s.newTaskStagingDir(downloaderType)
 	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
@@ -168,7 +174,7 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		return nil, err
 	}
 
-	externalID, err := s.downloader.AddURI(ctx, req.URL, stagingDir)
+	externalID, err := selectedDownloader.AddURI(ctx, req.URL, stagingDir)
 	if err != nil {
 		_ = os.RemoveAll(stagingDir)
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
@@ -187,6 +193,7 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 	task := &entity.DownloadTask{
 		UserID:                  s.currentTaskUserID(ctx),
 		Type:                    req.Type,
+		DownloaderType:          downloaderType,
 		Status:                  "pending",
 		SourceID:                source.ID,
 		SavePath:                target.savePath,
@@ -304,8 +311,47 @@ func (unsupportedTaskVFSResolver) ResolveWritableTarget(context.Context, string)
 	return ResolvedPath{}, ErrSourceDriverUnsupported
 }
 
-func (s *TaskService) newTaskStagingDir() string {
-	return filepath.Join(s.stagingRoot, "task_"+stringsNoDash(uuid.NewString()))
+func (s *TaskService) newTaskStagingDir(downloaderType string) string {
+	stagingRoot := s.stagingRoot
+	if s.stagingRoots != nil {
+		if typedRoot := strings.TrimSpace(s.stagingRoots[downloaderType]); typedRoot != "" {
+			stagingRoot = typedRoot
+		}
+	}
+	return filepath.Join(stagingRoot, "task_"+stringsNoDash(uuid.NewString()))
+}
+
+func (s *TaskService) selectDownloaderForURL(rawURL string) (string, Downloader, error) {
+	if s.downloadRouter != nil {
+		return s.downloadRouter.Select(rawURL)
+	}
+	if ClassifyDownloadLink(rawURL) != RSSLinkTypeHTTP {
+		return "", nil, ErrDownloadLinkUnsupported
+	}
+	if s.downloader == nil {
+		return "", nil, ErrSourceDriverUnsupported
+	}
+	return DownloaderTypeAria2, s.downloader, nil
+}
+
+func (s *TaskService) downloaderForTask(task *entity.DownloadTask) (Downloader, error) {
+	if task == nil {
+		return nil, ErrTaskInvalidState
+	}
+	downloaderType := task.DownloaderType
+	if downloaderType == "" {
+		downloaderType = DownloaderTypeAria2
+	}
+	if s.downloadRouter != nil {
+		return s.downloadRouter.Get(downloaderType)
+	}
+	if downloaderType != DownloaderTypeAria2 {
+		return nil, ErrSourceDriverUnsupported
+	}
+	if s.downloader == nil {
+		return nil, ErrSourceDriverUnsupported
+	}
+	return s.downloader, nil
 }
 
 // Get 返回单个任务。
@@ -384,7 +430,8 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 		})
 		return nil, err
 	}
-	if s.downloader == nil {
+	selectedDownloader, err := s.downloaderForTask(task)
+	if err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
 			Action:       "cancel",
@@ -393,10 +440,10 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 			ResourceID:   encodeUintID(id),
 			Before:       taskAuditView(task),
 		})
-		return nil, ErrSourceDriverUnsupported
+		return nil, err
 	}
 	if task.ExternalID != "" {
-		if err := s.downloader.Remove(ctx, task.ExternalID); err != nil {
+		if err := selectedDownloader.Remove(ctx, task.ExternalID); err != nil {
 			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 				ResourceType: "task",
 				Action:       "cancel",
@@ -460,7 +507,8 @@ func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionRes
 		})
 		return nil, err
 	}
-	if s.downloader == nil {
+	selectedDownloader, err := s.downloaderForTask(task)
+	if err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
 			Action:       "pause",
@@ -469,7 +517,7 @@ func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionRes
 			ResourceID:   encodeUintID(id),
 			Before:       taskAuditView(task),
 		})
-		return nil, ErrSourceDriverUnsupported
+		return nil, err
 	}
 	if task.Status != "pending" && task.Status != "running" {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
@@ -482,7 +530,7 @@ func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionRes
 		})
 		return nil, ErrTaskInvalidState
 	}
-	if err := s.downloader.Pause(ctx, task.ExternalID); err != nil {
+	if err := selectedDownloader.Pause(ctx, task.ExternalID); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
 			Action:       "pause",
@@ -542,7 +590,8 @@ func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionRe
 		})
 		return nil, err
 	}
-	if s.downloader == nil {
+	selectedDownloader, err := s.downloaderForTask(task)
+	if err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
 			Action:       "resume",
@@ -551,7 +600,7 @@ func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionRe
 			ResourceID:   encodeUintID(id),
 			Before:       taskAuditView(task),
 		})
-		return nil, ErrSourceDriverUnsupported
+		return nil, err
 	}
 	if task.Status != "paused" {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
@@ -564,7 +613,7 @@ func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionRe
 		})
 		return nil, ErrTaskInvalidState
 	}
-	if err := s.downloader.Resume(ctx, task.ExternalID); err != nil {
+	if err := selectedDownloader.Resume(ctx, task.ExternalID); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
 			Action:       "resume",
@@ -601,13 +650,17 @@ func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionRe
 }
 
 func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask) error {
-	if s.downloader == nil || task.ExternalID == "" {
+	if task.ExternalID == "" {
 		return nil
 	}
 	if task.Status == "completed" || task.Status == "failed" || task.Status == "canceled" {
 		return nil
 	}
-	status, err := s.downloader.TellStatus(ctx, task.ExternalID)
+	selectedDownloader, err := s.downloaderForTask(task)
+	if err != nil {
+		return err
+	}
+	status, err := selectedDownloader.TellStatus(ctx, task.ExternalID)
 	if err != nil {
 		return err
 	}
@@ -790,6 +843,7 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 	return appdto.DownloadTaskView{
 		ID:                      task.ID,
 		Type:                    task.Type,
+		DownloaderType:          task.DownloaderType,
 		Status:                  task.Status,
 		SourceID:                task.SourceID,
 		SavePath:                task.SavePath,

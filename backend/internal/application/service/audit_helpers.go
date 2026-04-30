@@ -170,6 +170,7 @@ func taskAuditView(task *entity.DownloadTask) map[string]any {
 		"id":                         task.ID,
 		"user_id":                    task.UserID,
 		"type":                       task.Type,
+		"downloader_type":            task.DownloaderType,
 		"status":                     task.Status,
 		"source_id":                  task.SourceID,
 		"save_path":                  task.SavePath,
@@ -331,6 +332,8 @@ func taskErrorCode(err error) string {
 		return "PERMISSION_DENIED"
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrDownloadLinkUnsupported):
+		return "DOWNLOAD_LINK_UNSUPPORTED"
 	case errors.Is(err, ErrTaskInvalidState):
 		return "TASK_INVALID_STATE"
 	case errors.Is(err, ErrNoBackingStorage):

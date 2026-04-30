@@ -73,6 +73,7 @@ func taskModelFromEntity(task *entity.DownloadTask) *DownloadTaskModel {
 		ID:                      task.ID,
 		UserID:                  task.UserID,
 		Type:                    task.Type,
+		DownloaderType:          normalizeDownloaderType(task.DownloaderType),
 		Status:                  task.Status,
 		SourceID:                task.SourceID,
 		SavePath:                task.SavePath,
@@ -101,6 +102,7 @@ func taskEntityFromModel(model *DownloadTaskModel) *entity.DownloadTask {
 		ID:                      model.ID,
 		UserID:                  model.UserID,
 		Type:                    model.Type,
+		DownloaderType:          normalizeDownloaderType(model.DownloaderType),
 		Status:                  model.Status,
 		SourceID:                model.SourceID,
 		SavePath:                model.SavePath,
@@ -122,4 +124,11 @@ func taskEntityFromModel(model *DownloadTaskModel) *entity.DownloadTask {
 		CreatedAt:               model.CreatedAt,
 		UpdatedAt:               model.UpdatedAt,
 	}
+}
+
+func normalizeDownloaderType(value string) string {
+	if value == "" {
+		return "aria2"
+	}
+	return value
 }

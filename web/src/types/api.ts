@@ -328,6 +328,7 @@ export interface DownloadTask {
   id: number;
   type: 'download';
   status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled';
+  downloader_type?: 'aria2' | 'qbittorrent';
   source_id: number;
   save_path: string;
   display_name: string;
@@ -356,6 +357,93 @@ export interface CreateTaskRequest {
   source_id?: number;
   save_path?: string;
   target_virtual_save_path?: string;
+}
+
+// RSS
+export type RSSItemStatus = 'new' | 'unsupported' | 'ignored' | 'matched' | 'enqueued' | 'failed';
+export type RSSLinkType = 'magnet' | 'torrent' | 'http' | 'unsupported' | string;
+
+export interface RSSSourceView {
+  id: number;
+  user_id?: number;
+  name: string;
+  url: string;
+  is_enabled: boolean;
+  refresh_interval_seconds: number;
+  last_refreshed_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RSSSourceUpsertRequest {
+  name: string;
+  url: string;
+  is_enabled?: boolean;
+  refresh_interval_seconds: number;
+}
+
+export interface RSSRefreshResponse {
+  source_id: number;
+  fetched: number;
+  created: number;
+  updated: number;
+  matched: number;
+  enqueued: number;
+  unsupported: number;
+  failed: number;
+}
+
+export interface RSSSubscriptionView {
+  id: number;
+  user_id?: number;
+  source_id: number;
+  name: string;
+  is_enabled: boolean;
+  must_contain: string[];
+  must_not_contain: string[];
+  use_regex: boolean;
+  case_sensitive: boolean;
+  target_virtual_parent_path: string;
+  resolved_source_id?: number;
+  resolved_inner_parent_path?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RSSSubscriptionUpsertRequest {
+  source_id: number;
+  name: string;
+  is_enabled?: boolean;
+  must_contain: string[];
+  must_not_contain: string[];
+  use_regex: boolean;
+  case_sensitive: boolean;
+  target_virtual_parent_path: string;
+}
+
+export interface RSSItemView {
+  id: number;
+  user_id?: number;
+  source_id: number;
+  title: string;
+  link: string;
+  published_at: string | null;
+  guid: string;
+  download_url: string;
+  link_type: RSSLinkType;
+  status: RSSItemStatus;
+  matched_subscription_id: number | null;
+  task_id: number | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RSSQBitHealthResponse {
+  enabled: boolean;
+  status: 'disabled' | 'ok' | 'unavailable' | string;
+  error?: string | null;
 }
 
 // System

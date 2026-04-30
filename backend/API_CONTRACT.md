@@ -1,10 +1,12 @@
 # Yunxia Backend API Contract
 
-> 更新时间：2026-04-25
-> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询）
+> 更新时间：2026-04-29
+> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询 + RSS/qBittorrent MVP）
 > 真相源：`backend/internal/interfaces/http/router.go`、`backend/internal/interfaces/http/handler/*.go`、`backend/internal/application/dto/*.go`、`backend/internal/application/service/*_service.go`
 
 本文档只描述**当前后端实际实现**，用于前后端联调、API client 封装与页面功能核对。
+
+前端接入变更说明固定追加在 `backend/FRONTEND_HANDOFF.md`；新增后端模块/接口需要前端适配时，不新建零散交接文档。
 
 ## 0. 前端接入速览
 
@@ -20,7 +22,8 @@
 | 传统文件 | `/api/v1/files*` | 按 `source_id + path` 管理文件 | 兼容旧文件页 |
 | 上传 | `/api/v1/upload*` | 初始化、分片、完成、会话、取消 | 文件上传 |
 | 回收站 | `/api/v1/trash*` | 列表、恢复、永久删除、清空 | 回收站页 |
-| 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消 | 离线任务页 |
+| 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消；HTTP 走 Aria2，BT/magnet 走 qBittorrent | 离线任务页 |
+| RSS 订阅 | `/api/v1/rss*` | RSS 源、订阅规则、条目、手动刷新、BT/magnet 入队、qBittorrent 健康检查 | RSS 追番页 |
 | 分享 | `/api/v1/shares*`、`/s/:token` | 分享管理、公开分享访问 | 分享管理页、公开分享页 |
 | 审计 | `/api/v1/audit/logs*` | 审计列表、审计详情 | 审计日志页 |
 | 统一虚拟目录 V2 | `/api/v2/fs*` | 基于虚拟路径的文件列表、搜索、写操作、下载 | **新文件管理页推荐优先使用** |
@@ -252,6 +255,9 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - audit
   - `audit.read`
   - `audit.read_sensitive`
+- rss
+  - `rss.read`
+  - `rss.manage`
 - cross-user
   - `task.read_all`
   - `task.manage_all`
@@ -264,7 +270,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 |---|---|
 | `super_admin` | 拥有全部 capability；初始化首用户固定为该角色；保留 runtime ACL bypass |
 | `admin` | 具备治理 capability，但没有 `source.secret.read`；只能管理 `operator/user` |
-| `operator` | 只读统计、源读取/测试、跨用户任务治理；**当前没有**跨用户分享治理 capability |
+| `operator` | 只读统计、源读取/测试、跨用户任务治理、RSS 只读；**当前没有**跨用户分享治理 capability |
 | `user` | 无治理 capability；主要依赖 ACL 访问数据面 |
 
 ### 2.4 当前关键规则
@@ -275,6 +281,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - 数据面 ACL：存在显式 ACL 规则的 source 会对普通用户立即生效；无规则且未启用多用户时保留单用户兼容放行
 - `view=admin` / source 详情 / source 增删改测：按 capability 控制
 - `task` / `share`：owner 默认可管理自己的数据；具备跨用户 capability 的角色可跨用户治理
+- `rss`：`rss.read` 可查看授权范围内 RSS 数据；`rss.manage` 可创建/更新/刷新/删除 RSS 源、订阅和手动入队
 - S3 明文 secret 仅 `source.secret.read` 可见；当前仅 `super_admin` 可见
 - 审计查询接口要求 `audit.read`
 - `audit.read_sensitive` 当前仅为能力位预留；**现阶段没有额外敏感字段解锁差异**
@@ -562,6 +569,7 @@ S3 finish Body 示例：
 - 推荐新建任务时传 `target_virtual_parent_path`，语义是“统一虚拟目录中的目标父目录”，后端会解析到具体挂载存储源
 - 兼容旧模式：不传 `target_virtual_parent_path` 时，继续使用 `source_id + save_path`
 - 旧模式下 `save_path` 是 **source 内部目标父目录**，不是统一虚拟目录路径
+- 下载器按链接类型分发：普通 HTTP/HTTPS 走 Aria2；`magnet:?` 与 `.torrent` URL 走 qBittorrent（未启用 qBittorrent 时返回 `503 DOWNLOADER_UNAVAILABLE`）
 - 下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
   - local 目标：从 staging move/copy 到真实物理路径
   - S3 目标：从 staging 上传到对应对象 key
@@ -575,10 +583,58 @@ S3 finish Body 示例：
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
 - `completed` 任务返回时 `error_message` 固定为 `null`；若导入失败，任务会转为 `failed` 并返回失败原因
+- `DownloadTaskView.downloader_type` 当前可能为 `aria2` 或 `qbittorrent`
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
 - 当前没有 `retry` 接口
 
-### 3.10 shares（`/api/v1`）
+
+### 3.10 rss（`/api/v1/rss`）
+
+RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目录；qBittorrent 只作为 BT/magnet 下载执行器。
+
+| 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
+|---|---|---|---|---|
+| GET | `/rss/sources` | `rss.read` | - | 200，`{items[]}` |
+| POST | `/rss/sources` | `rss.manage` | `name,url,is_enabled,refresh_interval_seconds` | 201，`{source}` |
+| GET | `/rss/sources/:id` | `rss.read` | path: `id` | 200，直接返回 `RSSSourceView` |
+| PATCH | `/rss/sources/:id` | `rss.manage` | 同创建 | 200，`{source}` |
+| DELETE | `/rss/sources/:id` | `rss.manage` | path: `id` | 200，`{deleted,id}` |
+| POST | `/rss/sources/:id/refresh` | `rss.manage` | path: `id` | 200，`RSSRefreshResponse` |
+| GET | `/rss/subscriptions` | `rss.read` | query: `source_id` | 200，`{items[]}` |
+| POST | `/rss/subscriptions` | `rss.manage` | 见下方请求体 | 201，`{subscription}` |
+| GET | `/rss/subscriptions/:id` | `rss.read` | path: `id` | 200，直接返回 `RSSSubscriptionView` |
+| PATCH | `/rss/subscriptions/:id` | `rss.manage` | 同创建 | 200，`{subscription}` |
+| DELETE | `/rss/subscriptions/:id` | `rss.manage` | path: `id` | 200，`{deleted,id}` |
+| POST | `/rss/subscriptions/:id/run` | `rss.manage` | path: `id` | 200，`RSSRefreshResponse` |
+| GET | `/rss/items` | `rss.read` | query: `source_id,subscription_id,status` | 200，`{items[]}` |
+| POST | `/rss/items/:id/download` | `rss.manage` | `subscription_id` 可选 | 202，`{item}` |
+| GET | `/rss/qbittorrent/health` | `rss.read` | - | 200，`{enabled,status,error}` |
+
+订阅创建/更新请求体：
+
+```json
+{
+  "source_id": 1,
+  "name": "Frieren 1080p",
+  "is_enabled": true,
+  "must_contain": ["Frieren", "1080p"],
+  "must_not_contain": ["CHT"],
+  "use_regex": false,
+  "case_sensitive": false,
+  "target_virtual_parent_path": "/anime/frieren"
+}
+```
+
+约束：
+
+- 第一版只自动入队 `magnet:?` 和 `.torrent` URL；普通 HTTP/直链条目标记为 `unsupported`，不创建 RSS 下载任务。
+- 每个订阅固定一个 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
+- 创建/更新订阅会校验目标 VFS 目录可解析、有 backing storage、当前用户具备写权限且底层源可写。
+- RSS 条目去重优先使用 GUID；无 GUID 时使用 source + link + title 哈希。
+- 条目状态当前可能为：`new`、`unsupported`、`ignored`、`matched`、`enqueued`、`failed`。
+- qBittorrent 下载目录必须与 backend 共享；下载完成后仍由 Yunxia 从 staging 导入目标 VFS 目录。
+
+### 3.11 shares（`/api/v1`）
 
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -602,7 +658,7 @@ S3 finish Body 示例：
 - 密码错误返回 `401 SHARE_PASSWORD_INVALID`
 - 过期返回 `410 SHARE_EXPIRED`
 
-### 3.11 audit（`/api/v1`）
+### 3.12 audit（`/api/v1`）
 
 | 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -617,7 +673,7 @@ S3 finish Body 示例：
 - 详情中的 `before` / `after` / `detail` 为可选对象，空值时会省略
 - 当前即使拥有 `audit.read_sensitive`，也不会比 `audit.read` 看到更多明文字段
 
-### 3.12 统一虚拟目录树 V2（`/api/v2`）
+### 3.13 统一虚拟目录树 V2（`/api/v2`）
 
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -647,7 +703,7 @@ S3 finish Body 示例：
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
 - `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`
 
-### 3.13 WebDAV
+### 3.14 WebDAV
 
 支持方法：
 
@@ -754,6 +810,7 @@ S3 finish Body 示例：
 {
   "id": 1,
   "type": "download",
+  "downloader_type": "aria2",
   "status": "pending",
   "source_id": 1,
   "save_path": "/downloads",
@@ -922,12 +979,21 @@ S3 finish Body 示例：
 - `TASK_NOT_FOUND`
 - `TASK_INVALID_STATE`
 - `DOWNLOADER_UNAVAILABLE`
+- `DOWNLOAD_LINK_UNSUPPORTED`
 
-### 5.6 audit
+### 5.6 rss
+
+- `RSS_SOURCE_NOT_FOUND`
+- `RSS_SUBSCRIPTION_NOT_FOUND`
+- `RSS_ITEM_NOT_FOUND`
+- `RSS_QBITTORRENT_UNAVAILABLE`
+- `RSS_REGEX_INVALID`
+
+### 5.7 audit
 
 - `AUDIT_LOG_NOT_FOUND`
 
-### 5.7 通用
+### 5.8 通用
 
 - `VALIDATION_ERROR`
 - `INTERNAL_ERROR`
@@ -942,13 +1008,14 @@ S3 finish Body 示例：
 6. `DELETE /api/v1/acl/rules/:id` 返回的是 `{}`，不是 `{deleted,id}`。
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
 8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
-9. 离线下载不会把 Aria2 直接指向目标源目录，而是先落 backend 与 aria2 共享的 staging，完成后由后端导入 local / S3。
-10. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
-11. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
-12. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
-13. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
-14. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
-15. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+9. 离线下载不会把下载器直接指向目标源目录，而是先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3。
+10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
+11. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
+12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
+13. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
+14. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
+15. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
+16. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
 
 ## 7. 前端常见页面调用流程
 

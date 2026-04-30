@@ -7,6 +7,7 @@ type DownloadTask struct {
 	ID                      uint
 	UserID                  uint
 	Type                    string
+	DownloaderType          string
 	Status                  string
 	SourceID                uint
 	SavePath                string

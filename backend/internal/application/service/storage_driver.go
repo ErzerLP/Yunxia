@@ -171,6 +171,19 @@ func WithTaskStagingDir(dir string) TaskServiceOption {
 	}
 }
 
+// WithTaskDownloaderStagingDir 设置指定下载器的暂存根目录。
+func WithTaskDownloaderStagingDir(downloaderType string, dir string) TaskServiceOption {
+	return func(s *TaskService) {
+		if downloaderType == "" || dir == "" {
+			return
+		}
+		if s.stagingRoots == nil {
+			s.stagingRoots = make(map[string]string)
+		}
+		s.stagingRoots[downloaderType] = dir
+	}
+}
+
 // WithTaskImportDriver 注册下载完成后导入远端存储源的驱动。
 func WithTaskImportDriver(driverType string, driver TaskImportDriver) TaskServiceOption {
 	return func(s *TaskService) {
@@ -181,6 +194,15 @@ func WithTaskImportDriver(driverType string, driver TaskImportDriver) TaskServic
 			s.importDrivers = make(map[string]TaskImportDriver)
 		}
 		s.importDrivers[driverType] = driver
+	}
+}
+
+// WithTaskDownloadRouter 注册按链接类型分发的下载器路由。
+func WithTaskDownloadRouter(router *DownloaderRouter) TaskServiceOption {
+	return func(s *TaskService) {
+		if router != nil {
+			s.downloadRouter = router
+		}
 	}
 }
 

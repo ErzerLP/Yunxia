@@ -90,6 +90,7 @@ type DownloadTaskModel struct {
 	ID                      uint    `gorm:"primaryKey"`
 	UserID                  uint    `gorm:"index;not null;default:0"`
 	Type                    string  `gorm:"size:32;not null"`
+	DownloaderType          string  `gorm:"size:32;not null;default:'aria2'"`
 	Status                  string  `gorm:"size:32;not null"`
 	SourceID                uint    `gorm:"index;not null"`
 	SavePath                string  `gorm:"size:1024;not null"`
@@ -110,6 +111,58 @@ type DownloadTaskModel struct {
 	FinishedAt              *time.Time
 	CreatedAt               time.Time `gorm:"not null"`
 	UpdatedAt               time.Time `gorm:"not null"`
+}
+
+// RSSSourceModel 表示 RSS 源表。
+type RSSSourceModel struct {
+	ID                     uint   `gorm:"primaryKey"`
+	UserID                 uint   `gorm:"index;not null;default:0"`
+	Name                   string `gorm:"size:128;not null"`
+	URL                    string `gorm:"type:text;not null"`
+	IsEnabled              bool   `gorm:"not null;default:true"`
+	RefreshIntervalSeconds int    `gorm:"not null;default:1800"`
+	LastRefreshedAt        *time.Time
+	LastError              *string   `gorm:"type:text"`
+	CreatedAt              time.Time `gorm:"not null"`
+	UpdatedAt              time.Time `gorm:"not null"`
+}
+
+// RSSSubscriptionModel 表示 RSS 订阅规则表。
+type RSSSubscriptionModel struct {
+	ID                      uint      `gorm:"primaryKey"`
+	UserID                  uint      `gorm:"index;not null;default:0"`
+	SourceID                uint      `gorm:"index;not null"`
+	Name                    string    `gorm:"size:128;not null"`
+	IsEnabled               bool      `gorm:"not null;default:true"`
+	MustContainJSON         string    `gorm:"type:text;not null;default:'[]'"`
+	MustNotContainJSON      string    `gorm:"type:text;not null;default:'[]'"`
+	UseRegex                bool      `gorm:"not null;default:false"`
+	CaseSensitive           bool      `gorm:"not null;default:false"`
+	TargetVirtualParentPath string    `gorm:"size:1024;not null"`
+	ResolvedSourceID        uint      `gorm:"index;not null;default:0"`
+	ResolvedInnerParentPath string    `gorm:"size:1024;not null;default:''"`
+	CreatedAt               time.Time `gorm:"not null"`
+	UpdatedAt               time.Time `gorm:"not null"`
+}
+
+// RSSItemModel 表示 RSS 条目表。
+type RSSItemModel struct {
+	ID                    uint   `gorm:"primaryKey"`
+	UserID                uint   `gorm:"index;not null;default:0"`
+	SourceID              uint   `gorm:"uniqueIndex:idx_rss_item_source_dedup;index;not null"`
+	Title                 string `gorm:"type:text;not null"`
+	Link                  string `gorm:"type:text;not null"`
+	PublishedAt           *time.Time
+	GUID                  string    `gorm:"type:text"`
+	DedupKey              string    `gorm:"uniqueIndex:idx_rss_item_source_dedup;size:128;not null"`
+	DownloadURL           string    `gorm:"type:text;not null;default:''"`
+	LinkType              string    `gorm:"size:32;not null;default:'unsupported'"`
+	Status                string    `gorm:"index;size:32;not null"`
+	MatchedSubscriptionID *uint     `gorm:"index"`
+	TaskID                *uint     `gorm:"index"`
+	ErrorMessage          *string   `gorm:"type:text"`
+	CreatedAt             time.Time `gorm:"not null"`
+	UpdatedAt             time.Time `gorm:"not null"`
 }
 
 // TrashItemModel 表示回收站元数据表。

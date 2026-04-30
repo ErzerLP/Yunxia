@@ -526,6 +526,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	sourceRepo := gormrepo.NewSourceRepository(db)
 	uploadRepo := gormrepo.NewUploadSessionRepository(db)
 	trashRepo := gormrepo.NewTrashItemRepository(db)
+	rssRepo := gormrepo.NewRSSRepository(db)
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
@@ -611,6 +612,14 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
 	)
+	rssSvc := appsvc.NewRSSService(
+		rssRepo,
+		sourceRepo,
+		taskSvc,
+		appsvc.WithRSSVFSResolver(vfsSvc),
+		appsvc.WithRSSACLAuthorizer(aclAuthorizer),
+		appsvc.WithRSSUserRepository(userRepo),
+	)
 	shareSvc := appsvc.NewShareService(
 		shareRepo,
 		sourceRepo,
@@ -632,6 +641,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	trashHandler := httphandler.NewTrashHandler(trashSvc)
 	uploadHandler := httphandler.NewUploadHandler(uploadSvc)
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
+	rssHandler := httphandler.NewRSSHandler(rssSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
 	webdavHandler := httphandler.NewWebDAVHandler(
@@ -652,6 +662,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	RegisterACLRoutes(engine, aclHandler, authMW, auditRecorder, rootLogger)
 	RegisterAuditRoutes(engine, auditHandler, authMW, auditRecorder, rootLogger)
 	RegisterTaskRoutes(engine, taskHandler, authMW)
+	RegisterRSSRoutes(engine, rssHandler, authMW, auditRecorder, rootLogger)
 	RegisterShareRoutes(engine, shareHandler, authMW)
 	RegisterVFSRoutes(engine, vfsHandler, authMW)
 	RegisterWebDAVRoutes(engine, "/dav", webdavHandler)

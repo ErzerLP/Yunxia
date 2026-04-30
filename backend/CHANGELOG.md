@@ -11,6 +11,47 @@
 
 ---
 
+## 2026-04-29
+
+### RSS 番剧订阅下载 MVP 与 qBittorrent 接入
+
+- 新增 RSS 订阅下载后端主链路：
+  - RSS 源：新增 / 列表 / 详情 / 更新 / 删除 / 手动刷新
+  - RSS 订阅：新增 / 列表 / 详情 / 更新 / 删除 / 手动执行
+  - RSS 条目：列表 / BT 条目手动入队 / 状态追踪
+- 第一版 RSS 只自动处理 BT/magnet：
+  - `magnet:?` → qBittorrent
+  - `.torrent` URL → qBittorrent
+  - 普通 HTTP/HTTPS RSS 条目标记为 `unsupported`，不自动创建 RSS 下载任务
+- 保留 Aria2，新增 qBittorrent 下载器路由：
+  - 普通 HTTP/HTTPS 离线下载继续走 Aria2
+  - BT/magnet 离线下载走 qBittorrent
+  - `DownloadTaskView` 新增 `downloader_type`
+- RSS 目标目录统一基于 VFS：
+  - 每个订阅固定 `target_virtual_parent_path`
+  - 创建/更新订阅时校验 VFS backing storage、ACL 写权限、本地源只读状态
+  - 下载完成后仍走 Yunxia staging/import 进入目标存储源
+- 新增 qBittorrent Web API 客户端：
+  - 登录 / 免登录内网模式
+  - 添加 torrent/magnet
+  - 查询状态
+  - 暂停 / 恢复 / 删除
+  - 健康检查
+- Docker 后端编排新增 qBittorrent 侧车：
+  - `backend/docker/qbittorrent.Dockerfile`
+  - `backend/docker/qbittorrent.entrypoint.sh`
+  - `docker-compose.backend.yml` 新增 `qbittorrent` 服务与共享下载卷
+- 新增权限能力：
+  - `rss.read`
+  - `rss.manage`
+- API 文档已补充 `/api/v1/rss/*` 与 `downloader_type`。
+- 当前验证：
+  - `cd backend && go test ./...`
+  - `docker compose -f docker-compose.backend.yml config`
+  - `bash -n backend/docker/aria2.entrypoint.sh backend/docker/qbittorrent.entrypoint.sh`
+
+---
+
 ## 2026-04-23
 
 ### 1. 全局权限模型重构

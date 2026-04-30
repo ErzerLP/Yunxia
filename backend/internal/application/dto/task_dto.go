@@ -4,6 +4,7 @@ package dto
 type DownloadTaskView struct {
 	ID                      uint    `json:"id"`
 	Type                    string  `json:"type"`
+	DownloaderType          string  `json:"downloader_type,omitempty"`
 	Status                  string  `json:"status"`
 	SourceID                uint    `json:"source_id"`
 	SavePath                string  `json:"save_path"`

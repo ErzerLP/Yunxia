@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend conventions and required guideline index for RSS/qBittorrent implementation."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Place new RSS domain/application/infrastructure/http code in existing backend architecture."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"RSS sources/subscriptions/items require GORM models, repositories, and migrations."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"New RSS APIs must return explicit 4xx business errors instead of INTERNAL_ERROR."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"RSS refresh workers and qBittorrent integration need operational logging/audit awareness."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend implementation and tests must follow project quality gates."}
+{"file":"backend/API_CONTRACT.md","reason":"New routes/DTOs must stay consistent with existing API conventions."}
+{"file":".trellis/tasks/04-29-rss-anime-download/research/autobangumi-qbittorrent-rss.md","reason":"Research summary for AutoBangumi and qBittorrent RSS/Web API behavior."}

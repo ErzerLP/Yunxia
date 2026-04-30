@@ -29,6 +29,8 @@ func ResolveCapabilities(roleKey string) ([]string, error) {
 			CapabilityTaskManageAll,
 			CapabilityShareReadAll,
 			CapabilityShareManageAll,
+			CapabilityRSSRead,
+			CapabilityRSSManage,
 			CapabilityAuditRead,
 		}, nil
 	case RoleOperator:
@@ -38,6 +40,7 @@ func ResolveCapabilities(roleKey string) ([]string, error) {
 			CapabilitySourceTest,
 			CapabilityTaskReadAll,
 			CapabilityTaskManageAll,
+			CapabilityRSSRead,
 		}, nil
 	case RoleUser:
 		return []string{}, nil

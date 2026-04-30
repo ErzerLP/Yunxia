@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
@@ -39,6 +39,17 @@ const STATUS_BADGE_CLASSES: Record<DownloadTask['status'], string> = {
   completed: 'bg-emerald-500/10 text-emerald-500',
   failed: 'bg-destructive/10 text-destructive',
   canceled: 'bg-muted text-muted-foreground',
+}
+
+const DOWNLOADER_LABELS: Record<NonNullable<DownloadTask['downloader_type']>, string> = {
+  aria2: 'Aria2',
+  qbittorrent: 'qBittorrent',
+}
+
+function toOptionalTaskId(value: string | null) {
+  if (!value) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
 function getTaskProgressPercent(task: DownloadTask) {
@@ -202,10 +213,12 @@ function CreateTaskModal({
 
 export function TasksPage() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const refreshedCompletedTasksRef = useRef<Set<string>>(new Set())
+  const highlightedTaskId = toOptionalTaskId(searchParams.get('task_id'))
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -313,7 +326,10 @@ export function TasksPage() {
               return (
                 <div
                   key={task.id}
-                  className="p-4 rounded-lg border border-border bg-card"
+                  className={cn(
+                    'p-4 rounded-lg border border-border bg-card',
+                    highlightedTaskId === task.id && 'border-primary ring-2 ring-primary/20'
+                  )}
                 >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-3 min-w-0">
@@ -331,6 +347,11 @@ export function TasksPage() {
                         >
                           {STATUS_LABELS[task.status]}
                         </span>
+                        {task.downloader_type && (
+                          <span className="shrink-0 rounded-full px-2 py-0.5 text-xs font-medium bg-muted text-muted-foreground">
+                            {DOWNLOADER_LABELS[task.downloader_type] ?? task.downloader_type}
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground truncate mt-0.5">
                         {task.source_url}

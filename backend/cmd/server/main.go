@@ -19,6 +19,7 @@ import (
 	"yunxia/internal/infrastructure/downloader"
 	appLog "yunxia/internal/infrastructure/observability/logging"
 	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
+	infraRSS "yunxia/internal/infrastructure/rss"
 	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
 	httpiface "yunxia/internal/interfaces/http"
@@ -66,6 +67,7 @@ func main() {
 	sourceRepo := gormrepo.NewSourceRepository(db)
 	uploadRepo := gormrepo.NewUploadSessionRepository(db)
 	taskRepo := gormrepo.NewTaskRepository(db)
+	rssRepo := gormrepo.NewRSSRepository(db)
 	trashRepo := gormrepo.NewTrashItemRepository(db)
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
@@ -77,6 +79,17 @@ func main() {
 	auditRecorder := appaudit.NewRecorder(auditRepo, appLog.Component(rootLogger, "audit.recorder"))
 	auditQuerySvc := appaudit.NewQueryService(auditRepo)
 	downloadSvc := downloader.NewAria2Client(cfg.Aria2.RPCURL, cfg.Aria2.RPCSecret)
+	downloadRouter := appsvc.NewDownloaderRouter(downloadSvc)
+	var qbitClient *downloader.QBittorrentClient
+	if cfg.QBittorrent.Enabled {
+		qbitClient = downloader.NewQBittorrentClient(cfg.QBittorrent.APIURL, cfg.QBittorrent.Username, cfg.QBittorrent.Password)
+		downloadRouter.Register(appsvc.DownloaderTypeQBittorrent, qbitClient)
+		rootLogger.Info("qbittorrent downloader enabled",
+			slog.String("event", "qbittorrent.enabled"),
+			slog.String("api_url", cfg.QBittorrent.APIURL),
+			slog.String("download_dir", cfg.QBittorrent.DownloadDir),
+		)
+	}
 	s3Driver := infraStorage.NewS3Driver(infraStorage.NewS3ClientFactory())
 
 	options := appsvc.DefaultSystemOptions()
@@ -154,10 +167,29 @@ func main() {
 		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
 		appsvc.WithTaskStagingDir(taskStagingRoot(cfg)),
+		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeAria2, downloadStagingRoot(cfg.Aria2.DownloadDir)),
+		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeQBittorrent, downloadStagingRoot(cfg.QBittorrent.DownloadDir)),
 		appsvc.WithTaskImportDriver("s3", s3Driver),
 		appsvc.WithTaskVFSResolver(vfsSvc),
+		appsvc.WithTaskDownloadRouter(downloadRouter),
 	)
 	go taskSvc.StartSyncWorker(context.Background(), 5*time.Second)
+	rssOptions := []appsvc.RSSServiceOption{
+		appsvc.WithRSSFetcher(infraRSS.NewFetcher()),
+		appsvc.WithRSSVFSResolver(vfsSvc),
+		appsvc.WithRSSACLAuthorizer(aclAuthorizer),
+		appsvc.WithRSSUserRepository(userRepo),
+	}
+	if qbitClient != nil {
+		rssOptions = append(rssOptions, appsvc.WithRSSQBitHealthChecker(qbitClient))
+	}
+	rssSvc := appsvc.NewRSSService(
+		rssRepo,
+		sourceRepo,
+		taskSvc,
+		rssOptions...,
+	)
+	go rssSvc.StartRefreshWorker(context.Background(), time.Minute)
 	shareSvc := appsvc.NewShareService(
 		shareRepo,
 		sourceRepo,
@@ -179,6 +211,7 @@ func main() {
 	trashHandler := httphandler.NewTrashHandler(trashSvc)
 	uploadHandler := httphandler.NewUploadHandler(uploadSvc)
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
+	rssHandler := httphandler.NewRSSHandler(rssSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
 	webdavHandler := httphandler.NewWebDAVHandler(
@@ -199,6 +232,7 @@ func main() {
 	httpiface.RegisterACLRoutes(engine, aclHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterAuditRoutes(engine, auditHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterTaskRoutes(engine, taskHandler, authMW)
+	httpiface.RegisterRSSRoutes(engine, rssHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterShareRoutes(engine, shareHandler, authMW)
 	httpiface.RegisterVFSRoutes(engine, vfsHandler, authMW)
 	httpiface.RegisterWebDAVRoutes(engine, cfg.WebDAV.Prefix, webdavHandler)
@@ -212,7 +246,7 @@ func main() {
 }
 
 func prepareDirectories(cfg appcfg.Config) error {
-	for _, dir := range []string{cfg.Storage.DataDir, cfg.Storage.TempDir} {
+	for _, dir := range []string{cfg.Storage.DataDir, cfg.Storage.TempDir, cfg.Aria2.DownloadDir, cfg.QBittorrent.DownloadDir} {
 		if dir == "" {
 			continue
 		}
@@ -231,7 +265,17 @@ func prepareDirectories(cfg appcfg.Config) error {
 
 func taskStagingRoot(cfg appcfg.Config) string {
 	if strings.TrimSpace(cfg.Aria2.DownloadDir) != "" {
-		return slashpath.Join(filepath.ToSlash(cfg.Aria2.DownloadDir), "staging")
+		return downloadStagingRoot(cfg.Aria2.DownloadDir)
+	}
+	if strings.TrimSpace(cfg.QBittorrent.DownloadDir) != "" {
+		return downloadStagingRoot(cfg.QBittorrent.DownloadDir)
 	}
 	return filepath.Join(cfg.Storage.TempDir, "downloads")
+}
+
+func downloadStagingRoot(downloadDir string) string {
+	if strings.TrimSpace(downloadDir) == "" {
+		return ""
+	}
+	return slashpath.Join(filepath.ToSlash(downloadDir), "staging")
 }

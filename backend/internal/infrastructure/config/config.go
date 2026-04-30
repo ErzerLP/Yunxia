@@ -9,14 +9,15 @@ import (
 
 // Config 表示后端运行时配置。
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	JWT      JWTConfig
-	Storage  StorageConfig
-	WebDAV   WebDAVConfig
-	Aria2    Aria2Config
-	Security SecurityConfig
-	Logging  LoggingConfig
+	Server      ServerConfig
+	Database    DatabaseConfig
+	JWT         JWTConfig
+	Storage     StorageConfig
+	WebDAV      WebDAVConfig
+	Aria2       Aria2Config
+	QBittorrent QBittorrentConfig
+	Security    SecurityConfig
+	Logging     LoggingConfig
 }
 
 // ServerConfig 表示 HTTP 服务配置。
@@ -56,6 +57,15 @@ type WebDAVConfig struct {
 type Aria2Config struct {
 	RPCURL      string
 	RPCSecret   string
+	DownloadDir string
+}
+
+// QBittorrentConfig 表示 qBittorrent Web API 集成配置。
+type QBittorrentConfig struct {
+	Enabled     bool
+	APIURL      string
+	Username    string
+	Password    string
 	DownloadDir string
 }
 
@@ -125,6 +135,13 @@ func Load() (Config, error) {
 			RPCSecret:   v.GetString("aria2.rpc_secret"),
 			DownloadDir: v.GetString("aria2.download_dir"),
 		},
+		QBittorrent: QBittorrentConfig{
+			Enabled:     v.GetBool("qbittorrent.enabled"),
+			APIURL:      v.GetString("qbittorrent.api_url"),
+			Username:    v.GetString("qbittorrent.username"),
+			Password:    v.GetString("qbittorrent.password"),
+			DownloadDir: v.GetString("qbittorrent.download_dir"),
+		},
 		Security: SecurityConfig{
 			BcryptCost:        v.GetInt("security.bcrypt_cost"),
 			LoginMaxAttempts:  v.GetInt("security.login_max_attempts"),
@@ -158,6 +175,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("aria2.rpc_url", "http://aria2:6800/jsonrpc")
 	v.SetDefault("aria2.rpc_secret", "")
 	v.SetDefault("aria2.download_dir", "")
+	v.SetDefault("qbittorrent.enabled", false)
+	v.SetDefault("qbittorrent.api_url", "http://qbittorrent:8080")
+	v.SetDefault("qbittorrent.username", "admin")
+	v.SetDefault("qbittorrent.password", "adminadmin")
+	v.SetDefault("qbittorrent.download_dir", "")
 	v.SetDefault("security.bcrypt_cost", 12)
 	v.SetDefault("security.login_max_attempts", 5)
 	v.SetDefault("security.login_lock_duration", "15m")
