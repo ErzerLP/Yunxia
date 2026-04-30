@@ -356,7 +356,7 @@ export interface CreateTaskRequest {
   url: string;
   source_id?: number;
   save_path?: string;
-  target_virtual_save_path?: string;
+  target_virtual_parent_path?: string;
 }
 
 // RSS

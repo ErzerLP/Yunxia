@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import { taskApi } from '@/api/task'
-import { sourceApi } from '@/api/source'
 import {
   Play,
   Pause,
@@ -17,10 +17,10 @@ import {
   Plus,
   Link as LinkIcon,
   HardDrive,
-  Server,
 } from 'lucide-react'
 import { cn, formatBytes, formatDate, formatDuration, formatSpeed } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
+import { useUIStore } from '@/stores/uiStore'
 import type { DownloadTask } from '@/types/api'
 
 const STATUS_LABELS: Record<DownloadTask['status'], string> = {
@@ -117,19 +117,43 @@ function CreateTaskModal({
   onSubmit,
 }: {
   onClose: () => void
-  onSubmit: (url: string, sourceId: number, savePath: string) => void
+  onSubmit: (url: string, targetVirtualParentPath: string) => Promise<void>
 }) {
-  const { currentSource } = useFileStore()
+  const { currentVirtualPath } = useFileStore()
+  const { addToast } = useUIStore()
   const [url, setUrl] = useState('')
-  const [sourceId, setSourceId] = useState(currentSource ? String(currentSource.id) : '')
-  const [savePath, setSavePath] = useState('/')
+  const [targetPath, setTargetPath] = useState(currentVirtualPath || '/')
+  const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const { data: sourcesData } = useQuery({
-    queryKey: ['sources-task-modal'],
-    queryFn: () => sourceApi.list({ page: 1, page_size: 100 }),
-  })
-  const sources = sourcesData?.items || []
-  const effectiveSourceId = sourceId || (sources[0]?.id ? String(sources[0].id) : '')
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    const trimmedUrl = url.trim()
+    const trimmedTargetPath = targetPath.trim() || '/'
+
+    if (!trimmedUrl) {
+      setError('请填写下载链接')
+      return
+    }
+    if (!trimmedTargetPath.startsWith('/')) {
+      setError('目标虚拟目录必须以 / 开头')
+      return
+    }
+
+    setIsSubmitting(true)
+    setError('')
+    try {
+      await onSubmit(trimmedUrl, trimmedTargetPath)
+      addToast('下载任务已创建', 'success')
+      onClose()
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : '创建下载任务失败'
+      setError(message)
+      addToast(message, 'error')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -140,72 +164,77 @@ function CreateTaskModal({
             <Plus className="w-4 h-4" />
             新建下载任务
           </h3>
-          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground">
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+            title="关闭"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="p-4 space-y-3">
+        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+          {error && (
+            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">下载链接</label>
+            <label htmlFor="task-create-url" className="text-sm text-muted-foreground mb-1 block">
+              下载链接
+            </label>
             <div className="relative">
               <LinkIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
+                id="task-create-url"
+                name="url"
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com/file.zip"
+                autoComplete="url"
+                placeholder="https://example.com/file.zip 或 magnet:?"
                 className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">存储源</label>
-            <div className="relative">
-              <Server className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <select
-                value={effectiveSourceId}
-                onChange={(e) => setSourceId(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring appearance-none"
-              >
-                {sources.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className="text-sm text-muted-foreground mb-1 block">保存路径</label>
+            <label htmlFor="task-create-target-path" className="text-sm text-muted-foreground mb-1 block">
+              目标虚拟目录
+            </label>
             <div className="relative">
               <HardDrive className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input
+                id="task-create-target-path"
+                name="target_virtual_parent_path"
                 type="text"
-                value={savePath}
-                onChange={(e) => setSavePath(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                value={targetPath}
+                onChange={(e) => setTargetPath(e.target.value)}
+                autoComplete="off"
+                placeholder="/local/downloads"
+                className="w-full pl-8 pr-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
               />
             </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              使用统一虚拟目录路径，后端会自动解析到已挂载的存储源。
+            </p>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
+              type="button"
               onClick={onClose}
               className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
             >
               取消
             </button>
             <button
-              onClick={() => {
-                const sid = parseInt(effectiveSourceId, 10)
-                if (url.trim() && sid > 0) {
-                  onSubmit(url.trim(), sid, savePath)
-                }
-              }}
-              disabled={!url.trim() || !effectiveSourceId}
+              type="submit"
+              disabled={!url.trim() || isSubmitting}
               className="px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              创建任务
+              {isSubmitting ? '创建中...' : '创建任务'}
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   )
@@ -251,14 +280,15 @@ export function TasksPage() {
     }
   }, [queryClient, taskItems])
 
-  const handleCreate = async (url: string, sourceId: number, savePath: string) => {
-    try {
-      await taskApi.create({ type: 'download', url, source_id: sourceId, save_path: savePath })
-      queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      setCreateModalOpen(false)
-    } catch {
-      // ignore
-    }
+  const handleCreate = async (url: string, targetVirtualParentPath: string) => {
+    await taskApi.create({
+      type: 'download',
+      url,
+      target_virtual_parent_path: targetVirtualParentPath,
+    })
+    queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    invalidateCompletedTaskFileQueries(queryClient)
+    setCreateModalOpen(false)
   }
 
   const handlePause = async (id: number) => {
