@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待联调 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry` | [详情](#handoff-2026-04-30-rss-unattended) |
 | 待联调 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页 | P1 | `/api/v1/rss/*`、`/api/v1/tasks` | [详情](#handoff-2026-04-29-rss) |
 
 ---
@@ -301,3 +302,115 @@ docker compose -f docker-compose.backend.yml config
 ```bash
 bash -n backend/docker/aria2.entrypoint.sh backend/docker/qbittorrent.entrypoint.sh
 ```
+
+---
+
+<a id="handoff-2026-04-30-rss-unattended"></a>
+
+### [P1][待联调][RSS] 2026-04-30 RSS 无人值守可用性增强
+
+#### 前端适配 checklist
+
+- [x] RSS 源列表/详情展示健康状态：`health_status`、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`、`last_error`。
+- [x] 接入“刷新全部启用源”：`POST /api/v1/rss/sources/refresh-all`，展示每个源 `success/failed/skipped` 结果；该接口会强制刷新启用源，`skipped` 仅表示该源已有刷新在进行。
+- [x] 订阅详情或编辑页接入规则预览：`POST /api/v1/rss/subscriptions/:id/preview`，展示 `matched/missing/excluded` 解释。
+- [x] 条目列表支持新状态筛选：`retry_pending`、`completed`、`needs_attention`。
+- [x] 条目卡片/详情展示重试字段：`retry_count/max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。
+- [x] 接入单条重新处理：`POST /api/v1/rss/items/:id/reprocess`。
+- [x] 接入单条手动重试：`POST /api/v1/rss/items/:id/retry`，可选传 `subscription_id`。
+- [x] 对 `needs_attention` 做待处理入口，优先展示确定性错误（权限、路径、只读、unsupported）。
+
+#### 背景 / 变更摘要
+
+RSS 后端从“手动跑通”增强为“可无人值守运行”：后台会按 `next_refresh_at` 自动刷新源，源连续失败会退避并进入 `degraded` / `circuit_open`；RSS item 会按 5m / 30m / 2h 做有限自动重试，最多 3 次；task 完成/失败/取消会回写 RSS item，其中取消会进入 `needs_attention` 等待人工确认。
+
+#### 推荐页面流程
+
+1. 进入 RSS 页面：
+   - `GET /api/v1/rss/sources`
+   - `GET /api/v1/rss/items?status=needs_attention`
+2. 源列表突出显示：
+   - `health_status=ok`：正常。
+   - `health_status=degraded`：连续失败但仍会自动探测。
+   - `health_status=circuit_open`：熔断低频探测，提示用户检查源 URL/网络。
+3. 用户点击“刷新全部”：
+   - `POST /api/v1/rss/sources/refresh-all`
+   - 对 `failed` item 展示 `error`，不要因为单源失败隐藏其他成功源。
+4. 用户编辑规则前/后点击“预览”：
+   - `POST /api/v1/rss/subscriptions/:id/preview`
+   - `result=matched` 展示命中；`missing` 展示缺失关键词；`excluded` 展示被排除关键词。
+5. 条目列表：
+   - `retry_pending`：展示下次自动重试时间，可提供“立即重试”。
+   - `needs_attention`：展示错误原因和“重新处理/重试”按钮。
+   - `completed`：展示已完成，可跳转 task 或目标目录。
+
+#### 新增/更新接口摘要
+
+| 场景 | 方法 | 路径 | 权限 | 返回 |
+|---|---|---|---|---|
+| 刷新全部启用源 | POST | `/api/v1/rss/sources/refresh-all` | `rss.manage` | `RSSRefreshAllResponse` |
+| 规则预览 | POST | `/api/v1/rss/subscriptions/:id/preview` | `rss.manage` | `RSSSubscriptionPreviewResponse` |
+| 单条重新处理 | POST | `/api/v1/rss/items/:id/reprocess` | `rss.manage` | `{item}` |
+| 单条手动重试 | POST | `/api/v1/rss/items/:id/retry` | `rss.manage` | `{item}` |
+| 待处理条目 | GET | `/api/v1/rss/items?status=needs_attention` | `rss.read` | `{items}` |
+
+#### 新增字段 / 状态
+
+`RSSSourceView` 新增：
+
+```text
+health_status: ok | degraded | circuit_open
+consecutive_failures
+last_success_at
+next_refresh_at
+last_refresh_status: success | failed | ""
+last_refresh_stats
+```
+
+`RSSItemView.status` 新增：
+
+```text
+retry_pending
+completed
+needs_attention
+```
+
+`RSSItemView` 新增重试字段：
+
+```text
+retry_count
+max_retry_count
+last_attempt_at
+next_retry_at
+retry_reason
+```
+
+常见 `retry_reason`：
+
+```text
+downloader_unavailable
+torrent_fetch_failed
+task_failed
+stalled
+deterministic_error
+```
+
+#### 注意事项
+
+- 自动重试只处理临时错误；权限、路径、只读、unsupported 等确定性错误会进入 `needs_attention`。
+- 手动 retry 会绕过 `next_retry_at`，但仍增加 `retry_count`。
+- 已有关联非终态 task 的 item 不会重复入队；自动源刷新也不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；前端不需要额外防抖来避免重复 task，但按钮仍建议 loading/disabled。
+- 详细字段以 `backend/API_CONTRACT.md` 的 `3.10 rss` 为准。
+
+#### 前端验证记录
+
+状态：`待联调`。2026-04-30 复核时前端静态检查、构建和 VFS 静态集成检查通过；仍需连接后端运行环境完成 RSS 页面 smoke 后才能标记 `已适配`。
+
+```bash
+cd web
+npm run lint # pass
+npm run build # pass
+node scripts/check-vfs-integration.mjs # pass
+```
+
+未执行运行环境 smoke：尚未连接后端实例验证 RSS 命中、qBittorrent 入队、任务完成回写和 VFS 目标目录可见。

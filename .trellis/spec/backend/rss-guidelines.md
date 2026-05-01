@@ -65,6 +65,41 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
 - qBittorrent missing-tag lookup immediately after add is not a user cancel.
   Keep the Yunxia task `pending` instead of mapping it to `canceled`.
 - Terminal `failed` / `canceled` task statuses must carry an `error_message`.
+- Unattended RSS source refresh must persist observable scheduling state:
+  `health_status`, `consecutive_failures`, `last_success_at`,
+  `next_refresh_at`, `last_refresh_status`, and `last_refresh_stats`.
+  Consecutive source failures degrade/circuit-open the source and stretch the
+  next probe; a successful refresh resets the source to `ok`.
+- `POST /api/v1/rss/sources/refresh-all` must continue refreshing other enabled
+  sources when one source fails, and must report per-source success/failure.
+  Manual refresh-all is a force refresh for enabled sources; `skipped` is
+  reserved for sources already locked by another refresh.
+- RSS subscription preview must evaluate existing items and return explainable
+  `matched`, `missing`, and `excluded` keyword lists. Do not return only a
+  boolean match result.
+- RSS item unattended retry state must use clear statuses:
+  `retry_pending`, `completed`, and `needs_attention`, plus retry fields
+  `retry_count`, `max_retry_count`, `last_attempt_at`, `next_retry_at`, and
+  `retry_reason`.
+- Automatic retry only applies to transient errors such as downloader
+  unavailable, torrent fetch timeout/network errors, and transient task
+  failures. Deterministic errors such as unsupported links, invalid paths,
+  ACL denial, read-only sources, and missing backing storage must move to
+  `needs_attention`.
+- Retry backoff is finite and defaults to 5m / 30m / 2h with a maximum of 3
+  automatic retries. Manual retry may bypass `next_retry_at` but must still
+  record an attempt.
+- Normal source refresh and subscription run must not bypass item retry state:
+  `retry_pending`, `needs_attention`, and `completed` items are left alone
+  unless the user explicitly calls item `reprocess` / `retry`.
+- An RSS item with an existing non-terminal task must not enqueue another task.
+  Task `completed` must mark the item `completed`; task `failed` / `canceled`
+  must write the error back to the item and classify it as `retry_pending` or
+  `needs_attention`. User/task cancellation is not treated as transient and
+  should move the item to `needs_attention` rather than silently re-queueing.
+- RSS-created tasks should run under the RSS subscription/source owner context,
+  even when refresh/retry is triggered by an administrator or background
+  worker, so task ownership and VFS/ACL checks stay tied to the owner.
 
 ### 4. Validation & Error Matrix
 
@@ -79,6 +114,19 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
 | `.torrent` file exceeds `maxTorrentFileBytes` | Return add error |
 | qBittorrent tag not visible immediately | Return `pending`, not `canceled` |
 | qBittorrent state is `missingFiles` / `error` | Return `failed` with state in `error_message` |
+| Source refresh fails repeatedly | Increment `consecutive_failures`, update `next_refresh_at`, enter `degraded` / `circuit_open` |
+| Source refresh succeeds after failures | Clear `last_error`, reset failures, set `health_status=ok` |
+| One source in refresh-all fails | Continue other sources and include per-source error |
+| Enabled source has future `next_refresh_at` but refresh-all is called | Refresh it anyway |
+| Preview sees must keyword missing | Return `result=missing` with missing keyword list |
+| Preview sees must-not keyword matched | Return `result=excluded` with excluded keyword list |
+| RSS item has active non-terminal task | Do not create another task during retry/reprocess |
+| RSS item is `retry_pending` / `needs_attention` / `completed` during source refresh | Do not create another task |
+| Admin refreshes another user's RSS source | Created download task uses the source/subscription owner's user context |
+| Task completed for RSS item | Mark item `completed` |
+| Task failed with transient error | Mark item `retry_pending` until max retries, then `needs_attention` |
+| Task canceled for RSS item | Mark item `needs_attention` with the cancellation reason |
+| Deterministic item failure | Mark item `needs_attention`; do not auto retry |
 
 ### 5. Good/Base/Bad Cases
 
@@ -108,6 +156,14 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
   - missing tag stays `pending`
   - failed qBittorrent state returns `error_message`
 - Task service test: terminal `failed` / `canceled` has `error_message`.
+- RSS unattended tests:
+  - source failure backoff and successful recovery
+  - refresh-all continues after one source fails
+  - subscription preview explains matched/missing/excluded
+  - manual item retry and reprocess endpoints/service paths
+  - automatic retry backoff and max-attempt `needs_attention`
+  - task terminal status writes back to RSS item
+  - active task prevents duplicate enqueue
 - Full gate: `go test -count=1 ./...`.
 
 ### 7. Wrong vs Correct

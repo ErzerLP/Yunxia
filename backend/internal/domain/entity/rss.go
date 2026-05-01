@@ -12,6 +12,12 @@ type RSSSource struct {
 	RefreshIntervalSeconds int
 	LastRefreshedAt        *time.Time
 	LastError              *string
+	HealthStatus           string
+	ConsecutiveFailures    int
+	LastSuccessAt          *time.Time
+	NextRefreshAt          *time.Time
+	LastRefreshStatus      string
+	LastRefreshStatsJSON   string
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }
@@ -50,6 +56,11 @@ type RSSItem struct {
 	MatchedSubscriptionID *uint
 	TaskID                *uint
 	ErrorMessage          *string
+	RetryCount            int
+	MaxRetryCount         int
+	LastAttemptAt         *time.Time
+	NextRetryAt           *time.Time
+	RetryReason           *string
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }

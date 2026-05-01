@@ -28,6 +28,7 @@ type RSSItemFilter struct {
 	SourceID       uint
 	SubscriptionID uint
 	Status         string
+	Limit          int
 }
 
 // RSSRepository 定义 RSS 源、订阅和条目仓储能力。

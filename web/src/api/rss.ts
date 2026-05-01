@@ -3,9 +3,11 @@ import type {
   RSSItemStatus,
   RSSItemView,
   RSSQBitHealthResponse,
+  RSSRefreshAllResponse,
   RSSRefreshResponse,
   RSSSourceUpsertRequest,
   RSSSourceView,
+  RSSSubscriptionPreviewResponse,
   RSSSubscriptionUpsertRequest,
   RSSSubscriptionView,
 } from '@/types/api'
@@ -51,6 +53,9 @@ export const rssApi = {
   refreshSource: (id: number) =>
     apiClient.post<RSSRefreshResponse>(`/rss/sources/${id}/refresh`),
 
+  refreshAllSources: () =>
+    apiClient.post<RSSRefreshAllResponse>('/rss/sources/refresh-all'),
+
   listSubscriptions: (params?: ListRSSSubscriptionsParams) =>
     apiClient.get<{ items: RSSSubscriptionView[] }>('/rss/subscriptions', {
       params: compactParams(params),
@@ -71,6 +76,9 @@ export const rssApi = {
   runSubscription: (id: number) =>
     apiClient.post<RSSRefreshResponse>(`/rss/subscriptions/${id}/run`),
 
+  previewSubscription: (id: number) =>
+    apiClient.post<RSSSubscriptionPreviewResponse>(`/rss/subscriptions/${id}/preview`),
+
   listItems: (params?: ListRSSItemsParams) =>
     apiClient.get<{ items: RSSItemView[] }>('/rss/items', {
       params: compactParams(params),
@@ -79,6 +87,15 @@ export const rssApi = {
   downloadItem: (id: number, subscriptionId?: number) =>
     apiClient.post<{ item: RSSItemView }>(
       `/rss/items/${id}/download`,
+      subscriptionId ? { subscription_id: subscriptionId } : {}
+    ),
+
+  reprocessItem: (id: number) =>
+    apiClient.post<{ item: RSSItemView }>(`/rss/items/${id}/reprocess`),
+
+  retryItem: (id: number, subscriptionId?: number) =>
+    apiClient.post<{ item: RSSItemView }>(
+      `/rss/items/${id}/retry`,
       subscriptionId ? { subscription_id: subscriptionId } : {}
     ),
 

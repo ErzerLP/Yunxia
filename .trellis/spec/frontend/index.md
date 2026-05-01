@@ -10,8 +10,9 @@ Primary sources:
 1. Current code in `web/src/**`
 2. `backend/FRONTEND_HANDOFF.md` for the current backend-to-frontend adaptation queue, status, and checklist
 3. `backend/API_CONTRACT.md` for API shape, DTOs, errors, and permissions
-4. `web/scripts/check-vfs-integration.mjs` for regression invariants
-5. `FRONTEND-DESIGN.md`, `FRONTEND-PLAN.md`, `docs/frontend-api-roadmap.md`, `docs/frontend-progress.md` for design/history; some may be stale
+4. `web/FRONTEND_TEST_HANDOFF.md` for the current frontend-to-test handoff queue, priority integration/regression focus areas, and tester-facing verification records
+5. `web/scripts/check-vfs-integration.mjs` for regression invariants
+6. `FRONTEND-DESIGN.md`, `FRONTEND-PLAN.md`, `docs/frontend-api-roadmap.md`, `docs/frontend-progress.md` for design/history; some may be stale
 
 ## Guidelines Index
 
@@ -37,6 +38,7 @@ Before frontend coding, read:
 - `hook-guidelines.md` when adding hooks, guards, or query logic
 - `backend/FRONTEND_HANDOFF.md` when adapting backend-facing features/interfaces or checking current frontend TODOs
 - `backend/API_CONTRACT.md` when changing API clients or DTO types
+- `web/FRONTEND_TEST_HANDOFF.md` when frontend changes create or update tester-facing integration/regression focus areas
 
 ## Language
 

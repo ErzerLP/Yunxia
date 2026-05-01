@@ -27,6 +27,8 @@ node scripts/check-vfs-integration.mjs
 - Keep `src/types/api.ts` synced with `backend/API_CONTRACT.md` and backend DTOs.
 - Treat `backend/API_CONTRACT.md` as the route/DTO/error/capability truth source;
   treat `backend/FRONTEND_HANDOFF.md` as the work queue and completion checklist.
+- Treat `web/FRONTEND_TEST_HANDOFF.md` as the tester-facing integration/regression
+  queue for frontend changes that need focused QA or runtime smoke coverage.
 - VFS uses `/api/v2/fs*` through `fileV2Api`.
 
 ### Frontend handoff completion discipline
@@ -47,6 +49,23 @@ same change:
   `待联调` or `已适配`, for example frontend commands run, smoke path, and any
   known limitation.
 - Never delete historical handoff details; update status/checklist/notes in
+  place.
+
+### Frontend test handoff discipline
+
+When frontend changes affect user-visible flows, permissions, API integration,
+tasks, files/VFS behavior, or any regression area that QA should prioritize,
+update `web/FRONTEND_TEST_HANDOFF.md` in the same change:
+
+- Maintain both the top `待测试索引` row and the linked detail entry.
+- Use only the fixed status values from that file: `待联调`, `联调中`, `待回归`,
+  `阻塞`, `已通过`, `暂缓`, `废弃`.
+- Each index row must include status, date, module, affected pages, priority,
+  key interfaces, testing focus, and a stable detail anchor.
+- Each detail entry must include checklist, prerequisites, test steps, expected
+  results, regression scope, blockers/notes, and handoff records.
+- Mark `已通过` only after the runtime integration/regression result is recorded.
+- Never delete historical test handoff details; update status/checklist/notes in
   place.
 
 ### Auth and capability discipline
@@ -80,6 +99,7 @@ same change:
 | Mutations without query invalidation | Stale lists after task/upload/share changes |
 | Adapting a `backend/FRONTEND_HANDOFF.md` item without updating its index status and checklist | Future frontend work cannot tell what is really done |
 | Marking a handoff item `已适配` without verification evidence | Makes untested integration look complete |
+| Shipping tester-visible frontend changes without updating `web/FRONTEND_TEST_HANDOFF.md` | QA cannot find the focused integration/regression scope |
 
 Exception: direct object upload/download URLs that are not Yunxia JSON REST
 APIs may use browser primitives. Existing `UploadModal` uses `fetch` for
@@ -100,6 +120,9 @@ For handoff-driven features, also verify the documentation state:
 - The top index status, detail title status, and checked checklist items match
   the actual frontend implementation.
 - Any `待联调` / `已适配` status has a short verification note.
+- If the change needs QA focus, `web/FRONTEND_TEST_HANDOFF.md` has a matching
+  top index row and detail entry with prerequisites, steps, expected results,
+  regression scope, and blockers/notes.
 
 For UI changes, manually verify in Vite dev server when feasible:
 
@@ -123,6 +146,8 @@ npm run dev
 - [ ] Static VFS integration checks pass when relevant.
 - [ ] Adapted `backend/FRONTEND_HANDOFF.md` items have synchronized index
       status, detail title status, checklist ticks, and verification notes.
+- [ ] Tester-visible integration/regression work has a synchronized
+      `web/FRONTEND_TEST_HANDOFF.md` index row and detail entry.
 - [ ] Query keys and invalidations cover affected views.
 - [ ] Capability guards match backend capability names.
 - [ ] API clients return typed `data`, not envelopes, unless raw instance is explicitly needed.

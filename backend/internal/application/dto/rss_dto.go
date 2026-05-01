@@ -2,16 +2,22 @@ package dto
 
 // RSSSourceView 表示 RSS 源视图。
 type RSSSourceView struct {
-	ID                     uint    `json:"id"`
-	UserID                 uint    `json:"user_id,omitempty"`
-	Name                   string  `json:"name"`
-	URL                    string  `json:"url"`
-	IsEnabled              bool    `json:"is_enabled"`
-	RefreshIntervalSeconds int     `json:"refresh_interval_seconds"`
-	LastRefreshedAt        *string `json:"last_refreshed_at"`
-	LastError              *string `json:"last_error"`
-	CreatedAt              string  `json:"created_at"`
-	UpdatedAt              string  `json:"updated_at"`
+	ID                     uint                 `json:"id"`
+	UserID                 uint                 `json:"user_id,omitempty"`
+	Name                   string               `json:"name"`
+	URL                    string               `json:"url"`
+	IsEnabled              bool                 `json:"is_enabled"`
+	RefreshIntervalSeconds int                  `json:"refresh_interval_seconds"`
+	LastRefreshedAt        *string              `json:"last_refreshed_at"`
+	LastError              *string              `json:"last_error"`
+	HealthStatus           string               `json:"health_status"`
+	ConsecutiveFailures    int                  `json:"consecutive_failures"`
+	LastSuccessAt          *string              `json:"last_success_at"`
+	NextRefreshAt          *string              `json:"next_refresh_at"`
+	LastRefreshStatus      string               `json:"last_refresh_status"`
+	LastRefreshStats       *RSSRefreshStatsView `json:"last_refresh_stats"`
+	CreatedAt              string               `json:"created_at"`
+	UpdatedAt              string               `json:"updated_at"`
 }
 
 // RSSSourceListResponse 表示 RSS 源列表响应。
@@ -37,6 +43,34 @@ type RSSRefreshResponse struct {
 	Enqueued    int  `json:"enqueued"`
 	Unsupported int  `json:"unsupported"`
 	Failed      int  `json:"failed"`
+}
+
+// RSSRefreshStatsView 表示一次 RSS 刷新摘要，可持久化给前端解释无人值守期间发生了什么。
+type RSSRefreshStatsView struct {
+	SourceID    uint `json:"source_id"`
+	Fetched     int  `json:"fetched"`
+	Created     int  `json:"created"`
+	Updated     int  `json:"updated"`
+	Matched     int  `json:"matched"`
+	Enqueued    int  `json:"enqueued"`
+	Unsupported int  `json:"unsupported"`
+	Failed      int  `json:"failed"`
+}
+
+// RSSRefreshAllItemView 表示 refresh-all 中单个源的处理结果。
+type RSSRefreshAllItemView struct {
+	SourceID uint                `json:"source_id"`
+	Status   string              `json:"status"`
+	Error    *string             `json:"error,omitempty"`
+	Stats    *RSSRefreshResponse `json:"stats,omitempty"`
+}
+
+// RSSRefreshAllResponse 表示批量刷新启用 RSS 源的结果。
+type RSSRefreshAllResponse struct {
+	Items     []RSSRefreshAllItemView `json:"items"`
+	Refreshed int                     `json:"refreshed"`
+	Skipped   int                     `json:"skipped"`
+	Failed    int                     `json:"failed"`
 }
 
 // RSSSubscriptionView 表示 RSS 订阅规则视图。
@@ -89,6 +123,11 @@ type RSSItemView struct {
 	MatchedSubscriptionID *uint   `json:"matched_subscription_id"`
 	TaskID                *uint   `json:"task_id"`
 	ErrorMessage          *string `json:"error_message"`
+	RetryCount            int     `json:"retry_count"`
+	MaxRetryCount         int     `json:"max_retry_count"`
+	LastAttemptAt         *string `json:"last_attempt_at"`
+	NextRetryAt           *string `json:"next_retry_at"`
+	RetryReason           *string `json:"retry_reason"`
 	CreatedAt             string  `json:"created_at"`
 	UpdatedAt             string  `json:"updated_at"`
 }
@@ -101,6 +140,28 @@ type RSSItemListResponse struct {
 // RSSManualDownloadRequest 表示手动将 RSS 条目入队请求。
 type RSSManualDownloadRequest struct {
 	SubscriptionID uint `json:"subscription_id"`
+}
+
+// RSSSubscriptionPreviewItem 表示订阅规则对单个已有条目的解释结果。
+type RSSSubscriptionPreviewItem struct {
+	ItemID        uint     `json:"item_id"`
+	Title         string   `json:"title"`
+	DownloadURL   string   `json:"download_url"`
+	CurrentStatus string   `json:"current_status"`
+	Result        string   `json:"result"`
+	Matched       []string `json:"matched"`
+	Missing       []string `json:"missing"`
+	Excluded      []string `json:"excluded"`
+}
+
+// RSSSubscriptionPreviewResponse 表示订阅规则 preview 响应。
+type RSSSubscriptionPreviewResponse struct {
+	SubscriptionID uint                         `json:"subscription_id"`
+	SourceID       uint                         `json:"source_id"`
+	Items          []RSSSubscriptionPreviewItem `json:"items"`
+	Matched        int                          `json:"matched"`
+	Missing        int                          `json:"missing"`
+	Excluded       int                          `json:"excluded"`
 }
 
 // RSSQBitHealthResponse 表示 qBittorrent 健康检查结果。

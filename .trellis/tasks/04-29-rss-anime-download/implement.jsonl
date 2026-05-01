@@ -6,3 +6,9 @@
 {"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend implementation and tests must follow project quality gates."}
 {"file":"backend/API_CONTRACT.md","reason":"New routes/DTOs must stay consistent with existing API conventions."}
 {"file":".trellis/tasks/04-29-rss-anime-download/research/autobangumi-qbittorrent-rss.md","reason":"Research summary for AutoBangumi and qBittorrent RSS/Web API behavior."}
+{"file": ".trellis/spec/backend/rss-guidelines.md", "reason": "RSS parsing, matching, retry/unattended reliability, and qBittorrent ingestion contracts."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for RSS unattended UI adaptation."}
+{"file": ".trellis/spec/frontend/directory-structure.md", "reason": "Frontend API/page/route placement conventions."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Frontend form, accessibility, toast, and component conventions."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "RSS DTO/type sync rules for frontend."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend handoff completion and quality requirements."}

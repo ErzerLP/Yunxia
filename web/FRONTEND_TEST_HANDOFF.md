@@ -1,0 +1,253 @@
+# Yunxia Frontend Test Handoff
+
+> 固定文档。前端每次完成页面、交互、API client、权限、VFS/任务流等测试可见更新后，把需要测试/联调负责人重点验证的内容维护在本文。
+> 本文面向测试/联调负责人，关注“测什么、怎么测、预期是什么、阻塞在哪里”；后端接口细节仍以 `backend/API_CONTRACT.md` 为准，后端到前端适配队列仍以 `backend/FRONTEND_HANDOFF.md` 为准。
+
+## 使用规则
+
+- 每次前端更新后，如影响用户可见页面、接口联调、权限行为、任务/文件/VFS 流程或重要回归点，必须同步维护：
+  1. 顶部 `待测试索引`
+  2. 底部 `测试记录 / 交接记录` 详情
+- 不为单次前端更新新建零散待测文档；新增测试项优先追加到本文。
+- 不删除历史记录；完成测试后只更新状态、checklist 和交接记录。
+- 本文只写测试负责人需要的信息：影响范围、关键接口、测试重点、前置条件、步骤、期望结果、阻塞/备注。
+- 若接口字段、错误码、权限与本文不一致，以 `backend/API_CONTRACT.md` 为接口真相源；本文更新测试项说明和验证结果。
+- 若测试项来自 `backend/FRONTEND_HANDOFF.md`，应保留两个文档的状态语义一致：前端完成但未跑通端到端 smoke 时保持 `待联调`。
+
+## 状态枚举
+
+状态只使用以下固定值，便于搜索和筛选：
+
+```text
+待联调
+联调中
+待回归
+阻塞
+已通过
+暂缓
+废弃
+```
+
+状态含义：
+
+| 状态 | 含义 | 维护要求 |
+|---|---|---|
+| 待联调 | 前端静态验证已完成或基本可测，仍需连接后端/下载器/运行环境做端到端验证 | 写清前置环境和 smoke 路径 |
+| 联调中 | 测试或联调负责人正在执行，尚未得出结论 | 在详情备注当前进展 |
+| 待回归 | 已有能力发生相关改动，需要重点回归确认未退化 | 写清回归范围和基准行为 |
+| 阻塞 | 因环境、接口、权限、数据或缺陷无法继续验证 | 写清阻塞原因、责任方向和下一步 |
+| 已通过 | 相关测试/联调已完成且结果符合预期 | 记录执行日期、环境和结论 |
+| 暂缓 | 当前不进入测试窗口 | 写清暂缓原因 |
+| 废弃 | 测试项对应方案/功能已废弃 | 保留历史并说明废弃原因 |
+
+## 检索与维护规则
+
+为避免本文后期变长后难以定位待测内容，维护时遵循以下规则：
+
+- 测试负责人优先看顶部 `待测试索引`，按 `状态`、`模块`、`影响页面`、`优先级`、`关键接口`、`测试重点` 快速筛选。
+- 每条索引必须链接到下方稳定锚点；锚点格式固定为 `test-handoff-YYYY-MM-DD-feature`。
+- 详情标题固定为 `[优先级][状态][模块] YYYY-MM-DD 标题`，便于全文搜索。
+- 同一模块的后续补充优先追加到原详情；只有跨模块或明显独立的新测试项才新增索引行。
+- 状态变更时，必须同步更新顶部索引和详情标题。
+- 标记 `已通过` 前必须在详情里记录实际测试环境、步骤覆盖情况和结论。
+- 当索引行明显过多时，仍保持单文件维护，可在本文内把索引拆成 `待联调/联调中/待回归/已通过/阻塞` 小节；不要新建散落交接文档。
+
+## 待测试索引
+
+| 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
+|---|---|---|---|---|---|---|---|
+| 待联调 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 全量刷新、规则预览、重试/重处理、`needs_attention` 待处理入口、自动重试状态展示 | [详情](#test-handoff-2026-04-30-rss-unattended) |
+| 待联调 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | RSS 源/订阅/条目基础流、qBittorrent 入队、任务跳转、下载完成后 VFS 目标目录可见 | [详情](#test-handoff-2026-04-29-rss-mvp) |
+| 待回归 | 2026-05-01 | 离线下载 / VFS | 离线下载页、任务页、文件页/VFS | P1 | `POST /api/v1/tasks`、`GET /api/v1/tasks/:id`、`GET /api/v2/fs*` | 新建任务使用当前目标虚拟目录，完成后文件出现在该 VFS 目录；旧 `source_id + save_path` 行为不回退 | [详情](#test-handoff-2026-05-01-offline-task-vfs-target) |
+
+---
+
+## 测试记录 / 交接记录
+
+<a id="test-handoff-2026-04-29-rss-mvp"></a>
+
+### [P1][待联调][RSS] 2026-04-29 RSS 订阅 MVP 联调测试
+
+#### 测试目标
+
+确认 RSS 基础页面已能完成“RSS 源 → 订阅规则 → 条目命中 → qBittorrent 入队 → 离线任务 → VFS 目标目录可见”的最小闭环。
+
+#### 前置条件
+
+- 使用具备 `rss.read`、`rss.manage`、`task.read_all`、文件/VFS 查看权限的管理员或等效账号。
+- 后端运行环境可访问，qBittorrent 已启用且健康检查可返回状态。
+- 已准备一个可写 VFS 目标目录，例如 `/local/anime-test`。
+- 已准备可命中的 RSS 源，条目链接至少包含 `magnet:?` 或 `.torrent` URL。
+- 前端已完成静态检查记录：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`。
+
+#### Checklist
+
+- [ ] RSS/追番入口按权限展示：有 `rss.read` 可见，无权限不可见。
+- [ ] RSS 页面能展示 qBittorrent 健康状态。
+- [ ] RSS 源列表、创建、编辑、删除、手动刷新可用。
+- [ ] RSS 订阅列表、创建、编辑、删除、手动执行可用，且能填写 `target_virtual_parent_path`。
+- [ ] RSS 条目列表可按源、订阅、状态筛选。
+- [ ] 条目状态 `new`、`unsupported`、`ignored`、`matched`、`enqueued`、`failed` 文案可理解。
+- [ ] 命中条目可手动入队；入队后 `task_id` 非空并能跳转任务页。
+- [ ] 任务页能展示 RSS 创建的任务，`downloader_type=qbittorrent` 时文案正确。
+- [ ] 下载完成并导入后，文件页/VFS 中目标目录可见新文件。
+- [ ] 普通 HTTP/HTTPS 离线下载仍按原 Aria2 路径可用。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 管理员登录，打开 RSS/追番页 | 页面可进入；无明显接口报错；qBittorrent 健康状态区域可见 |
+| 2 | 创建 RSS 源并手动刷新 | 源保存成功；刷新后展示成功/失败提示；条目列表有新数据或明确空态 |
+| 3 | 创建订阅，目标目录填写 `/local/anime-test` | 订阅保存成功；详情/列表能看到目标虚拟目录 |
+| 4 | 执行订阅或刷新源，让条目命中规则 | 命中条目状态进入 `matched` 或后续可入队状态 |
+| 5 | 对命中条目执行手动入队 | 条目状态进入 `enqueued`；`task_id` 出现；重复点击有 loading/disabled 防重复提交表现 |
+| 6 | 从条目跳转到任务页 | 能定位或看到对应离线任务；下载器类型为 qBittorrent；进度/错误信息可读 |
+| 7 | 等待任务完成并导入 | 任务完成后文件页/VFS 的 `/local/anime-test` 下可见目标文件 |
+| 8 | 切换到无 RSS 权限账号 | RSS 入口和管理按钮符合权限预期，不暴露不可用操作 |
+
+#### 期望结果
+
+- RSS MVP 最小闭环端到端跑通。
+- 关键失败场景有可读提示，不显示原始数据库或后端内部错误。
+- VFS 目标目录与订阅配置一致，任务完成后文件可在文件页验证。
+
+#### 回归范围
+
+- RSS 页面入口、权限守卫、侧边栏展示。
+- 任务页任务列表、状态、下载器类型、错误信息展示。
+- 文件页/VFS 目录刷新、文件可见性、下载/预览访问链路。
+- 普通 HTTP/HTTPS 离线下载不因 RSS/qBittorrent 适配退化。
+
+#### 阻塞 / 备注
+
+- 若 qBittorrent 未启用或 Docker/下载器环境不可用，本项保持 `待联调` 或改为 `阻塞`，并记录具体环境原因。
+- 若 RSS 源不稳定，可用固定测试 feed 或后端测试数据替代，但必须说明数据来源。
+
+#### 交接记录
+
+- 2026-04-30：前端静态检查、构建和 VFS 静态集成检查已在 `backend/FRONTEND_HANDOFF.md` 中记录通过；尚未完成真实运行环境 smoke，状态保持 `待联调`。
+
+---
+
+<a id="test-handoff-2026-04-30-rss-unattended"></a>
+
+### [P1][待联调][RSS] 2026-04-30 RSS 无人值守增强联调测试
+
+#### 测试目标
+
+确认 RSS 无人值守增强在前端可观察、可解释、可人工介入：源健康状态、刷新全部、订阅规则预览、自动重试状态、`needs_attention` 处理入口、手动 retry/reprocess 都能被测试负责人验证。
+
+#### 前置条件
+
+- 满足 RSS MVP 的账号、后端、qBittorrent 和 VFS 前置条件。
+- 至少存在一个启用的 RSS 源、一个订阅和若干 RSS 条目。
+- 测试数据中尽量包含：可成功入队条目、临时失败条目、确定性失败条目或可模拟的 `needs_attention` 条目。
+- 后端支持 RSS 后台刷新、重试和 task 结果回写。
+
+#### Checklist
+
+- [ ] RSS 源列表/详情展示 `health_status`、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`、`last_error`。
+- [ ] “刷新全部启用源”可调用 `POST /api/v1/rss/sources/refresh-all`，并逐源展示 `success` / `failed` / `skipped`。
+- [ ] 订阅规则预览可调用 `POST /api/v1/rss/subscriptions/:id/preview`，展示 `matched` / `missing` / `excluded` 解释。
+- [ ] 条目列表支持 `retry_pending`、`completed`、`needs_attention` 状态筛选和文案。
+- [ ] 条目卡片/详情展示 `retry_count/max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。
+- [ ] 单条重新处理 `POST /api/v1/rss/items/:id/reprocess` 可用，成功后刷新条目列表。
+- [ ] 单条手动重试 `POST /api/v1/rss/items/:id/retry` 可用，可按需传 `subscription_id`。
+- [ ] `needs_attention` 有明显待处理入口，能优先展示权限、路径、只读、unsupported 等确定性错误。
+- [ ] 已有关联非终态 task 的 item 不会因为重复点击造成重复任务；按钮有 loading/disabled 状态。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 打开 RSS 页面，查看源列表 | 每个源健康字段展示完整；`ok`、`degraded`、`circuit_open` 文案可理解 |
+| 2 | 点击“刷新全部” | 返回结果按源展示；单个源失败不影响其他源结果展示；`skipped` 解释为已有刷新在进行 |
+| 3 | 打开订阅规则预览 | 命中、缺失关键词、排除关键词说明清晰；修改规则后预览结果同步变化 |
+| 4 | 筛选 `retry_pending` 条目 | 展示下次重试时间和重试原因；可选择立即重试 |
+| 5 | 筛选 `needs_attention` 条目 | 待处理入口明显；错误原因可读；可执行 reprocess 或 retry |
+| 6 | 对单条执行 reprocess | 请求成功后条目状态、错误、任务关联刷新；失败时有可读提示 |
+| 7 | 对单条执行 retry | 绕过 `next_retry_at` 发起重试；按钮在请求中禁用；结果回写后列表刷新 |
+| 8 | 观察 completed 条目 | 已完成条目可追溯到 task 或目标目录，不再重复自动入队 |
+
+#### 期望结果
+
+- 测试负责人能判断 RSS 后台无人值守是否健康运行。
+- 临时失败与确定性失败在 UI 上可区分，人工介入路径清晰。
+- retry/reprocess 操作不会制造重复任务或隐藏失败。
+
+#### 回归范围
+
+- RSS MVP 基础 CRUD、刷新、手动入队流程。
+- 任务页 task 状态回写、错误信息展示和跳转。
+- 文件页/VFS 目标目录可见性。
+- 权限控制：仅 `rss.manage` 用户可执行刷新、预览、retry/reprocess 等管理操作。
+
+#### 阻塞 / 备注
+
+- 若无法制造失败/重试数据，可请后端提供测试数据或临时测试接口；未覆盖的数据类型必须在本节记录。
+- 若后台调度未启动或 task 回写不可用，本项保持 `待联调` 或改为 `阻塞`，并写明阻塞范围。
+
+#### 交接记录
+
+- 2026-04-30：前端已完成相关页面/API 接入并通过静态验证；仍需真实后端运行环境验证刷新全部、预览、自动重试、task 回写和 `needs_attention` 人工处理闭环。
+
+---
+
+<a id="test-handoff-2026-05-01-offline-task-vfs-target"></a>
+
+### [P1][待回归][离线下载/VFS] 2026-05-01 新建任务使用目标虚拟目录回归测试
+
+#### 测试目标
+
+确认离线下载新建任务时前端传递当前目标虚拟目录 `target_virtual_parent_path`，后端按 VFS 目录解析保存位置；任务完成后文件出现在用户选择的 VFS 目录，并且旧任务展示/文件刷新流程不退化。
+
+#### 前置条件
+
+- 使用具备创建离线任务和查看文件/VFS 权限的账号。
+- 已准备至少一个可写 VFS 目录，例如 `/local/downloads`。
+- 已准备一个可快速完成的 HTTP/HTTPS 测试下载链接。
+- 后端 `POST /api/v1/tasks` 支持 `target_virtual_parent_path`。
+
+#### Checklist
+
+- [ ] 从离线下载页新建任务时，目标目录字段使用 VFS 虚拟路径，而不是只依赖旧 `source_id + save_path`。
+- [ ] 创建请求包含 `target_virtual_parent_path=<当前选择目录>`。
+- [ ] 任务详情/列表展示 `target_virtual_parent_path`、`save_virtual_path` 或等效用户可理解路径。
+- [ ] 任务完成后文件页/VFS 对应目录刷新并可见新文件。
+- [ ] 文件下载/预览仍通过 `/api/v2/fs/access-url` / `/api/v2/fs/download` 链路。
+- [ ] 兼容旧任务数据：旧任务列表、错误任务、取消任务仍能展示。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 打开文件页/VFS，确认目标目录 `/local/downloads` 存在且可写 | 目录可进入，权限正常 |
+| 2 | 打开离线下载页，新建 HTTP/HTTPS 下载任务，目标目录填写 `/local/downloads` | 前端提交成功；请求体包含 `target_virtual_parent_path` |
+| 3 | 查看任务列表/详情 | 新任务保存路径展示为 `/local/downloads` 或等效虚拟路径；状态正常流转 |
+| 4 | 等待任务完成 | 任务进入 completed；无异常错误信息 |
+| 5 | 回到文件页/VFS 的 `/local/downloads` | 文件可见；列表刷新不需要手动清缓存 |
+| 6 | 对文件执行预览或下载 | 走 VFS access-url/download 链路，能正常打开或下载 |
+| 7 | 回看旧任务或创建一个兼容旧参数的任务（如环境支持） | 旧数据展示不崩溃，兼容行为不回退 |
+
+#### 期望结果
+
+- 新建离线下载任务默认落到用户指定的 VFS 虚拟目录。
+- 任务完成后文件页/VFS 能看到结果，避免“任务完成但文件在 UI 中找不到”。
+- 旧任务展示和普通下载能力不受影响。
+
+#### 回归范围
+
+- 离线下载页新建任务表单、目标路径输入、提交 loading/错误提示。
+- 任务页列表/详情路径展示、状态展示、完成后刷新。
+- 文件页/VFS 查询、下载、预览、目录刷新。
+- 上传初始化同样使用 `target_virtual_parent_path` 的既有行为，确认未被离线下载改动影响。
+
+#### 阻塞 / 备注
+
+- 若无法使用真实可下载 URL，可先用后端测试 fixture 或内部测试文件；需记录替代数据来源。
+- 若任务完成但 VFS 不可见，优先记录任务详情中的 `target_virtual_parent_path`、`save_virtual_path`、`resolved_source_id`、`resolved_inner_save_path` 以便定位。
+
+#### 交接记录
+
+- 2026-05-01：作为近期离线下载/VFS 修复的重点回归项纳入本文；等待测试负责人在可运行后端环境中执行。

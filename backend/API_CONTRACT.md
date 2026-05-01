@@ -600,6 +600,7 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 | GET | `/rss/sources/:id` | `rss.read` | path: `id` | 200，直接返回 `RSSSourceView` |
 | PATCH | `/rss/sources/:id` | `rss.manage` | 同创建 | 200，`{source}` |
 | DELETE | `/rss/sources/:id` | `rss.manage` | path: `id` | 200，`{deleted,id}` |
+| POST | `/rss/sources/refresh-all` | `rss.manage` | - | 200，`RSSRefreshAllResponse` |
 | POST | `/rss/sources/:id/refresh` | `rss.manage` | path: `id` | 200，`RSSRefreshResponse` |
 | GET | `/rss/subscriptions` | `rss.read` | query: `source_id` | 200，`{items[]}` |
 | POST | `/rss/subscriptions` | `rss.manage` | 见下方请求体 | 201，`{subscription}` |
@@ -607,8 +608,11 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 | PATCH | `/rss/subscriptions/:id` | `rss.manage` | 同创建 | 200，`{subscription}` |
 | DELETE | `/rss/subscriptions/:id` | `rss.manage` | path: `id` | 200，`{deleted,id}` |
 | POST | `/rss/subscriptions/:id/run` | `rss.manage` | path: `id` | 200，`RSSRefreshResponse` |
+| POST | `/rss/subscriptions/:id/preview` | `rss.manage` | path: `id` | 200，`RSSSubscriptionPreviewResponse` |
 | GET | `/rss/items` | `rss.read` | query: `source_id,subscription_id,status` | 200，`{items[]}` |
 | POST | `/rss/items/:id/download` | `rss.manage` | `subscription_id` 可选 | 202，`{item}` |
+| POST | `/rss/items/:id/reprocess` | `rss.manage` | path: `id` | 202，`{item}` |
+| POST | `/rss/items/:id/retry` | `rss.manage` | `subscription_id` 可选 | 202，`{item}` |
 | GET | `/rss/qbittorrent/health` | `rss.read` | - | 200，`{enabled,status,error}` |
 
 订阅创建/更新请求体：
@@ -638,7 +642,12 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 - 每个订阅固定一个 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
 - 创建/更新订阅会校验目标 VFS 目录可解析、有 backing storage、当前用户具备写权限且底层源可写。
 - RSS 条目去重优先使用 GUID；无 GUID 时使用 source + link + title 哈希。
-- 条目状态当前可能为：`new`、`unsupported`、`ignored`、`matched`、`enqueued`、`failed`。
+- RSS 源会暴露无人值守调度字段：`health_status`（`ok` / `degraded` / `circuit_open`）、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`。
+- RSS 源连续失败会记录 `last_error` 并按失败次数退避；超过阈值进入 `circuit_open`，成功刷新后恢复 `ok` 并清零失败计数。单源失败不会中断 refresh-all 中其他源；手动 refresh-all 会强制刷新所有启用源，`skipped` 仅表示该源已有刷新在进行。
+- 条目状态当前可能为：`new`、`unsupported`、`ignored`、`matched`、`enqueued`、`retry_pending`、`completed`、`needs_attention`、`failed`。
+- 条目重试字段：`retry_count`、`max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。自动重试默认最多 3 次，退避为 5m / 30m / 2h；手动 retry 可绕过 `next_retry_at`。
+- 已有关联非终态 task 的 RSS item 不会重复入队；普通自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `completed` 会回写 item `completed`，task `failed` 会按错误类型进入 `retry_pending` 或 `needs_attention`，task `canceled` 会进入 `needs_attention` 等待人工处理。
+- 规则 preview 返回每个已有 item 的 `result`（`matched` / `missing` / `excluded`）以及 `matched`、`missing`、`excluded` 关键词列表，用于解释命中/未命中原因。
 - qBittorrent 下载目录必须与 backend 共享；下载完成后仍由 Yunxia 从 staging 导入目标 VFS 目录。
 
 ### 3.11 shares（`/api/v1`）

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	appdto "yunxia/internal/application/dto"
@@ -22,15 +24,35 @@ import (
 )
 
 const (
-	RSSItemStatusNew         = "new"
-	RSSItemStatusUnsupported = "unsupported"
-	RSSItemStatusIgnored     = "ignored"
-	RSSItemStatusMatched     = "matched"
-	RSSItemStatusEnqueued    = "enqueued"
-	RSSItemStatusFailed      = "failed"
+	RSSItemStatusNew            = "new"
+	RSSItemStatusUnsupported    = "unsupported"
+	RSSItemStatusIgnored        = "ignored"
+	RSSItemStatusMatched        = "matched"
+	RSSItemStatusEnqueued       = "enqueued"
+	RSSItemStatusFailed         = "failed"
+	RSSItemStatusRetryPending   = "retry_pending"
+	RSSItemStatusCompleted      = "completed"
+	RSSItemStatusNeedsAttention = "needs_attention"
+
+	RSSSourceHealthOK          = "ok"
+	RSSSourceHealthDegraded    = "degraded"
+	RSSSourceHealthCircuitOpen = "circuit_open"
+
+	RSSRefreshStatusSuccess = "success"
+	RSSRefreshStatusFailed  = "failed"
+
+	RSSRetryReasonDownloaderUnavailable = "downloader_unavailable"
+	RSSRetryReasonTorrentFetchFailed    = "torrent_fetch_failed"
+	RSSRetryReasonTaskFailed            = "task_failed"
+	RSSRetryReasonStalled               = "stalled"
 )
 
 const defaultRSSRefreshIntervalSeconds = 1800
+
+const (
+	defaultRSSItemMaxRetryCount = 3
+	defaultRSSRetryWorkerLimit  = 20
+)
 
 var (
 	rssShortNumericKeywordPattern = regexp.MustCompile(`^[0-9]{1,2}$`)
@@ -62,20 +84,28 @@ type rssTaskCreator interface {
 	Create(ctx context.Context, req appdto.CreateTaskRequest) (*appdto.DownloadTaskView, error)
 }
 
+type rssTaskReader interface {
+	FindByID(ctx context.Context, id uint) (*entity.DownloadTask, error)
+}
+
 // RSSService 负责 RSS 源、订阅、条目和下载入队流程。
 type RSSService struct {
 	rssRepo       domainrepo.RSSRepository
 	sourceRepo    domainrepo.SourceRepository
 	userRepo      domainrepo.UserRepository
 	taskCreator   rssTaskCreator
+	taskReader    rssTaskReader
 	fetcher       RSSFetcher
 	healthChecker QBitHealthChecker
 	vfsResolver   interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
-	aclAuthorizer *ACLAuthorizer
-	now           func() time.Time
-	logger        *slog.Logger
+	aclAuthorizer    *ACLAuthorizer
+	now              func() time.Time
+	logger           *slog.Logger
+	refreshLocks     sync.Map
+	itemLocks        sync.Map
+	retryWorkerLimit int
 }
 
 // RSSServiceOption 定义 RSSService 的可选配置。
@@ -111,6 +141,13 @@ func WithRSSUserRepository(repo domainrepo.UserRepository) RSSServiceOption {
 	}
 }
 
+// WithRSSTaskRepository 注入任务读取器，用于 RSS item 与下载任务终态回写。
+func WithRSSTaskRepository(repo rssTaskReader) RSSServiceOption {
+	return func(s *RSSService) {
+		s.taskReader = repo
+	}
+}
+
 // WithRSSQBitHealthChecker 注入 qBittorrent 健康检查器。
 func WithRSSQBitHealthChecker(checker QBitHealthChecker) RSSServiceOption {
 	return func(s *RSSService) {
@@ -127,14 +164,27 @@ func WithRSSNow(now func() time.Time) RSSServiceOption {
 	}
 }
 
+// WithRSSRetryWorkerLimit 覆盖每轮自动重试处理上限，主要用于测试。
+func WithRSSRetryWorkerLimit(limit int) RSSServiceOption {
+	return func(s *RSSService) {
+		if limit > 0 {
+			s.retryWorkerLimit = limit
+		}
+	}
+}
+
 // NewRSSService 创建 RSS 服务。
 func NewRSSService(rssRepo domainrepo.RSSRepository, sourceRepo domainrepo.SourceRepository, taskCreator rssTaskCreator, options ...RSSServiceOption) *RSSService {
 	service := &RSSService{
-		rssRepo:     rssRepo,
-		sourceRepo:  sourceRepo,
-		taskCreator: taskCreator,
-		now:         time.Now,
-		logger:      newServiceLogger("service.rss"),
+		rssRepo:          rssRepo,
+		sourceRepo:       sourceRepo,
+		taskCreator:      taskCreator,
+		now:              time.Now,
+		logger:           newServiceLogger("service.rss"),
+		retryWorkerLimit: defaultRSSRetryWorkerLimit,
+	}
+	if reader, ok := taskCreator.(rssTaskReader); ok {
+		service.taskReader = reader
 	}
 	for _, option := range options {
 		option(service)
@@ -183,6 +233,8 @@ func (s *RSSService) CreateSource(ctx context.Context, req appdto.RSSSourceUpser
 		URL:                    rawURL,
 		IsEnabled:              enabled,
 		RefreshIntervalSeconds: interval,
+		HealthStatus:           RSSSourceHealthOK,
+		NextRefreshAt:          &now,
 		CreatedAt:              now,
 		UpdatedAt:              now,
 	}
@@ -223,6 +275,10 @@ func (s *RSSService) UpdateSource(ctx context.Context, id uint, req appdto.RSSSo
 	source.URL = rawURL
 	if req.IsEnabled != nil {
 		source.IsEnabled = *req.IsEnabled
+		if source.IsEnabled && source.NextRefreshAt == nil {
+			next := s.now()
+			source.NextRefreshAt = &next
+		}
 	}
 	source.RefreshIntervalSeconds = interval
 	source.UpdatedAt = s.now()
@@ -257,6 +313,37 @@ func (s *RSSService) RefreshSource(ctx context.Context, id uint) (*appdto.RSSRef
 	return s.refreshSourceEntity(ctx, source)
 }
 
+// RefreshAllSources 手动刷新所有已启用 RSS 源，单源失败不影响其他源。
+func (s *RSSService) RefreshAllSources(ctx context.Context) (*appdto.RSSRefreshAllResponse, error) {
+	if _, err := currentRSSAuth(ctx); err != nil {
+		return nil, err
+	}
+	enabled := true
+	sources, err := s.rssRepo.ListSources(ctx, domainrepo.RSSSourceFilter{IncludeAll: true, Enabled: &enabled})
+	if err != nil {
+		return nil, err
+	}
+	resp := &appdto.RSSRefreshAllResponse{Items: make([]appdto.RSSRefreshAllItemView, 0, len(sources))}
+	for _, source := range sources {
+		stats, refreshErr := s.refreshSourceEntity(ctx, source)
+		if refreshErr != nil {
+			if errors.Is(refreshErr, ErrTaskInvalidState) {
+				resp.Skipped++
+				resp.Items = append(resp.Items, appdto.RSSRefreshAllItemView{SourceID: source.ID, Status: "skipped"})
+				continue
+			}
+			message := refreshErr.Error()
+			resp.Failed++
+			resp.Items = append(resp.Items, appdto.RSSRefreshAllItemView{SourceID: source.ID, Status: RSSRefreshStatusFailed, Error: &message})
+			s.logger.Warn("rss refresh-all source failed", slog.String("event", "rss.refresh_all.source_failed"), slog.Uint64("source_id", uint64(source.ID)), slog.Any("error", refreshErr))
+			continue
+		}
+		resp.Refreshed++
+		resp.Items = append(resp.Items, appdto.RSSRefreshAllItemView{SourceID: source.ID, Status: RSSRefreshStatusSuccess, Stats: stats})
+	}
+	return resp, nil
+}
+
 // RefreshDueSources 刷新到期的启用 RSS 源。
 func (s *RSSService) RefreshDueSources(ctx context.Context) error {
 	enabled := true
@@ -267,11 +354,7 @@ func (s *RSSService) RefreshDueSources(ctx context.Context) error {
 	var joined error
 	now := s.now()
 	for _, source := range sources {
-		interval := source.RefreshIntervalSeconds
-		if interval <= 0 {
-			interval = defaultRSSRefreshIntervalSeconds
-		}
-		if source.LastRefreshedAt != nil && now.Sub(*source.LastRefreshedAt) < time.Duration(interval)*time.Second {
+		if !sourceRefreshDue(source, now) {
 			continue
 		}
 		if _, refreshErr := s.refreshSourceEntity(ctx, source); refreshErr != nil {
@@ -297,6 +380,42 @@ func (s *RSSService) StartRefreshWorker(ctx context.Context, interval time.Durat
 			_ = s.RefreshDueSources(ctx)
 		}
 	}
+}
+
+// StartRetryWorker 启动无人值守自愈 worker：回写 task 终态并处理到期重试 item。
+func (s *RSSService) StartRetryWorker(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = s.RunRetryCycle(ctx, s.retryWorkerLimit)
+		}
+	}
+}
+
+// RunRetryCycle 执行一轮 RSS item task 回写和自动重试，返回本轮处理数量。
+func (s *RSSService) RunRetryCycle(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = s.retryWorkerLimit
+	}
+	processed := 0
+	var joined error
+	if err := s.reconcileTaskBacklinks(ctx, limit, &processed); err != nil {
+		joined = errors.Join(joined, err)
+	}
+	if processed >= limit {
+		return processed, joined
+	}
+	if err := s.retryDueItems(ctx, limit-processed, &processed); err != nil {
+		joined = errors.Join(joined, err)
+	}
+	return processed, joined
 }
 
 // ListSubscriptions 返回订阅列表。
@@ -438,12 +557,123 @@ func (s *RSSService) RunSubscription(ctx context.Context, id uint) (*appdto.RSSR
 	}
 	stats := rssRefreshStats{SourceID: subscription.SourceID}
 	for _, item := range items {
-		if isRSSItemAlreadyQueued(item) || item.LinkType == RSSLinkTypeUnsupported {
+		if s.itemHasActiveTask(ctx, item) || item.LinkType == RSSLinkTypeUnsupported {
+			continue
+		}
+		if !rssItemAllowsAutomaticProcessing(item) {
 			continue
 		}
 		s.processItem(ctx, item, []*entity.RSSSubscription{subscription}, &stats)
 	}
 	return stats.toDTO(), nil
+}
+
+// PreviewSubscription 用现有条目解释订阅规则会命中、缺失或排除哪些 item。
+func (s *RSSService) PreviewSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionPreviewResponse, error) {
+	subscription, err := s.rssRepo.FindSubscriptionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeRSSOwner(ctx, subscription.UserID); err != nil {
+		return nil, err
+	}
+	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{IncludeAll: true, SourceID: subscription.SourceID})
+	if err != nil {
+		return nil, err
+	}
+	resp := &appdto.RSSSubscriptionPreviewResponse{
+		SubscriptionID: subscription.ID,
+		SourceID:       subscription.SourceID,
+		Items:          make([]appdto.RSSSubscriptionPreviewItem, 0, len(items)),
+	}
+	for _, item := range items {
+		preview := evaluateRSSSubscriptionPreview(subscription, item)
+		resp.Items = append(resp.Items, preview)
+		switch preview.Result {
+		case "matched":
+			resp.Matched++
+		case "excluded":
+			resp.Excluded++
+		default:
+			resp.Missing++
+		}
+	}
+	return resp, nil
+}
+
+// ReprocessItem 对单个 item 重新执行匹配/处理。
+func (s *RSSService) ReprocessItem(ctx context.Context, id uint) (*appdto.RSSItemView, error) {
+	item, err := s.rssRepo.FindItemByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeRSSOwner(ctx, item.UserID); err != nil {
+		return nil, err
+	}
+	if rssItemIsCompleted(item) {
+		view := toRSSItemView(item)
+		return &view, nil
+	}
+	if item.LinkType == RSSLinkTypeUnsupported {
+		message := "download link unsupported"
+		item.Status = RSSItemStatusNeedsAttention
+		item.ErrorMessage = &message
+		item.RetryReason = nil
+		item.NextRetryAt = nil
+		item.UpdatedAt = s.now()
+		if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
+			return nil, err
+		}
+		view := toRSSItemView(item)
+		return &view, nil
+	}
+	if s.itemHasActiveTask(ctx, item) {
+		view := toRSSItemView(item)
+		return &view, nil
+	}
+	enabled := true
+	subscriptions, err := s.rssRepo.ListSubscriptions(ctx, domainrepo.RSSSubscriptionFilter{IncludeAll: true, SourceID: item.SourceID, Enabled: &enabled})
+	if err != nil {
+		return nil, err
+	}
+	stats := rssRefreshStats{SourceID: item.SourceID}
+	s.processItem(ctx, item, subscriptions, &stats)
+	if refreshed, err := s.rssRepo.FindItemByID(ctx, item.ID); err == nil {
+		item = refreshed
+	}
+	view := toRSSItemView(item)
+	return &view, nil
+}
+
+// RetryItem 手动重试单个 item，绕过 next_retry_at 但仍记录一次 attempt。
+func (s *RSSService) RetryItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error) {
+	item, err := s.rssRepo.FindItemByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeRSSOwner(ctx, item.UserID); err != nil {
+		return nil, err
+	}
+	if s.itemHasActiveTask(ctx, item) {
+		view := toRSSItemView(item)
+		return &view, nil
+	}
+	if rssItemIsCompleted(item) {
+		view := toRSSItemView(item)
+		return &view, nil
+	}
+	subscription, err := s.subscriptionForItemRetry(ctx, item, req.SubscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.retryItemWithSubscription(ctx, item, subscription, true); err != nil {
+		return nil, err
+	}
+	if refreshed, err := s.rssRepo.FindItemByID(ctx, item.ID); err == nil {
+		item = refreshed
+	}
+	view := toRSSItemView(item)
+	return &view, nil
 }
 
 // ListItems 返回 RSS 条目列表。
@@ -474,7 +704,11 @@ func (s *RSSService) DownloadItem(ctx context.Context, id uint, req appdto.RSSMa
 	if err := s.authorizeRSSOwner(ctx, item.UserID); err != nil {
 		return nil, err
 	}
-	if isRSSItemAlreadyQueued(item) {
+	if s.itemHasActiveTask(ctx, item) {
+		view := toRSSItemView(item)
+		return &view, nil
+	}
+	if rssItemIsCompleted(item) {
 		view := toRSSItemView(item)
 		return &view, nil
 	}
@@ -501,6 +735,9 @@ func (s *RSSService) DownloadItem(ctx context.Context, id uint, req appdto.RSSMa
 	if err := s.enqueueItem(ctx, item, subscription); err != nil {
 		return nil, err
 	}
+	if refreshed, err := s.rssRepo.FindItemByID(ctx, item.ID); err == nil {
+		item = refreshed
+	}
 	view := toRSSItemView(item)
 	return &view, nil
 }
@@ -524,6 +761,11 @@ func (s *RSSService) refreshSourceEntity(ctx context.Context, source *entity.RSS
 	if s.fetcher == nil {
 		return nil, ErrSourceDriverUnsupported
 	}
+	unlock, locked := s.tryLockRSSSource(source.ID)
+	if !locked {
+		return nil, ErrTaskInvalidState
+	}
+	defer unlock()
 	stats := rssRefreshStats{SourceID: source.ID}
 	items, err := s.fetcher.Fetch(ctx, source.URL)
 	now := s.now()
@@ -532,13 +774,12 @@ func (s *RSSService) refreshSourceEntity(ctx context.Context, source *entity.RSS
 	if err != nil {
 		message := err.Error()
 		source.LastError = &message
+		stats.Failed = 1
+		s.applyRSSSourceRefreshFailure(source, stats, now)
 		_ = s.rssRepo.UpdateSource(ctx, source)
 		return nil, err
 	}
 	source.LastError = nil
-	if err := s.rssRepo.UpdateSource(ctx, source); err != nil {
-		return nil, err
-	}
 	stats.Fetched = len(items)
 
 	enabled := true
@@ -560,10 +801,17 @@ func (s *RSSService) refreshSourceEntity(ctx context.Context, source *entity.RSS
 			stats.Unsupported++
 			continue
 		}
-		if isRSSItemAlreadyQueued(item) {
+		if s.itemHasActiveTask(ctx, item) {
+			continue
+		}
+		if !rssItemAllowsAutomaticProcessing(item) {
 			continue
 		}
 		s.processItem(ctx, item, subscriptions, &stats)
+	}
+	s.applyRSSSourceRefreshSuccess(source, stats, now)
+	if err := s.rssRepo.UpdateSource(ctx, source); err != nil {
+		return nil, err
 	}
 	return stats.toDTO(), nil
 }
@@ -582,18 +830,19 @@ func (s *RSSService) upsertFetchedItem(ctx context.Context, source *entity.RSSSo
 	now := s.now()
 	if errors.Is(err, domainrepo.ErrNotFound) {
 		item := &entity.RSSItem{
-			UserID:      source.UserID,
-			SourceID:    source.ID,
-			Title:       strings.TrimSpace(fetched.Title),
-			Link:        strings.TrimSpace(fetched.Link),
-			PublishedAt: fetched.PublishedAt,
-			GUID:        strings.TrimSpace(fetched.GUID),
-			DedupKey:    dedupKey,
-			DownloadURL: downloadURL,
-			LinkType:    linkType,
-			Status:      status,
-			CreatedAt:   now,
-			UpdatedAt:   now,
+			UserID:        source.UserID,
+			SourceID:      source.ID,
+			Title:         strings.TrimSpace(fetched.Title),
+			Link:          strings.TrimSpace(fetched.Link),
+			PublishedAt:   fetched.PublishedAt,
+			GUID:          strings.TrimSpace(fetched.GUID),
+			DedupKey:      dedupKey,
+			DownloadURL:   downloadURL,
+			LinkType:      linkType,
+			Status:        status,
+			MaxRetryCount: defaultRSSItemMaxRetryCount,
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 		if err := s.rssRepo.CreateItem(ctx, item); err != nil {
 			return nil, false, err
@@ -607,6 +856,7 @@ func (s *RSSService) upsertFetchedItem(ctx context.Context, source *entity.RSSSo
 	existing.GUID = strings.TrimSpace(fetched.GUID)
 	existing.DownloadURL = downloadURL
 	existing.LinkType = linkType
+	ensureRSSItemRetryDefaults(existing)
 	if existing.Status == RSSItemStatusNew || existing.Status == RSSItemStatusIgnored || existing.Status == RSSItemStatusUnsupported {
 		existing.Status = status
 	}
@@ -618,7 +868,10 @@ func (s *RSSService) upsertFetchedItem(ctx context.Context, source *entity.RSSSo
 }
 
 func (s *RSSService) processItem(ctx context.Context, item *entity.RSSItem, subscriptions []*entity.RSSSubscription, stats *rssRefreshStats) {
-	if item == nil || stats == nil || isRSSItemAlreadyQueued(item) {
+	if item == nil || stats == nil || s.itemHasActiveTask(ctx, item) {
+		return
+	}
+	if rssItemIsCompleted(item) {
 		return
 	}
 	matched := false
@@ -632,12 +885,7 @@ func (s *RSSService) processItem(ctx context.Context, item *entity.RSSItem, subs
 		matched = true
 		stats.Matched++
 		if err := s.enqueueItem(ctx, item, subscription); err != nil {
-			message := err.Error()
-			item.Status = RSSItemStatusFailed
-			item.ErrorMessage = &message
-			item.MatchedSubscriptionID = &subscription.ID
-			item.UpdatedAt = s.now()
-			_ = s.rssRepo.UpdateItem(ctx, item)
+			s.markItemRetryOrAttention(ctx, item, subscription.ID, err, s.now(), false)
 			stats.Failed++
 		} else {
 			stats.Enqueued++
@@ -653,8 +901,29 @@ func (s *RSSService) processItem(ctx context.Context, item *entity.RSSItem, subs
 }
 
 func (s *RSSService) enqueueItem(ctx context.Context, item *entity.RSSItem, subscription *entity.RSSSubscription) error {
+	return s.enqueueItemWithAttempt(ctx, item, subscription, false)
+}
+
+func (s *RSSService) enqueueItemWithAttempt(ctx context.Context, item *entity.RSSItem, subscription *entity.RSSSubscription, countRetry bool) error {
 	if item == nil || subscription == nil {
 		return ErrPathInvalid
+	}
+	unlock, locked := s.tryLockRSSItem(item.ID)
+	if !locked {
+		return ErrTaskInvalidState
+	}
+	defer unlock()
+	current, err := s.rssRepo.FindItemByID(ctx, item.ID)
+	if err == nil {
+		item = current
+	} else if !errors.Is(err, domainrepo.ErrNotFound) {
+		return err
+	}
+	if s.itemHasActiveTask(ctx, item) {
+		return nil
+	}
+	if rssItemIsCompleted(item) {
+		return nil
 	}
 	if !IsBTRSSDownloadLink(item.DownloadURL) {
 		return ErrDownloadLinkUnsupported
@@ -662,10 +931,18 @@ func (s *RSSService) enqueueItem(ctx context.Context, item *entity.RSSItem, subs
 	if s.taskCreator == nil {
 		return ErrSourceDriverUnsupported
 	}
+	now := s.now()
+	ensureRSSItemRetryDefaults(item)
+	if countRetry {
+		item.RetryCount++
+	}
 	item.Status = RSSItemStatusMatched
 	item.MatchedSubscriptionID = &subscription.ID
 	item.ErrorMessage = nil
-	item.UpdatedAt = s.now()
+	item.LastAttemptAt = &now
+	item.NextRetryAt = nil
+	item.RetryReason = nil
+	item.UpdatedAt = now
 	if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
 		return err
 	}
@@ -681,8 +958,13 @@ func (s *RSSService) enqueueItem(ctx context.Context, item *entity.RSSItem, subs
 	item.Status = RSSItemStatusEnqueued
 	item.TaskID = &task.ID
 	item.ErrorMessage = nil
+	item.NextRetryAt = nil
+	item.RetryReason = nil
 	item.UpdatedAt = s.now()
-	return s.rssRepo.UpdateItem(ctx, item)
+	if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
+		return err
+	}
+	return nil
 }
 
 type resolvedRSSSubscriptionTarget struct {
@@ -767,7 +1049,7 @@ func ensureLocalTargetWritable(source *entity.StorageSource, innerParentPath str
 }
 
 func (s *RSSService) contextForRSSOwner(ctx context.Context, userID uint) context.Context {
-	if _, ok := security.RequestAuthFromContext(ctx); ok {
+	if auth, ok := security.RequestAuthFromContext(ctx); ok && auth.UserID == userID {
 		return ctx
 	}
 	auth := security.RequestAuth{UserID: userID}
@@ -825,6 +1107,423 @@ func (s rssRefreshStats) toDTO() *appdto.RSSRefreshResponse {
 		Unsupported: s.Unsupported,
 		Failed:      s.Failed,
 	}
+}
+
+func (s rssRefreshStats) toView() appdto.RSSRefreshStatsView {
+	return appdto.RSSRefreshStatsView{
+		SourceID:    s.SourceID,
+		Fetched:     s.Fetched,
+		Created:     s.Created,
+		Updated:     s.Updated,
+		Matched:     s.Matched,
+		Enqueued:    s.Enqueued,
+		Unsupported: s.Unsupported,
+		Failed:      s.Failed,
+	}
+}
+
+func sourceRefreshDue(source *entity.RSSSource, now time.Time) bool {
+	if source == nil || !source.IsEnabled {
+		return false
+	}
+	if source.NextRefreshAt != nil {
+		return !source.NextRefreshAt.After(now)
+	}
+	if source.LastRefreshedAt == nil {
+		return true
+	}
+	interval := source.RefreshIntervalSeconds
+	if interval <= 0 {
+		interval = defaultRSSRefreshIntervalSeconds
+	}
+	return !source.LastRefreshedAt.Add(time.Duration(interval) * time.Second).After(now)
+}
+
+func (s *RSSService) applyRSSSourceRefreshSuccess(source *entity.RSSSource, stats rssRefreshStats, now time.Time) {
+	source.HealthStatus = RSSSourceHealthOK
+	source.ConsecutiveFailures = 0
+	source.LastSuccessAt = &now
+	source.LastRefreshStatus = RSSRefreshStatusSuccess
+	source.LastRefreshStatsJSON = encodeRSSRefreshStats(stats)
+	source.NextRefreshAt = ptrTime(now.Add(time.Duration(normalizeRSSRefreshInterval(source.RefreshIntervalSeconds)) * time.Second))
+}
+
+func (s *RSSService) applyRSSSourceRefreshFailure(source *entity.RSSSource, stats rssRefreshStats, now time.Time) {
+	source.ConsecutiveFailures++
+	source.LastRefreshStatus = RSSRefreshStatusFailed
+	source.LastRefreshStatsJSON = encodeRSSRefreshStats(stats)
+	source.HealthStatus = rssSourceHealthForFailures(source.ConsecutiveFailures)
+	source.NextRefreshAt = ptrTime(now.Add(rssSourceFailureBackoff(source)))
+}
+
+func normalizeRSSRefreshInterval(interval int) int {
+	if interval <= 0 {
+		return defaultRSSRefreshIntervalSeconds
+	}
+	if interval < 60 {
+		return 60
+	}
+	return interval
+}
+
+func rssSourceHealthForFailures(failures int) string {
+	switch {
+	case failures >= 5:
+		return RSSSourceHealthCircuitOpen
+	case failures >= 3:
+		return RSSSourceHealthDegraded
+	default:
+		return RSSSourceHealthOK
+	}
+}
+
+func rssSourceFailureBackoff(source *entity.RSSSource) time.Duration {
+	interval := time.Duration(normalizeRSSRefreshInterval(source.RefreshIntervalSeconds)) * time.Second
+	switch {
+	case source.ConsecutiveFailures >= 6:
+		return time.Hour
+	case source.ConsecutiveFailures >= 5:
+		return 30 * time.Minute
+	case source.ConsecutiveFailures >= 3:
+		if interval < 30*time.Minute {
+			return 30 * time.Minute
+		}
+		return interval
+	default:
+		return interval
+	}
+}
+
+func encodeRSSRefreshStats(stats rssRefreshStats) string {
+	data, err := json.Marshal(stats.toView())
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func decodeRSSRefreshStats(raw string) *appdto.RSSRefreshStatsView {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var stats appdto.RSSRefreshStatsView
+	if err := json.Unmarshal([]byte(raw), &stats); err != nil {
+		return nil
+	}
+	return &stats
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
+}
+
+func (s *RSSService) tryLockRSSSource(sourceID uint) (func(), bool) {
+	value, _ := s.refreshLocks.LoadOrStore(sourceID, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	if !mutex.TryLock() {
+		return func() {}, false
+	}
+	return mutex.Unlock, true
+}
+
+func (s *RSSService) tryLockRSSItem(itemID uint) (func(), bool) {
+	value, _ := s.itemLocks.LoadOrStore(itemID, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	if !mutex.TryLock() {
+		return func() {}, false
+	}
+	return mutex.Unlock, true
+}
+
+func (s *RSSService) itemHasActiveTask(ctx context.Context, item *entity.RSSItem) bool {
+	if item == nil || item.TaskID == nil {
+		return false
+	}
+	if s.taskReader == nil {
+		return item.Status == RSSItemStatusEnqueued
+	}
+	task, err := s.taskReader.FindByID(ctx, *item.TaskID)
+	if err != nil {
+		return !errors.Is(err, domainrepo.ErrNotFound)
+	}
+	return !isTerminalTaskStatus(task.Status)
+}
+
+func (s *RSSService) reconcileTaskBacklinks(ctx context.Context, limit int, processed *int) error {
+	if s.taskReader == nil || limit <= 0 {
+		return nil
+	}
+	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{IncludeAll: true, Status: RSSItemStatusEnqueued})
+	if err != nil {
+		return err
+	}
+	var joined error
+	now := s.now()
+	for _, item := range items {
+		if *processed >= limit {
+			break
+		}
+		if item.TaskID == nil {
+			continue
+		}
+		task, err := s.taskReader.FindByID(ctx, *item.TaskID)
+		if err != nil {
+			if errors.Is(err, domainrepo.ErrNotFound) {
+				message := "download task not found"
+				s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), errors.New(message), now, false)
+				(*processed)++
+				continue
+			}
+			joined = errors.Join(joined, err)
+			continue
+		}
+		switch task.Status {
+		case "completed":
+			item.Status = RSSItemStatusCompleted
+			item.ErrorMessage = nil
+			item.RetryReason = nil
+			item.NextRetryAt = nil
+			item.UpdatedAt = now
+			if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
+				joined = errors.Join(joined, err)
+				continue
+			}
+			(*processed)++
+		case "failed", "canceled":
+			taskErr := errors.New(taskTerminalErrorMessage(task))
+			s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), taskErr, now, false)
+			(*processed)++
+		}
+	}
+	return joined
+}
+
+func (s *RSSService) retryDueItems(ctx context.Context, limit int, processed *int) error {
+	if limit <= 0 {
+		return nil
+	}
+	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{IncludeAll: true, Status: RSSItemStatusRetryPending})
+	if err != nil {
+		return err
+	}
+	var joined error
+	now := s.now()
+	for _, item := range items {
+		if *processed >= limit {
+			break
+		}
+		if item.NextRetryAt != nil && item.NextRetryAt.After(now) {
+			continue
+		}
+		if s.itemHasActiveTask(ctx, item) {
+			continue
+		}
+		itemCtx := s.contextForRSSOwner(ctx, item.UserID)
+		subscription, err := s.subscriptionForItemRetry(itemCtx, item, 0)
+		if err != nil {
+			message := err.Error()
+			item.Status = RSSItemStatusNeedsAttention
+			item.ErrorMessage = &message
+			item.RetryReason = nil
+			item.NextRetryAt = nil
+			item.UpdatedAt = now
+			if updateErr := s.rssRepo.UpdateItem(ctx, item); updateErr != nil {
+				joined = errors.Join(joined, updateErr)
+			}
+			(*processed)++
+			continue
+		}
+		if err := s.retryItemWithSubscription(itemCtx, item, subscription, false); err != nil {
+			joined = errors.Join(joined, err)
+		}
+		(*processed)++
+	}
+	return joined
+}
+
+func (s *RSSService) subscriptionForItemRetry(ctx context.Context, item *entity.RSSItem, requestedID uint) (*entity.RSSSubscription, error) {
+	if item == nil {
+		return nil, ErrPathInvalid
+	}
+	if !IsBTRSSDownloadLink(item.DownloadURL) {
+		return nil, ErrDownloadLinkUnsupported
+	}
+	subscriptionID := requestedID
+	if subscriptionID == 0 && item.MatchedSubscriptionID != nil {
+		subscriptionID = *item.MatchedSubscriptionID
+	}
+	if subscriptionID == 0 {
+		return nil, ErrPathInvalid
+	}
+	subscription, err := s.rssRepo.FindSubscriptionByID(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	if subscription.SourceID != item.SourceID {
+		return nil, ErrPathInvalid
+	}
+	if err := s.authorizeRSSOwner(ctx, subscription.UserID); err != nil {
+		return nil, err
+	}
+	return subscription, nil
+}
+
+func (s *RSSService) retryItemWithSubscription(ctx context.Context, item *entity.RSSItem, subscription *entity.RSSSubscription, manual bool) error {
+	if item == nil || subscription == nil {
+		return ErrPathInvalid
+	}
+	if !manual && item.NextRetryAt != nil && item.NextRetryAt.After(s.now()) {
+		return nil
+	}
+	err := s.enqueueItemWithAttempt(ctx, item, subscription, true)
+	if err == nil {
+		return nil
+	}
+	current, findErr := s.rssRepo.FindItemByID(ctx, item.ID)
+	if findErr == nil {
+		item = current
+	}
+	s.markItemRetryOrAttention(ctx, item, subscription.ID, err, s.now(), false)
+	return nil
+}
+
+func (s *RSSService) markItemRetryOrAttention(ctx context.Context, item *entity.RSSItem, subscriptionID uint, err error, now time.Time, countAttempt bool) {
+	if item == nil || err == nil {
+		return
+	}
+	ensureRSSItemRetryDefaults(item)
+	if countAttempt {
+		item.RetryCount++
+	}
+	message := err.Error()
+	item.ErrorMessage = &message
+	if subscriptionID != 0 {
+		item.MatchedSubscriptionID = &subscriptionID
+	}
+	reason, retryable := classifyRSSRetryError(err)
+	if retryable && item.RetryCount < item.MaxRetryCount {
+		item.Status = RSSItemStatusRetryPending
+		item.RetryReason = &reason
+		next := now.Add(rssItemRetryBackoff(item.RetryCount))
+		item.NextRetryAt = &next
+	} else {
+		if retryable {
+			item.Status = RSSItemStatusNeedsAttention
+		} else {
+			item.Status = RSSItemStatusNeedsAttention
+		}
+		item.RetryReason = &reason
+		item.NextRetryAt = nil
+	}
+	item.UpdatedAt = now
+	if updateErr := s.rssRepo.UpdateItem(ctx, item); updateErr != nil {
+		s.logger.Warn("rss item retry state update failed", slog.String("event", "rss.item.retry_state_update_failed"), slog.Uint64("item_id", uint64(item.ID)), slog.Any("error", updateErr))
+	}
+}
+
+func ensureRSSItemRetryDefaults(item *entity.RSSItem) {
+	if item != nil && item.MaxRetryCount <= 0 {
+		item.MaxRetryCount = defaultRSSItemMaxRetryCount
+	}
+}
+
+func classifyRSSRetryError(err error) (string, bool) {
+	switch {
+	case errors.Is(err, ErrDownloadLinkUnsupported),
+		errors.Is(err, ErrPathInvalid),
+		errors.Is(err, ErrNoBackingStorage),
+		errors.Is(err, ErrNameConflict),
+		errors.Is(err, ErrSourceReadOnly),
+		errors.Is(err, ErrACLDenied),
+		errors.Is(err, ErrPermissionDenied),
+		errors.Is(err, ErrConfigInvalid),
+		errors.Is(err, ErrRSSRegexInvalid):
+		return "deterministic_error", false
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return RSSRetryReasonDownloaderUnavailable, true
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "read-only") || strings.Contains(lower, "unsupported link") || strings.Contains(lower, "invalid path"):
+		return "deterministic_error", false
+	case strings.Contains(lower, "canceled") || strings.Contains(lower, "cancelled"):
+		return RSSRetryReasonTaskFailed, false
+	case strings.Contains(lower, "torrent"):
+		return RSSRetryReasonTorrentFetchFailed, true
+	case strings.Contains(lower, "unavailable") || strings.Contains(lower, "timeout") || strings.Contains(lower, "temporary") || strings.Contains(lower, "connection refused") || strings.Contains(lower, "network"):
+		return RSSRetryReasonDownloaderUnavailable, true
+	default:
+		return RSSRetryReasonTaskFailed, true
+	}
+}
+
+func rssItemRetryBackoff(retryCount int) time.Duration {
+	switch {
+	case retryCount <= 0:
+		return 5 * time.Minute
+	case retryCount == 1:
+		return 30 * time.Minute
+	default:
+		return 2 * time.Hour
+	}
+}
+
+func taskTerminalErrorMessage(task *entity.DownloadTask) string {
+	if task == nil {
+		return "download task failed"
+	}
+	if task.ErrorMessage != nil && strings.TrimSpace(*task.ErrorMessage) != "" {
+		return strings.TrimSpace(*task.ErrorMessage)
+	}
+	if task.Status == "canceled" {
+		return "download canceled"
+	}
+	return "download failed"
+}
+
+func valueOrZero(value *uint) uint {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func evaluateRSSSubscriptionPreview(subscription *entity.RSSSubscription, item *entity.RSSItem) appdto.RSSSubscriptionPreviewItem {
+	result := appdto.RSSSubscriptionPreviewItem{
+		ItemID:        item.ID,
+		Title:         item.Title,
+		DownloadURL:   item.DownloadURL,
+		CurrentStatus: item.Status,
+		Matched:       []string{},
+		Missing:       []string{},
+		Excluded:      []string{},
+		Result:        "matched",
+	}
+	title := strings.TrimSpace(item.Title)
+	metadata := strings.TrimSpace(item.Link + " " + item.DownloadURL)
+	for _, pattern := range trimStringList(subscription.MustContain) {
+		matched, err := matchRSSPattern(title, metadata, pattern, subscription.UseRegex, subscription.CaseSensitive)
+		if err == nil && matched {
+			result.Matched = append(result.Matched, pattern)
+		} else {
+			result.Missing = append(result.Missing, pattern)
+		}
+	}
+	for _, pattern := range trimStringList(subscription.MustNotContain) {
+		matched, err := matchRSSPattern(title, metadata, pattern, subscription.UseRegex, subscription.CaseSensitive)
+		if err == nil && matched {
+			result.Excluded = append(result.Excluded, pattern)
+		}
+	}
+	switch {
+	case len(result.Excluded) > 0:
+		result.Result = "excluded"
+	case len(result.Missing) > 0:
+		result.Result = "missing"
+	default:
+		result.Result = "matched"
+	}
+	return result
 }
 
 func normalizeRSSSourceInput(req appdto.RSSSourceUpsertRequest) (string, string, int, error) {
@@ -1055,8 +1754,20 @@ func boolDefault(value *bool, fallback bool) bool {
 	return *value
 }
 
-func isRSSItemAlreadyQueued(item *entity.RSSItem) bool {
-	return item != nil && (item.Status == RSSItemStatusEnqueued || item.TaskID != nil)
+func rssItemIsCompleted(item *entity.RSSItem) bool {
+	return item != nil && item.Status == RSSItemStatusCompleted
+}
+
+func rssItemAllowsAutomaticProcessing(item *entity.RSSItem) bool {
+	if item == nil {
+		return false
+	}
+	switch item.Status {
+	case "", RSSItemStatusNew, RSSItemStatusIgnored, RSSItemStatusMatched:
+		return true
+	default:
+		return false
+	}
 }
 
 func toRSSSourceView(source *entity.RSSSource) appdto.RSSSourceView {
@@ -1064,6 +1775,20 @@ func toRSSSourceView(source *entity.RSSSource) appdto.RSSSourceView {
 	if source.LastRefreshedAt != nil {
 		formatted := source.LastRefreshedAt.Format(time.RFC3339)
 		lastRefreshedAt = &formatted
+	}
+	var lastSuccessAt *string
+	if source.LastSuccessAt != nil {
+		formatted := source.LastSuccessAt.Format(time.RFC3339)
+		lastSuccessAt = &formatted
+	}
+	var nextRefreshAt *string
+	if source.NextRefreshAt != nil {
+		formatted := source.NextRefreshAt.Format(time.RFC3339)
+		nextRefreshAt = &formatted
+	}
+	healthStatus := source.HealthStatus
+	if healthStatus == "" {
+		healthStatus = RSSSourceHealthOK
 	}
 	return appdto.RSSSourceView{
 		ID:                     source.ID,
@@ -1074,6 +1799,12 @@ func toRSSSourceView(source *entity.RSSSource) appdto.RSSSourceView {
 		RefreshIntervalSeconds: source.RefreshIntervalSeconds,
 		LastRefreshedAt:        lastRefreshedAt,
 		LastError:              source.LastError,
+		HealthStatus:           healthStatus,
+		ConsecutiveFailures:    source.ConsecutiveFailures,
+		LastSuccessAt:          lastSuccessAt,
+		NextRefreshAt:          nextRefreshAt,
+		LastRefreshStatus:      source.LastRefreshStatus,
+		LastRefreshStats:       decodeRSSRefreshStats(source.LastRefreshStatsJSON),
 		CreatedAt:              source.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:              source.UpdatedAt.Format(time.RFC3339),
 	}
@@ -1104,6 +1835,20 @@ func toRSSItemView(item *entity.RSSItem) appdto.RSSItemView {
 		formatted := item.PublishedAt.Format(time.RFC3339)
 		publishedAt = &formatted
 	}
+	var lastAttemptAt *string
+	if item.LastAttemptAt != nil {
+		formatted := item.LastAttemptAt.Format(time.RFC3339)
+		lastAttemptAt = &formatted
+	}
+	var nextRetryAt *string
+	if item.NextRetryAt != nil {
+		formatted := item.NextRetryAt.Format(time.RFC3339)
+		nextRetryAt = &formatted
+	}
+	maxRetryCount := item.MaxRetryCount
+	if maxRetryCount <= 0 {
+		maxRetryCount = defaultRSSItemMaxRetryCount
+	}
 	return appdto.RSSItemView{
 		ID:                    item.ID,
 		UserID:                item.UserID,
@@ -1118,6 +1863,11 @@ func toRSSItemView(item *entity.RSSItem) appdto.RSSItemView {
 		MatchedSubscriptionID: item.MatchedSubscriptionID,
 		TaskID:                item.TaskID,
 		ErrorMessage:          item.ErrorMessage,
+		RetryCount:            item.RetryCount,
+		MaxRetryCount:         maxRetryCount,
+		LastAttemptAt:         lastAttemptAt,
+		NextRetryAt:           nextRetryAt,
+		RetryReason:           item.RetryReason,
 		CreatedAt:             item.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:             item.UpdatedAt.Format(time.RFC3339),
 	}

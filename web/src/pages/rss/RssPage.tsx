@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
+  AlertTriangle,
   DownloadCloud,
   ExternalLink,
   Filter,
@@ -26,9 +27,13 @@ import type {
   RSSItemStatus,
   RSSItemView,
   RSSQBitHealthResponse,
+  RSSRefreshAllResponse,
   RSSRefreshResponse,
+  RSSRefreshStatsView,
   RSSSourceUpsertRequest,
   RSSSourceView,
+  RSSSubscriptionPreviewItem,
+  RSSSubscriptionPreviewResponse,
   RSSSubscriptionUpsertRequest,
   RSSSubscriptionView,
 } from '@/types/api'
@@ -39,6 +44,9 @@ const RSS_STATUS_OPTIONS: { value: RSSItemStatus; label: string }[] = [
   { value: 'ignored', label: '未匹配' },
   { value: 'matched', label: '已匹配' },
   { value: 'enqueued', label: '已加入下载' },
+  { value: 'retry_pending', label: '等待重试' },
+  { value: 'completed', label: '已完成' },
+  { value: 'needs_attention', label: '需要处理' },
   { value: 'failed', label: '处理失败' },
 ]
 
@@ -48,8 +56,16 @@ const STATUS_CLASSES: Record<RSSItemStatus, string> = {
   ignored: 'bg-muted text-muted-foreground',
   matched: 'bg-primary/10 text-primary',
   enqueued: 'bg-emerald-500/10 text-emerald-500',
+  retry_pending: 'bg-amber-500/10 text-amber-500',
+  completed: 'bg-emerald-500/10 text-emerald-500',
+  needs_attention: 'bg-destructive/10 text-destructive ring-1 ring-destructive/20',
   failed: 'bg-destructive/10 text-destructive',
 }
+
+type RSSRefreshSummary = Pick<
+  RSSRefreshResponse | RSSRefreshStatsView,
+  'fetched' | 'created' | 'updated' | 'matched' | 'enqueued' | 'unsupported' | 'failed'
+>
 
 function statusLabel(status: RSSItemStatus) {
   return RSS_STATUS_OPTIONS.find((item) => item.value === status)?.label ?? status
@@ -78,8 +94,8 @@ function healthLabel(health?: RSSQBitHealthResponse) {
   return health.status
 }
 
-function formatRefreshSummary(result: RSSRefreshResponse) {
-  return `获取 ${result.fetched} 条，新增 ${result.created} 条，更新 ${result.updated} 条，匹配 ${result.matched} 条，入队 ${result.enqueued} 条`
+function formatRefreshSummary(result: RSSRefreshSummary) {
+  return `获取 ${result.fetched} 条，新增 ${result.created} 条，更新 ${result.updated} 条，匹配 ${result.matched} 条，入队 ${result.enqueued} 条，失败 ${result.failed} 条`
 }
 
 function toOptionalNumber(value: string) {
@@ -101,6 +117,112 @@ function listToText(value: string[]) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback
+}
+
+function sourceHealthLabel(status?: string) {
+  switch (status) {
+    case 'ok':
+      return '健康'
+    case 'degraded':
+      return '降级'
+    case 'circuit_open':
+      return '熔断'
+    default:
+      return status || '未知'
+  }
+}
+
+function sourceHealthClass(status?: string) {
+  switch (status) {
+    case 'ok':
+      return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+    case 'degraded':
+      return 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+    case 'circuit_open':
+      return 'bg-destructive/10 text-destructive border-destructive/20'
+    default:
+      return 'bg-muted text-muted-foreground border-border'
+  }
+}
+
+function refreshStatusLabel(status?: string) {
+  switch (status) {
+    case 'success':
+      return '成功'
+    case 'failed':
+      return '失败'
+    default:
+      return status || '未刷新'
+  }
+}
+
+function refreshAllStatusLabel(status: string) {
+  switch (status) {
+    case 'success':
+      return '成功'
+    case 'failed':
+      return '失败'
+    case 'skipped':
+      return '跳过'
+    default:
+      return status || '-'
+  }
+}
+
+function refreshAllStatusClass(status: string) {
+  switch (status) {
+    case 'success':
+      return 'bg-emerald-500/10 text-emerald-500'
+    case 'failed':
+      return 'bg-destructive/10 text-destructive'
+    case 'skipped':
+      return 'bg-amber-500/10 text-amber-500'
+    default:
+      return 'bg-muted text-muted-foreground'
+  }
+}
+
+function previewResultLabel(result: string) {
+  switch (result) {
+    case 'matched':
+      return '命中'
+    case 'missing':
+      return '缺失'
+    case 'excluded':
+      return '排除'
+    default:
+      return result || '-'
+  }
+}
+
+function previewResultClass(result: string) {
+  switch (result) {
+    case 'matched':
+      return 'bg-emerald-500/10 text-emerald-500'
+    case 'missing':
+      return 'bg-amber-500/10 text-amber-500'
+    case 'excluded':
+      return 'bg-destructive/10 text-destructive'
+    default:
+      return 'bg-muted text-muted-foreground'
+  }
+}
+
+function retryReasonLabel(reason?: string | null) {
+  switch (reason) {
+    case 'downloader_unavailable':
+      return '下载器不可用'
+    case 'torrent_fetch_failed':
+      return 'Torrent 获取失败'
+    case 'task_failed':
+      return '下载任务失败'
+    case 'stalled':
+      return '任务无进展'
+    case 'deterministic_error':
+      return '确定性错误'
+    default:
+      return reason || '-'
+  }
 }
 
 function Panel({
@@ -152,6 +274,137 @@ function LinkTypeBadge({ type }: { type: string }) {
     >
       {linkTypeLabel(type)}
     </span>
+  )
+}
+
+function SourceHealthBadge({ status }: { status?: string }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
+        sourceHealthClass(status)
+      )}
+    >
+      {sourceHealthLabel(status)}
+    </span>
+  )
+}
+
+function RefreshAllResultPanel({
+  result,
+  sourceNameById,
+}: {
+  result: RSSRefreshAllResponse
+  sourceNameById: Map<number, string>
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>刷新全部结果：</span>
+        <span className="text-emerald-500">成功 {result.refreshed}</span>
+        <span className="text-amber-500">跳过 {result.skipped}</span>
+        <span className="text-destructive">失败 {result.failed}</span>
+      </div>
+      <div className="space-y-1">
+        {result.items.map((item) => (
+          <div key={item.source_id} className="rounded-md border border-border bg-card px-2 py-1.5 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">
+                {sourceNameById.get(item.source_id) ?? `源 #${item.source_id}`}
+              </span>
+              <span className={cn('rounded-full px-1.5 py-0.5', refreshAllStatusClass(item.status))}>
+                {refreshAllStatusLabel(item.status)}
+              </span>
+            </div>
+            {item.stats && (
+              <p className="mt-1 text-muted-foreground">
+                {formatRefreshSummary(item.stats)}
+              </p>
+            )}
+            {item.error && (
+              <p className="mt-1 text-destructive break-all">
+                {item.error}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PreviewKeywords({
+  label,
+  values,
+  className,
+}: {
+  label: string
+  values: string[]
+  className: string
+}) {
+  if (values.length === 0) return null
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="text-muted-foreground">{label}：</span>
+      {values.map((value) => (
+        <span key={value} className={cn('rounded border px-1.5 py-0.5', className)}>
+          {value}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function SubscriptionPreviewPanel({ preview }: { preview: RSSSubscriptionPreviewResponse }) {
+  const previewItems = preview.items.slice(0, 6)
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>预览结果：</span>
+        <span className="text-emerald-500">命中 {preview.matched}</span>
+        <span className="text-amber-500">缺失 {preview.missing}</span>
+        <span className="text-destructive">排除 {preview.excluded}</span>
+      </div>
+      {preview.items.length === 0 ? (
+        <p className="text-xs text-muted-foreground">暂无可预览条目。</p>
+      ) : (
+        <div className="space-y-1.5">
+          {previewItems.map((item: RSSSubscriptionPreviewItem) => (
+            <div key={item.item_id} className="rounded-md border border-border bg-card px-2 py-1.5 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-foreground break-all">{item.title}</span>
+                <span className={cn('rounded-full px-1.5 py-0.5', previewResultClass(item.result))}>
+                  {previewResultLabel(item.result)}
+                </span>
+                <span className="text-muted-foreground">{statusLabel(item.current_status as RSSItemStatus)}</span>
+              </div>
+              <div className="mt-1 space-y-1">
+                <PreviewKeywords
+                  label="matched"
+                  values={item.matched}
+                  className="border-emerald-500/20 bg-emerald-500/10 text-emerald-500"
+                />
+                <PreviewKeywords
+                  label="missing"
+                  values={item.missing}
+                  className="border-amber-500/20 bg-amber-500/10 text-amber-500"
+                />
+                <PreviewKeywords
+                  label="excluded"
+                  values={item.excluded}
+                  className="border-destructive/20 bg-destructive/10 text-destructive"
+                />
+              </div>
+            </div>
+          ))}
+          {preview.items.length > previewItems.length && (
+            <p className="text-xs text-muted-foreground">仅展示前 {previewItems.length} 条，完整结果请缩小筛选后重试。</p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -289,7 +542,7 @@ function SourceModal({
             />
           </div>
 
-          <label className="flex items-center gap-2 cursor-pointer">
+          <div className="flex items-center gap-2">
             <input
               id={`rss-source-enabled-${suffix}`}
               name="is_enabled"
@@ -298,8 +551,10 @@ function SourceModal({
               onChange={(event) => setIsEnabled(event.target.checked)}
               className="rounded border-border"
             />
-            <span className="text-sm text-foreground">启用 RSS 源</span>
-          </label>
+            <label htmlFor={`rss-source-enabled-${suffix}`} className="text-sm text-foreground cursor-pointer">
+              启用 RSS 源
+            </label>
+          </div>
 
           <div className="flex justify-end gap-2 pt-2">
             <button
@@ -496,7 +751,7 @@ function SubscriptionModal({
           </div>
 
           <div className="grid gap-2 md:grid-cols-3">
-            <label className="flex items-center gap-2 cursor-pointer">
+            <div className="flex items-center gap-2">
               <input
                 id={`rss-sub-enabled-${suffix}`}
                 name="is_enabled"
@@ -505,9 +760,11 @@ function SubscriptionModal({
                 onChange={(event) => setIsEnabled(event.target.checked)}
                 className="rounded border-border"
               />
-              <span className="text-sm text-foreground">启用订阅</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
+              <label htmlFor={`rss-sub-enabled-${suffix}`} className="text-sm text-foreground cursor-pointer">
+                启用订阅
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
               <input
                 id={`rss-sub-regex-${suffix}`}
                 name="use_regex"
@@ -516,9 +773,11 @@ function SubscriptionModal({
                 onChange={(event) => setUseRegex(event.target.checked)}
                 className="rounded border-border"
               />
-              <span className="text-sm text-foreground">使用正则</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
+              <label htmlFor={`rss-sub-regex-${suffix}`} className="text-sm text-foreground cursor-pointer">
+                使用正则
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
               <input
                 id={`rss-sub-case-${suffix}`}
                 name="case_sensitive"
@@ -527,8 +786,10 @@ function SubscriptionModal({
                 onChange={(event) => setCaseSensitive(event.target.checked)}
                 className="rounded border-border"
               />
-              <span className="text-sm text-foreground">区分大小写</span>
-            </label>
+              <label htmlFor={`rss-sub-case-${suffix}`} className="text-sm text-foreground cursor-pointer">
+                区分大小写
+              </label>
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -617,6 +878,16 @@ export function RssPage() {
   const [sourceFilter, setSourceFilter] = useState('')
   const [subscriptionFilter, setSubscriptionFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<RSSItemStatus | ''>('')
+  const [refreshAllResult, setRefreshAllResult] = useState<RSSRefreshAllResponse | null>(null)
+  const [isRefreshingAll, setIsRefreshingAll] = useState(false)
+  const [refreshingSourceId, setRefreshingSourceId] = useState<number | null>(null)
+  const [runningSubscriptionId, setRunningSubscriptionId] = useState<number | null>(null)
+  const [previewingSubscriptionId, setPreviewingSubscriptionId] = useState<number | null>(null)
+  const [subscriptionPreviews, setSubscriptionPreviews] = useState<Record<number, RSSSubscriptionPreviewResponse>>({})
+  const [activeItemAction, setActiveItemAction] = useState<{
+    id: number
+    type: 'download' | 'reprocess' | 'retry'
+  } | null>(null)
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -663,9 +934,19 @@ export function RssPage() {
     enabled: canRead,
   })
 
+  const needsAttentionQuery = useQuery({
+    queryKey: ['rss', 'items', 'needs_attention', 'summary'],
+    queryFn: () => rssApi.listItems({ status: 'needs_attention' }),
+    enabled: canRead,
+  })
+
   const sources = useMemo(() => sourcesQuery.data?.items ?? [], [sourcesQuery.data?.items])
   const subscriptions = useMemo(() => subscriptionsQuery.data?.items ?? [], [subscriptionsQuery.data?.items])
   const items = useMemo(() => itemsQuery.data?.items ?? [], [itemsQuery.data?.items])
+  const needsAttentionItems = useMemo(
+    () => needsAttentionQuery.data?.items ?? [],
+    [needsAttentionQuery.data?.items]
+  )
 
   const sourceNameById = useMemo(
     () => new Map(sources.map((source) => [source.id, source.name])),
@@ -680,6 +961,12 @@ export function RssPage() {
     void queryClient.invalidateQueries({ queryKey: ['rss'] })
   }
 
+  const showNeedsAttentionItems = () => {
+    setSourceFilter('')
+    setSubscriptionFilter('')
+    setStatusFilter('needs_attention')
+  }
+
   const handleSaveSource = async (payload: RSSSourceUpsertRequest) => {
     if (sourceModalTarget) {
       await rssApi.updateSource(sourceModalTarget.id, payload)
@@ -689,6 +976,17 @@ export function RssPage() {
       addToast('RSS 源已创建', 'success')
     }
     invalidateRSS()
+  }
+
+  const handleRefreshHealth = async () => {
+    try {
+      const result = await healthQuery.refetch()
+      if (result.error) {
+        addToast(getErrorMessage(result.error, '刷新 qBittorrent 健康状态失败'), 'error')
+      }
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '刷新 qBittorrent 健康状态失败'), 'error')
+    }
   }
 
   const handleDeleteSource = async (source: RSSSourceView) => {
@@ -703,6 +1001,7 @@ export function RssPage() {
   }
 
   const handleRefreshSource = async (source: RSSSourceView) => {
+    setRefreshingSourceId(source.id)
     try {
       const result = await rssApi.refreshSource(source.id)
       addToast(`刷新完成：${formatRefreshSummary(result)}`, 'success', 6000)
@@ -710,6 +1009,30 @@ export function RssPage() {
       void queryClient.invalidateQueries({ queryKey: ['tasks'] })
     } catch (err: unknown) {
       addToast(getErrorMessage(err, '刷新 RSS 源失败'), 'error')
+    } finally {
+      setRefreshingSourceId(null)
+    }
+  }
+
+  const handleRefreshAllSources = async () => {
+    if (isRefreshingAll) return
+
+    setIsRefreshingAll(true)
+    setRefreshAllResult(null)
+    try {
+      const result = await rssApi.refreshAllSources()
+      setRefreshAllResult(result)
+      addToast(
+        `刷新全部完成：成功 ${result.refreshed}，跳过 ${result.skipped}，失败 ${result.failed}`,
+        result.failed > 0 ? 'warning' : 'success',
+        7000
+      )
+      invalidateRSS()
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '刷新全部 RSS 源失败'), 'error')
+    } finally {
+      setIsRefreshingAll(false)
     }
   }
 
@@ -736,6 +1059,7 @@ export function RssPage() {
   }
 
   const handleRunSubscription = async (subscription: RSSSubscriptionView) => {
+    setRunningSubscriptionId(subscription.id)
     try {
       const result = await rssApi.runSubscription(subscription.id)
       addToast(`执行完成：${formatRefreshSummary(result)}`, 'success', 6000)
@@ -743,14 +1067,46 @@ export function RssPage() {
       void queryClient.invalidateQueries({ queryKey: ['tasks'] })
     } catch (err: unknown) {
       addToast(getErrorMessage(err, '手动执行订阅失败'), 'error')
+    } finally {
+      setRunningSubscriptionId(null)
+    }
+  }
+
+  const handlePreviewSubscription = async (subscription: RSSSubscriptionView) => {
+    setPreviewingSubscriptionId(subscription.id)
+    try {
+      const result = await rssApi.previewSubscription(subscription.id)
+      setSubscriptionPreviews((current) => ({
+        ...current,
+        [subscription.id]: result,
+      }))
+      addToast(
+        `规则预览完成：命中 ${result.matched}，缺失 ${result.missing}，排除 ${result.excluded}`,
+        'success',
+        6000
+      )
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '预览订阅规则失败'), 'error')
+    } finally {
+      setPreviewingSubscriptionId(null)
     }
   }
 
   const getDownloadDisabledReason = (item: RSSItemView) => {
     if (!canManage) return '无管理权限'
+    if (item.status === 'completed') return '已完成'
     if (item.status === 'enqueued' || item.task_id) return '已加入下载'
     if (item.link_type !== 'magnet' && item.link_type !== 'torrent') return '仅支持 BT/magnet 条目'
     if (!item.matched_subscription_id && !subscriptionIdFilter) return '请选择订阅后手动入队'
+    return ''
+  }
+
+  const getRetryDisabledReason = (item: RSSItemView) => {
+    if (!canManage) return '无管理权限'
+    if (item.status === 'completed') return '已完成'
+    if (item.status === 'enqueued') return '已有下载任务'
+    if (item.link_type !== 'magnet' && item.link_type !== 'torrent') return '仅支持 BT/magnet 条目'
+    if (!subscriptionIdFilter && !item.matched_subscription_id) return '请选择订阅后重试'
     return ''
   }
 
@@ -760,6 +1116,7 @@ export function RssPage() {
       addToast(reason, 'error')
       return
     }
+    setActiveItemAction({ id: item.id, type: 'download' })
     try {
       const subscriptionId = item.matched_subscription_id ?? subscriptionIdFilter
       await rssApi.downloadItem(item.id, subscriptionId)
@@ -768,6 +1125,43 @@ export function RssPage() {
       void queryClient.invalidateQueries({ queryKey: ['tasks'] })
     } catch (err: unknown) {
       addToast(getErrorMessage(err, '手动入队失败'), 'error')
+    } finally {
+      setActiveItemAction(null)
+    }
+  }
+
+  const handleReprocessItem = async (item: RSSItemView) => {
+    setActiveItemAction({ id: item.id, type: 'reprocess' })
+    try {
+      await rssApi.reprocessItem(item.id)
+      addToast('RSS 条目已重新处理', 'success')
+      invalidateRSS()
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '重新处理条目失败'), 'error')
+    } finally {
+      setActiveItemAction(null)
+    }
+  }
+
+  const handleRetryItem = async (item: RSSItemView) => {
+    const reason = getRetryDisabledReason(item)
+    if (reason) {
+      addToast(reason, 'error')
+      return
+    }
+
+    setActiveItemAction({ id: item.id, type: 'retry' })
+    try {
+      const subscriptionId = subscriptionIdFilter ?? item.matched_subscription_id ?? undefined
+      await rssApi.retryItem(item.id, subscriptionId)
+      addToast('RSS 条目已触发手动重试', 'success')
+      invalidateRSS()
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '手动重试失败'), 'error')
+    } finally {
+      setActiveItemAction(null)
     }
   }
 
@@ -793,6 +1187,15 @@ export function RssPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => void handleRefreshAllSources()}
+              disabled={isRefreshingAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-sm text-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isRefreshingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />}
+              <span>刷新全部</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setSubscriptionModalTarget(null)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-sm text-foreground hover:bg-accent transition-colors"
             >
@@ -812,11 +1215,11 @@ export function RssPage() {
       </div>
 
       <div className="flex-1 overflow-auto scrollbar-thin p-4 space-y-4">
-        <div className="grid gap-3 md:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-5">
           <HealthCard
             health={healthQuery.data}
             isLoading={healthQuery.isLoading}
-            onRefresh={() => void healthQuery.refetch()}
+            onRefresh={() => void handleRefreshHealth()}
           />
           <div className="rounded-lg border border-border bg-card p-4">
             <p className="text-sm text-muted-foreground">RSS 源</p>
@@ -830,6 +1233,28 @@ export function RssPage() {
             <p className="text-sm text-muted-foreground">当前条目</p>
             <p className="text-2xl font-semibold text-foreground">{items.length}</p>
           </div>
+          <button
+            type="button"
+            onClick={showNeedsAttentionItems}
+            className={cn(
+              'rounded-lg border bg-card p-4 text-left transition-colors hover:bg-accent',
+              needsAttentionItems.length > 0
+                ? 'border-destructive/40 bg-destructive/5'
+                : 'border-border'
+            )}
+            aria-pressed={statusFilter === 'needs_attention'}
+          >
+            <p className="text-sm text-muted-foreground flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4 text-destructive" />
+              待处理
+            </p>
+            <p className="text-2xl font-semibold text-foreground">
+              {needsAttentionQuery.isLoading ? '...' : needsAttentionItems.length}
+            </p>
+            {needsAttentionQuery.error && (
+              <p className="mt-1 text-xs text-destructive">加载待处理条目失败</p>
+            )}
+          </button>
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
@@ -838,13 +1263,23 @@ export function RssPage() {
             icon={<Rss className="w-4 h-4 text-primary" />}
             action={
               canManage && (
-                <button
-                  type="button"
-                  onClick={() => setSourceModalTarget(null)}
-                  className="text-sm text-primary hover:underline"
-                >
-                  新增
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleRefreshAllSources()}
+                    disabled={isRefreshingAll}
+                    className="text-sm text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isRefreshingAll ? '刷新中...' : '刷新全部'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSourceModalTarget(null)}
+                    className="text-sm text-primary hover:underline"
+                  >
+                    新增
+                  </button>
+                </div>
               )
             }
           >
@@ -856,11 +1291,24 @@ export function RssPage() {
               <EmptyState icon={<Rss className="w-10 h-10" />} text="暂无 RSS 源" />
             ) : (
               <div className="space-y-2">
+                {refreshAllResult && (
+                  <RefreshAllResultPanel result={refreshAllResult} sourceNameById={sourceNameById} />
+                )}
                 {sources.map((source) => (
-                  <div key={source.id} className="rounded-lg border border-border p-3">
+                  <div
+                    key={source.id}
+                    className={cn(
+                      'rounded-lg border p-3',
+                      source.health_status === 'circuit_open'
+                        ? 'border-destructive/40 bg-destructive/5'
+                        : source.health_status === 'degraded'
+                          ? 'border-amber-500/40 bg-amber-500/5'
+                          : 'border-border'
+                    )}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-medium text-foreground truncate">{source.name}</h3>
                           <span
                             className={cn(
@@ -872,11 +1320,22 @@ export function RssPage() {
                           >
                             {source.is_enabled ? '启用' : '停用'}
                           </span>
+                          <SourceHealthBadge status={source.health_status} />
                         </div>
                         <p className="text-xs text-muted-foreground truncate mt-1">{source.url}</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          最近刷新：{formatDate(source.last_refreshed_at)} · 间隔 {source.refresh_interval_seconds}s
-                        </p>
+                        <div className="grid gap-x-3 gap-y-1 text-xs text-muted-foreground mt-2 sm:grid-cols-2">
+                          <span>最近刷新：{formatDate(source.last_refreshed_at)}</span>
+                          <span>最近成功：{formatDate(source.last_success_at)}</span>
+                          <span>下次刷新：{formatDate(source.next_refresh_at)}</span>
+                          <span>刷新间隔：{source.refresh_interval_seconds}s</span>
+                          <span>连续失败：{source.consecutive_failures}</span>
+                          <span>最近状态：{refreshStatusLabel(source.last_refresh_status)}</span>
+                        </div>
+                        {source.last_refresh_stats && (
+                          <p className="text-xs text-muted-foreground mt-2">
+                            最近统计：{formatRefreshSummary(source.last_refresh_stats)}
+                          </p>
+                        )}
                         {source.last_error && (
                           <p className="text-xs text-destructive mt-1 break-all">{source.last_error}</p>
                         )}
@@ -886,10 +1345,15 @@ export function RssPage() {
                           <button
                             type="button"
                             onClick={() => handleRefreshSource(source)}
-                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+                            disabled={refreshingSourceId === source.id}
+                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                             title="手动刷新"
                           >
-                            <RefreshCcw className="w-4 h-4" />
+                            {refreshingSourceId === source.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <RefreshCcw className="w-4 h-4" />
+                            )}
                           </button>
                           <button
                             type="button"
@@ -939,10 +1403,12 @@ export function RssPage() {
               <EmptyState icon={<RadioTower className="w-10 h-10" />} text="暂无订阅规则" />
             ) : (
               <div className="space-y-2">
-                {subscriptions.map((subscription) => (
-                  <div key={subscription.id} className="rounded-lg border border-border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+                {subscriptions.map((subscription) => {
+                  const preview = subscriptionPreviews[subscription.id]
+                  return (
+                    <div key={subscription.id} className="rounded-lg border border-border p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <h3 className="font-medium text-foreground truncate">{subscription.name}</h3>
                           <span
@@ -979,11 +1445,25 @@ export function RssPage() {
                         <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
+                            onClick={() => void handlePreviewSubscription(subscription)}
+                            disabled={previewingSubscriptionId === subscription.id}
+                            className="px-2 py-1.5 rounded-md hover:bg-accent text-xs text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="预览规则"
+                          >
+                            {previewingSubscriptionId === subscription.id ? '预览中' : '预览'}
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => handleRunSubscription(subscription)}
-                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+                            disabled={runningSubscriptionId === subscription.id}
+                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
                             title="手动执行"
                           >
-                            <Play className="w-4 h-4" />
+                            {runningSubscriptionId === subscription.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Play className="w-4 h-4" />
+                            )}
                           </button>
                           <button
                             type="button"
@@ -1004,8 +1484,10 @@ export function RssPage() {
                         </div>
                       )}
                     </div>
+                    {preview && <SubscriptionPreviewPanel preview={preview} />}
                   </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </Panel>
@@ -1085,10 +1567,34 @@ export function RssPage() {
             <div className="space-y-2">
               {items.map((item) => {
                 const disabledReason = getDownloadDisabledReason(item)
+                const retryDisabledReason = getRetryDisabledReason(item)
+                const isNeedsAttention = item.status === 'needs_attention'
+                const isRetryPending = item.status === 'retry_pending'
+                const isDownloading = activeItemAction?.id === item.id && activeItemAction.type === 'download'
+                const isReprocessing = activeItemAction?.id === item.id && activeItemAction.type === 'reprocess'
+                const isRetrying = activeItemAction?.id === item.id && activeItemAction.type === 'retry'
                 return (
-                  <div key={item.id} className="rounded-lg border border-border p-3">
+                  <div
+                    key={item.id}
+                    className={cn(
+                      'rounded-lg border p-3',
+                      isNeedsAttention
+                        ? 'border-destructive/40 bg-destructive/5'
+                        : isRetryPending
+                          ? 'border-amber-500/40 bg-amber-500/5'
+                          : 'border-border'
+                    )}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
+                        {isNeedsAttention && (
+                          <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                            <span>
+                              需要人工处理：{item.error_message || retryReasonLabel(item.retry_reason)}
+                            </span>
+                          </div>
+                        )}
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="font-medium text-foreground break-all">{item.title}</h3>
                           <StatusBadge status={item.status} />
@@ -1106,6 +1612,14 @@ export function RssPage() {
                         <p className="text-xs text-muted-foreground break-all mt-2">
                           下载链接：{item.download_url || item.link}
                         </p>
+                        <div className="grid gap-x-3 gap-y-1 text-xs text-muted-foreground mt-2 sm:grid-cols-2">
+                          <span>
+                            重试次数：{item.retry_count}/{item.max_retry_count}
+                          </span>
+                          <span>重试原因：{retryReasonLabel(item.retry_reason)}</span>
+                          <span>最近尝试：{formatDate(item.last_attempt_at)}</span>
+                          <span>下次重试：{formatDate(item.next_retry_at)}</span>
+                        </div>
                         {item.error_message && (
                           <p className="text-xs text-destructive mt-2 break-all">{item.error_message}</p>
                         )}
@@ -1122,15 +1636,39 @@ export function RssPage() {
                           </button>
                         )}
                         {canManage && (
-                          <button
-                            type="button"
-                            onClick={() => handleDownloadItem(item)}
-                            disabled={Boolean(disabledReason)}
-                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-                            title={disabledReason || '手动入队'}
-                          >
-                            <DownloadCloud className="w-4 h-4" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleReprocessItem(item)}
+                              disabled={isReprocessing}
+                              className="px-2 py-1.5 rounded-md hover:bg-accent text-xs text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="重新处理/重新匹配"
+                            >
+                              {isReprocessing ? '处理中' : '重处理'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleRetryItem(item)}
+                              disabled={Boolean(retryDisabledReason) || isRetrying}
+                              className="px-2 py-1.5 rounded-md hover:bg-accent text-xs text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                              title={retryDisabledReason || '立即重试'}
+                            >
+                              {isRetrying ? '重试中' : '重试'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleDownloadItem(item)}
+                              disabled={Boolean(disabledReason) || isDownloading}
+                              className="p-1.5 rounded-md hover:bg-accent text-muted-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                              title={disabledReason || '手动入队'}
+                            >
+                              {isDownloading ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <DownloadCloud className="w-4 h-4" />
+                              )}
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>

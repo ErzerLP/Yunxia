@@ -13,6 +13,41 @@
 
 ## 2026-04-30
 
+### RSS 无人值守可用性增强
+
+- RSS 源自动刷新增强：
+  - 新增 `health_status`、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`
+  - 连续失败自动退避，达到阈值后进入 `circuit_open`，成功刷新后恢复 `ok`
+  - 新增 `POST /api/v1/rss/sources/refresh-all`，单源失败不影响其他源
+- RSS 订阅可解释性增强：
+  - 新增 `POST /api/v1/rss/subscriptions/:id/preview`
+  - 返回每个已有 item 的 `matched` / `missing` / `excluded` 解释
+- RSS item 重试与无人值守自愈：
+  - 新增状态 `retry_pending`、`completed`、`needs_attention`
+  - 新增 `retry_count`、`max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`
+  - 新增 `POST /api/v1/rss/items/:id/reprocess` 与 `POST /api/v1/rss/items/:id/retry`
+  - 自动 retry worker 按 5m / 30m / 2h 退避，默认最多 3 次
+  - task `completed` / `failed` / `canceled` 会回写 RSS item
+  - 已有关联非终态 task 的 item 不会重复入队
+  - 自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `canceled` 会进入 `needs_attention`
+  - `refresh-all` 强制刷新所有启用源，只有并发刷新锁占用时才标记 `skipped`
+- 文档同步：
+  - 更新 `backend/API_CONTRACT.md`
+  - 更新 `backend/FRONTEND_HANDOFF.md`
+  - 更新 `.trellis/spec/backend/rss-guidelines.md`
+- 新增 / 更新回归验证：
+  - `TestRSSSourceFailureBackoffAndRecovery`
+  - `TestRSSRefreshAllContinuesAfterSingleSourceFailure`
+  - `TestRSSSubscriptionPreviewExplainsMatchedMissingExcluded`
+  - `TestRSSManualRetryAndReprocess`
+  - `TestRSSRetryWorkerBackoffAndMaxAttention`
+  - `TestRSSTaskBacklinkUpdatesItemTerminalStates`
+  - `TestRSSRetrySkipsActiveTaskToAvoidDuplicate`
+  - `TestRSSRefreshAllForcesEnabledSourcesEvenWhenNotDue`
+  - `TestRSSRefreshDoesNotRequeueCompletedOrRetryPendingItems`
+  - `TestRSSTaskCanceledMovesItemToNeedsAttention`
+  - `go test -count=1 ./...`
+
 ### RSS / qBittorrent 回归修正
 
 - 修正 Mikan RSS 发布时间解析：

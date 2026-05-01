@@ -23,6 +23,7 @@ type RSSHandler struct {
 		UpdateSource(ctx context.Context, id uint, req appdto.RSSSourceUpsertRequest) (*appdto.RSSSourceView, error)
 		DeleteSource(ctx context.Context, id uint) error
 		RefreshSource(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
+		RefreshAllSources(ctx context.Context) (*appdto.RSSRefreshAllResponse, error)
 
 		ListSubscriptions(ctx context.Context, sourceID uint) (*appdto.RSSSubscriptionListResponse, error)
 		CreateSubscription(ctx context.Context, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
@@ -30,9 +31,12 @@ type RSSHandler struct {
 		UpdateSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
 		DeleteSubscription(ctx context.Context, id uint) error
 		RunSubscription(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
+		PreviewSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionPreviewResponse, error)
 
 		ListItems(ctx context.Context, filter domainrepo.RSSItemFilter) (*appdto.RSSItemListResponse, error)
 		DownloadItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
+		ReprocessItem(ctx context.Context, id uint) (*appdto.RSSItemView, error)
+		RetryItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
 		QBitHealth(ctx context.Context) (*appdto.RSSQBitHealthResponse, error)
 	}
 }
@@ -45,6 +49,7 @@ func NewRSSHandler(service interface {
 	UpdateSource(ctx context.Context, id uint, req appdto.RSSSourceUpsertRequest) (*appdto.RSSSourceView, error)
 	DeleteSource(ctx context.Context, id uint) error
 	RefreshSource(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
+	RefreshAllSources(ctx context.Context) (*appdto.RSSRefreshAllResponse, error)
 
 	ListSubscriptions(ctx context.Context, sourceID uint) (*appdto.RSSSubscriptionListResponse, error)
 	CreateSubscription(ctx context.Context, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
@@ -52,9 +57,12 @@ func NewRSSHandler(service interface {
 	UpdateSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
 	DeleteSubscription(ctx context.Context, id uint) error
 	RunSubscription(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
+	PreviewSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionPreviewResponse, error)
 
 	ListItems(ctx context.Context, filter domainrepo.RSSItemFilter) (*appdto.RSSItemListResponse, error)
 	DownloadItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
+	ReprocessItem(ctx context.Context, id uint) (*appdto.RSSItemView, error)
+	RetryItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
 	QBitHealth(ctx context.Context) (*appdto.RSSQBitHealthResponse, error)
 }) *RSSHandler {
 	return &RSSHandler{service: service}
@@ -136,6 +144,15 @@ func (h *RSSHandler) RefreshSource(c *gin.Context) {
 		return
 	}
 	resp, err := h.service.RefreshSource(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err, "RSS_SOURCE_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
+func (h *RSSHandler) RefreshAllSources(c *gin.Context) {
+	resp, err := h.service.RefreshAllSources(c.Request.Context())
 	if err != nil {
 		h.writeError(c, err, "RSS_SOURCE_NOT_FOUND")
 		return
@@ -231,6 +248,20 @@ func (h *RSSHandler) RunSubscription(c *gin.Context) {
 	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
 }
 
+func (h *RSSHandler) PreviewSubscription(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.PreviewSubscription(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err, "RSS_SUBSCRIPTION_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
 func (h *RSSHandler) ListItems(c *gin.Context) {
 	sourceID, err := parseUintQuery(c, "source_id")
 	if err != nil {
@@ -273,6 +304,41 @@ func (h *RSSHandler) DownloadItem(c *gin.Context) {
 	httpresp.JSON(c, http.StatusAccepted, "OK", "ok", gin.H{"item": resp})
 }
 
+func (h *RSSHandler) ReprocessItem(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.ReprocessItem(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err, "RSS_ITEM_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusAccepted, "OK", "ok", gin.H{"item": resp})
+}
+
+func (h *RSSHandler) RetryItem(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	var req appdto.RSSManualDownloadRequest
+	if c.Request.Body != nil && c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+			return
+		}
+	}
+	resp, err := h.service.RetryItem(c.Request.Context(), id, req)
+	if err != nil {
+		h.writeError(c, err, "RSS_ITEM_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusAccepted, "OK", "ok", gin.H{"item": resp})
+}
+
 func (h *RSSHandler) QBitHealth(c *gin.Context) {
 	resp, err := h.service.QBitHealth(c.Request.Context())
 	if err != nil {
@@ -304,6 +370,8 @@ func (h *RSSHandler) writeError(c *gin.Context, err error, notFoundCode string) 
 		httpresp.Error(c, http.StatusBadRequest, "RSS_REGEX_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		httpresp.Error(c, http.StatusServiceUnavailable, "DOWNLOADER_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrTaskInvalidState):
+		httpresp.Error(c, http.StatusConflict, "TASK_INVALID_STATE", err.Error(), nil)
 	default:
 		httpresp.Error(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

@@ -360,8 +360,31 @@ export interface CreateTaskRequest {
 }
 
 // RSS
-export type RSSItemStatus = 'new' | 'unsupported' | 'ignored' | 'matched' | 'enqueued' | 'failed';
+export type RSSItemStatus =
+  | 'new'
+  | 'unsupported'
+  | 'ignored'
+  | 'matched'
+  | 'enqueued'
+  | 'retry_pending'
+  | 'completed'
+  | 'needs_attention'
+  | 'failed';
 export type RSSLinkType = 'magnet' | 'torrent' | 'http' | 'unsupported' | string;
+export type RSSSourceHealthStatus = 'ok' | 'degraded' | 'circuit_open' | string;
+export type RSSRefreshAllItemStatus = 'success' | 'failed' | 'skipped' | string;
+export type RSSSubscriptionPreviewResult = 'matched' | 'missing' | 'excluded' | string;
+
+export interface RSSRefreshStatsView {
+  source_id: number;
+  fetched: number;
+  created: number;
+  updated: number;
+  matched: number;
+  enqueued: number;
+  unsupported: number;
+  failed: number;
+}
 
 export interface RSSSourceView {
   id: number;
@@ -372,6 +395,12 @@ export interface RSSSourceView {
   refresh_interval_seconds: number;
   last_refreshed_at: string | null;
   last_error: string | null;
+  health_status: RSSSourceHealthStatus;
+  consecutive_failures: number;
+  last_success_at: string | null;
+  next_refresh_at: string | null;
+  last_refresh_status: string;
+  last_refresh_stats: RSSRefreshStatsView | null;
   created_at: string;
   updated_at: string;
 }
@@ -391,6 +420,20 @@ export interface RSSRefreshResponse {
   matched: number;
   enqueued: number;
   unsupported: number;
+  failed: number;
+}
+
+export interface RSSRefreshAllItem {
+  source_id: number;
+  status: RSSRefreshAllItemStatus;
+  error?: string | null;
+  stats?: RSSRefreshResponse | null;
+}
+
+export interface RSSRefreshAllResponse {
+  items: RSSRefreshAllItem[];
+  refreshed: number;
+  skipped: number;
   failed: number;
 }
 
@@ -422,6 +465,26 @@ export interface RSSSubscriptionUpsertRequest {
   target_virtual_parent_path: string;
 }
 
+export interface RSSSubscriptionPreviewItem {
+  item_id: number;
+  title: string;
+  download_url: string;
+  current_status: RSSItemStatus | string;
+  result: RSSSubscriptionPreviewResult;
+  matched: string[];
+  missing: string[];
+  excluded: string[];
+}
+
+export interface RSSSubscriptionPreviewResponse {
+  subscription_id: number;
+  source_id: number;
+  items: RSSSubscriptionPreviewItem[];
+  matched: number;
+  missing: number;
+  excluded: number;
+}
+
 export interface RSSItemView {
   id: number;
   user_id?: number;
@@ -436,6 +499,11 @@ export interface RSSItemView {
   matched_subscription_id: number | null;
   task_id: number | null;
   error_message: string | null;
+  retry_count: number;
+  max_retry_count: number;
+  last_attempt_at: string | null;
+  next_retry_at: string | null;
+  retry_reason: string | null;
   created_at: string;
   updated_at: string;
 }

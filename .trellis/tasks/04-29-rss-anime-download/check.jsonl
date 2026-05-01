@@ -6,3 +6,8 @@
 {"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review tests and backend quality requirements."}
 {"file":"backend/API_CONTRACT.md","reason":"Review API contract updates for RSS endpoints and task downloader behavior."}
 {"file":".trellis/tasks/04-29-rss-anime-download/research/autobangumi-qbittorrent-rss.md","reason":"Review implementation against researched qBittorrent/AutoBangumi constraints."}
+{"file": ".trellis/spec/backend/rss-guidelines.md", "reason": "Review RSS retry/unattended reliability and qBittorrent behavior against backend spec."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for RSS unattended UI review."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Review accessibility, forms, toasts, and component consistency."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Review frontend RSS DTO/type contract sync."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Review lint/build/static checks and handoff checklist update."}

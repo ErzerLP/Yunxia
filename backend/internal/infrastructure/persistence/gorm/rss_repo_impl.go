@@ -219,6 +219,9 @@ func (r *RSSRepository) ListItems(ctx context.Context, filter domainrepo.RSSItem
 	if filter.Status != "" {
 		query = query.Where("status = ?", filter.Status)
 	}
+	if filter.Limit > 0 {
+		query = query.Limit(filter.Limit)
+	}
 	var models []RSSItemModel
 	if err := query.Order("published_at desc, created_at desc, id desc").Find(&models).Error; err != nil {
 		return nil, err
@@ -240,6 +243,12 @@ func rssSourceModelFromEntity(source *entity.RSSSource) *RSSSourceModel {
 		RefreshIntervalSeconds: source.RefreshIntervalSeconds,
 		LastRefreshedAt:        source.LastRefreshedAt,
 		LastError:              source.LastError,
+		HealthStatus:           source.HealthStatus,
+		ConsecutiveFailures:    source.ConsecutiveFailures,
+		LastSuccessAt:          source.LastSuccessAt,
+		NextRefreshAt:          source.NextRefreshAt,
+		LastRefreshStatus:      source.LastRefreshStatus,
+		LastRefreshStatsJSON:   source.LastRefreshStatsJSON,
 		CreatedAt:              source.CreatedAt,
 		UpdatedAt:              source.UpdatedAt,
 	}
@@ -255,6 +264,12 @@ func rssSourceEntityFromModel(model *RSSSourceModel) *entity.RSSSource {
 		RefreshIntervalSeconds: model.RefreshIntervalSeconds,
 		LastRefreshedAt:        model.LastRefreshedAt,
 		LastError:              model.LastError,
+		HealthStatus:           model.HealthStatus,
+		ConsecutiveFailures:    model.ConsecutiveFailures,
+		LastSuccessAt:          model.LastSuccessAt,
+		NextRefreshAt:          model.NextRefreshAt,
+		LastRefreshStatus:      model.LastRefreshStatus,
+		LastRefreshStatsJSON:   model.LastRefreshStatsJSON,
 		CreatedAt:              model.CreatedAt,
 		UpdatedAt:              model.UpdatedAt,
 	}
@@ -322,6 +337,11 @@ func rssItemModelFromEntity(item *entity.RSSItem) *RSSItemModel {
 		MatchedSubscriptionID: item.MatchedSubscriptionID,
 		TaskID:                item.TaskID,
 		ErrorMessage:          item.ErrorMessage,
+		RetryCount:            item.RetryCount,
+		MaxRetryCount:         item.MaxRetryCount,
+		LastAttemptAt:         item.LastAttemptAt,
+		NextRetryAt:           item.NextRetryAt,
+		RetryReason:           item.RetryReason,
 		CreatedAt:             item.CreatedAt,
 		UpdatedAt:             item.UpdatedAt,
 	}
@@ -343,6 +363,11 @@ func rssItemEntityFromModel(model *RSSItemModel) *entity.RSSItem {
 		MatchedSubscriptionID: model.MatchedSubscriptionID,
 		TaskID:                model.TaskID,
 		ErrorMessage:          model.ErrorMessage,
+		RetryCount:            model.RetryCount,
+		MaxRetryCount:         model.MaxRetryCount,
+		LastAttemptAt:         model.LastAttemptAt,
+		NextRetryAt:           model.NextRetryAt,
+		RetryReason:           model.RetryReason,
 		CreatedAt:             model.CreatedAt,
 		UpdatedAt:             model.UpdatedAt,
 	}

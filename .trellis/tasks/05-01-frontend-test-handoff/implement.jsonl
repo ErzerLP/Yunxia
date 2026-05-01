@@ -1,0 +1,2 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend docs/truth-source list should expose the frontend test handoff document."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend quality guidelines already define handoff discipline and should cover test handoff maintenance."}

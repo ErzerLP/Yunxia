@@ -122,7 +122,13 @@ type RSSSourceModel struct {
 	IsEnabled              bool   `gorm:"not null;default:true"`
 	RefreshIntervalSeconds int    `gorm:"not null;default:1800"`
 	LastRefreshedAt        *time.Time
-	LastError              *string   `gorm:"type:text"`
+	LastError              *string `gorm:"type:text"`
+	HealthStatus           string  `gorm:"index;size:32;not null;default:'ok'"`
+	ConsecutiveFailures    int     `gorm:"not null;default:0"`
+	LastSuccessAt          *time.Time
+	NextRefreshAt          *time.Time
+	LastRefreshStatus      string    `gorm:"size:32;not null;default:''"`
+	LastRefreshStatsJSON   string    `gorm:"type:text;not null;default:''"`
 	CreatedAt              time.Time `gorm:"not null"`
 	UpdatedAt              time.Time `gorm:"not null"`
 }
@@ -153,16 +159,21 @@ type RSSItemModel struct {
 	Title                 string `gorm:"type:text;not null"`
 	Link                  string `gorm:"type:text;not null"`
 	PublishedAt           *time.Time
-	GUID                  string    `gorm:"type:text"`
-	DedupKey              string    `gorm:"uniqueIndex:idx_rss_item_source_dedup;size:128;not null"`
-	DownloadURL           string    `gorm:"type:text;not null;default:''"`
-	LinkType              string    `gorm:"size:32;not null;default:'unsupported'"`
-	Status                string    `gorm:"index;size:32;not null"`
-	MatchedSubscriptionID *uint     `gorm:"index"`
-	TaskID                *uint     `gorm:"index"`
-	ErrorMessage          *string   `gorm:"type:text"`
-	CreatedAt             time.Time `gorm:"not null"`
-	UpdatedAt             time.Time `gorm:"not null"`
+	GUID                  string  `gorm:"type:text"`
+	DedupKey              string  `gorm:"uniqueIndex:idx_rss_item_source_dedup;size:128;not null"`
+	DownloadURL           string  `gorm:"type:text;not null;default:''"`
+	LinkType              string  `gorm:"size:32;not null;default:'unsupported'"`
+	Status                string  `gorm:"index;size:32;not null"`
+	MatchedSubscriptionID *uint   `gorm:"index"`
+	TaskID                *uint   `gorm:"index"`
+	ErrorMessage          *string `gorm:"type:text"`
+	RetryCount            int     `gorm:"not null;default:0"`
+	MaxRetryCount         int     `gorm:"not null;default:3"`
+	LastAttemptAt         *time.Time
+	NextRetryAt           *time.Time `gorm:"index"`
+	RetryReason           *string    `gorm:"type:text"`
+	CreatedAt             time.Time  `gorm:"not null"`
+	UpdatedAt             time.Time  `gorm:"not null"`
 }
 
 // TrashItemModel 表示回收站元数据表。

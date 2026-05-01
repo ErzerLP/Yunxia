@@ -271,12 +271,16 @@ func RegisterRSSRoutes(
 	rssManage.POST("/sources", rssHandler.CreateSource)
 	rssManage.PATCH("/sources/:id", rssHandler.UpdateSource)
 	rssManage.DELETE("/sources/:id", rssHandler.DeleteSource)
+	rssManage.POST("/sources/refresh-all", rssHandler.RefreshAllSources)
 	rssManage.POST("/sources/:id/refresh", rssHandler.RefreshSource)
 	rssManage.POST("/subscriptions", rssHandler.CreateSubscription)
 	rssManage.PATCH("/subscriptions/:id", rssHandler.UpdateSubscription)
 	rssManage.DELETE("/subscriptions/:id", rssHandler.DeleteSubscription)
 	rssManage.POST("/subscriptions/:id/run", rssHandler.RunSubscription)
+	rssManage.POST("/subscriptions/:id/preview", rssHandler.PreviewSubscription)
 	rssManage.POST("/items/:id/download", rssHandler.DownloadItem)
+	rssManage.POST("/items/:id/reprocess", rssHandler.ReprocessItem)
+	rssManage.POST("/items/:id/retry", rssHandler.RetryItem)
 }
 
 // RegisterShareRoutes 注册分享相关路由。

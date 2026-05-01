@@ -179,6 +179,7 @@ func main() {
 		appsvc.WithRSSVFSResolver(vfsSvc),
 		appsvc.WithRSSACLAuthorizer(aclAuthorizer),
 		appsvc.WithRSSUserRepository(userRepo),
+		appsvc.WithRSSTaskRepository(taskRepo),
 	}
 	if qbitClient != nil {
 		rssOptions = append(rssOptions, appsvc.WithRSSQBitHealthChecker(qbitClient))
@@ -190,6 +191,7 @@ func main() {
 		rssOptions...,
 	)
 	go rssSvc.StartRefreshWorker(context.Background(), time.Minute)
+	go rssSvc.StartRetryWorker(context.Background(), time.Minute)
 	shareSvc := appsvc.NewShareService(
 		shareRepo,
 		sourceRepo,
