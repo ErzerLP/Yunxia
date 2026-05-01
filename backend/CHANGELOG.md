@@ -8,6 +8,7 @@
 - 技术栈：Go 1.25、Gin、GORM、SQLite、JWT、bcrypt、Aria2、qBittorrent、AWS SDK for Go v2
 - 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、RSS/qBittorrent、分享/ACL/上传链路已全部接入新权限模型
 - 当前验证：`cd backend && go test ./...` 已通过
+- 前端联调：2026-05-01 测试负责人确认 RSS MVP、RSS 无人值守端到端联调与前序待回归项已完成，`backend/FRONTEND_HANDOFF.md` 前端适配状态关闭
 
 ---
 

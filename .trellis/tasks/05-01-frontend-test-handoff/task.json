@@ -20,7 +20,11 @@
   "subtasks": [],
   "children": [],
   "parent": null,
-  "relatedFiles": [],
-  "notes": "",
+  "relatedFiles": [
+    "web/FRONTEND_TEST_HANDOFF.md",
+    "backend/FRONTEND_HANDOFF.md",
+    "backend/CHANGELOG.md"
+  ],
+  "notes": "2026-05-01: 根据测试完成反馈，同步更新 web/FRONTEND_TEST_HANDOFF.md 与 backend/FRONTEND_HANDOFF.md，将 RSS MVP、RSS 无人值守状态关闭为已通过/已适配。",
   "meta": {}
 }

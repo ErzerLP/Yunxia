@@ -42,8 +42,8 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
-| 待联调 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry` | [详情](#handoff-2026-04-30-rss-unattended) |
-| 待联调 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页 | P1 | `/api/v1/rss/*`、`/api/v1/tasks` | [详情](#handoff-2026-04-29-rss) |
+| 已适配 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry` | [详情](#handoff-2026-04-30-rss-unattended) |
+| 已适配 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页 | P1 | `/api/v1/rss/*`、`/api/v1/tasks` | [详情](#handoff-2026-04-29-rss) |
 
 ---
 
@@ -51,7 +51,7 @@
 
 <a id="handoff-2026-04-29-rss"></a>
 
-### [P1][待联调][RSS] 2026-04-29 RSS 番剧订阅下载 MVP
+### [P1][已适配][RSS] 2026-04-29 RSS 番剧订阅下载 MVP
 
 #### 前端适配 checklist
 
@@ -65,7 +65,7 @@
 - [x] 接入 RSS 条目列表和状态筛选。
 - [x] 接入条目手动入队。
 - [x] 接入 `task_id` 到离线任务页跳转。
-- [ ] 联调下载完成后 VFS 目标目录可见。
+- [x] 联调下载完成后 VFS 目标目录可见。
 
 #### 前端验证记录
 
@@ -73,7 +73,7 @@
   - `cd web && npm run lint`
   - `cd web && npm run build`
   - `cd web && node scripts/check-vfs-integration.mjs`
-- 当前状态为 `待联调`：前端适配已完成，仍需在后端运行环境中按 smoke 流程验证 RSS 命中、qBittorrent 入队、任务完成导入后 VFS 目标目录可见。
+- 当前状态为 `已适配`：2026-05-01 基于测试负责人完成反馈，端到端联调与回归已在测试机 `test`、`main@8df8468`/当前测试上下文完成，覆盖 RSS 命中、qBittorrent 入队、任务页展示、补充 RSS 源/订阅 CRUD 与 VFS 目标目录可见验证；前端适配关闭。
 
 #### 1. 本次新增能力
 
@@ -307,7 +307,7 @@ bash -n backend/docker/aria2.entrypoint.sh backend/docker/qbittorrent.entrypoint
 
 <a id="handoff-2026-04-30-rss-unattended"></a>
 
-### [P1][待联调][RSS] 2026-04-30 RSS 无人值守可用性增强
+### [P1][已适配][RSS] 2026-04-30 RSS 无人值守可用性增强
 
 #### 前端适配 checklist
 
@@ -404,7 +404,7 @@ deterministic_error
 
 #### 前端验证记录
 
-状态：`待联调`。2026-04-30 复核时前端静态检查、构建和 VFS 静态集成检查通过；仍需连接后端运行环境完成 RSS 页面 smoke 后才能标记 `已适配`。
+状态：`已适配`。2026-04-30 复核时前端静态检查、构建和 VFS 静态集成检查通过；2026-05-01 基于测试负责人完成反馈，端到端联调与回归已在测试机 `test`、`main@8df8468`/当前测试上下文完成，覆盖刷新全部、规则预览、retry/reprocess、`needs_attention`、健康/重试字段展示与自动重试/完成回写展示；前端适配关闭。
 
 ```bash
 cd web
@@ -413,4 +413,4 @@ npm run build # pass
 node scripts/check-vfs-integration.mjs # pass
 ```
 
-未执行运行环境 smoke：尚未连接后端实例验证 RSS 命中、qBittorrent 入队、任务完成回写和 VFS 目标目录可见。
+2026-05-01 测试完成说明：运行环境 smoke 与前序待回归项已由测试负责人补充完成，当前无前端适配阻塞项。

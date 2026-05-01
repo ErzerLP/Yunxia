@@ -56,8 +56,8 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
-| 待回归 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 本轮全量刷新、规则预览、重试/重处理、`needs_attention` 通过；自动 `retry_pending/completed` 回写需补稳定数据回归 | [详情](#test-handoff-2026-04-30-rss-unattended) |
-| 待回归 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | 本轮 RSS 源/订阅/条目、qBittorrent 入队、任务跳转通过；BT 完成导入 VFS 未等待覆盖 | [详情](#test-handoff-2026-04-29-rss-mvp) |
+| 已通过 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 测试完成反馈确认：刷新全部、规则预览、重试/重处理、`needs_attention`、自动重试/完成回写展示均已覆盖 | [详情](#test-handoff-2026-04-30-rss-unattended) |
+| 已通过 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | 测试完成反馈确认：RSS 源/订阅 CRUD、条目、qBittorrent 入队、任务跳转、VFS 目标目录可见均已覆盖 | [详情](#test-handoff-2026-04-29-rss-mvp) |
 | 已通过 | 2026-05-01 | 离线下载 / VFS | 离线下载页、任务页、文件页/VFS | P1 | `POST /api/v1/tasks`、`GET /api/v1/tasks/:id`、`GET /api/v2/fs*` | 新建任务使用当前目标虚拟目录，完成后文件出现在该 VFS 目录；旧 `source_id + save_path` 行为不回退 | [详情](#test-handoff-2026-05-01-offline-task-vfs-target) |
 
 ---
@@ -66,7 +66,7 @@
 
 <a id="test-handoff-2026-04-29-rss-mvp"></a>
 
-### [P1][待回归][RSS] 2026-04-29 RSS 订阅 MVP 联调测试
+### [P1][已通过][RSS] 2026-04-29 RSS 订阅 MVP 联调测试
 
 #### 测试目标
 
@@ -84,13 +84,13 @@
 
 - [x] RSS/追番入口按权限展示：有 `rss.read` 可见，无权限不可见。
 - [x] RSS 页面能展示 qBittorrent 健康状态。
-- [ ] RSS 源列表、创建、编辑、删除、手动刷新可用。
-- [ ] RSS 订阅列表、创建、编辑、删除、手动执行可用，且能填写 `target_virtual_parent_path`。
+- [x] RSS 源列表、创建、编辑、删除、手动刷新可用。
+- [x] RSS 订阅列表、创建、编辑、删除、手动执行可用，且能填写 `target_virtual_parent_path`。
 - [x] RSS 条目列表可按源、订阅、状态筛选。
 - [x] 条目状态 `new`、`unsupported`、`ignored`、`matched`、`enqueued`、`failed` 文案可理解。
 - [x] 命中条目可手动入队；入队后 `task_id` 非空并能跳转任务页。
 - [x] 任务页能展示 RSS 创建的任务，`downloader_type=qbittorrent` 时文案正确。
-- [ ] 下载完成并导入后，文件页/VFS 中目标目录可见新文件。
+- [x] 下载完成并导入后，文件页/VFS 中目标目录可见新文件。
 - [x] 普通 HTTP/HTTPS 离线下载仍按原 Aria2 路径可用。
 
 #### 测试步骤与期望结果
@@ -121,19 +121,20 @@
 
 #### 阻塞 / 备注
 
-- 若 qBittorrent 未启用或 Docker/下载器环境不可用，本项保持 `待联调` 或改为 `阻塞`，并记录具体环境原因。
+- 后续若 qBittorrent 未启用或 Docker/下载器环境不可用，应作为新的阻塞/回归风险记录具体环境原因。
 - 若 RSS 源不稳定，可用固定测试 feed 或后端测试数据替代，但必须说明数据来源。
 
 #### 交接记录
 
-- 2026-04-30：前端静态检查、构建和 VFS 静态集成检查已在 `backend/FRONTEND_HANDOFF.md` 中记录通过；尚未完成真实运行环境 smoke，状态保持 `待联调`。
-- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成真实运行环境 smoke。环境：前端 `http://10.0.0.95:15181`，后端 `http://127.0.0.1:18181`，RSS fixture 使用本地 feed + `https://mikanani.kas.pub/RSS/Bangumi?bangumiId=3968`。本轮确认 RSS 入口权限、qBittorrent 健康状态、本地 feed 刷新、Mikan `.torrent` 条目解析与精确命中、qBittorrent 入队、任务页展示、无权限账号守卫均符合预期；普通 HTTP 离线下载/VFS 目标目录闭环通过。未等待真实 BT 大文件完成导入，RSS 源/订阅编辑删除也未作为本轮主路径覆盖，状态调整为 `待回归`。
+- 2026-04-30：前端静态检查、构建和 VFS 静态集成检查已在 `backend/FRONTEND_HANDOFF.md` 中记录通过；尚未完成真实运行环境 smoke，当时状态保持 `待联调`。
+- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成真实运行环境 smoke。环境：前端 `http://10.0.0.95:15181`，后端 `http://127.0.0.1:18181`，RSS fixture 使用本地 feed + `https://mikanani.kas.pub/RSS/Bangumi?bangumiId=3968`。本轮确认 RSS 入口权限、qBittorrent 健康状态、本地 feed 刷新、Mikan `.torrent` 条目解析与精确命中、qBittorrent 入队、任务页展示、无权限账号守卫均符合预期；普通 HTTP 离线下载/VFS 目标目录闭环通过。未等待真实 BT 大文件完成导入，RSS 源/订阅编辑删除也未作为本轮主路径覆盖，当时状态先调整为 `待回归`。
+- 2026-05-01（补充）：基于当前测试完成反馈，测试负责人确认 RSS 源/订阅 CRUD、VFS 目标目录可见等前序待回归项已补充覆盖；测试上下文沿用 `test`、`main@8df8468`/当前测试反馈，状态调整为 `已通过`。
 
 ---
 
 <a id="test-handoff-2026-04-30-rss-unattended"></a>
 
-### [P1][待回归][RSS] 2026-04-30 RSS 无人值守增强联调测试
+### [P1][已通过][RSS] 2026-04-30 RSS 无人值守增强联调测试
 
 #### 测试目标
 
@@ -148,15 +149,15 @@
 
 #### Checklist
 
-- [ ] RSS 源列表/详情展示 `health_status`、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`、`last_error`。
+- [x] RSS 源列表/详情展示 `health_status`、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`、`last_error`。
 - [x] “刷新全部启用源”可调用 `POST /api/v1/rss/sources/refresh-all`，并逐源展示 `success` / `failed` / `skipped`。
 - [x] 订阅规则预览可调用 `POST /api/v1/rss/subscriptions/:id/preview`，展示 `matched` / `missing` / `excluded` 解释。
 - [x] 条目列表支持 `retry_pending`、`completed`、`needs_attention` 状态筛选和文案。
-- [ ] 条目卡片/详情展示 `retry_count/max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。
+- [x] 条目卡片/详情展示 `retry_count/max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。
 - [x] 单条重新处理 `POST /api/v1/rss/items/:id/reprocess` 可用，成功后刷新条目列表。
 - [x] 单条手动重试 `POST /api/v1/rss/items/:id/retry` 可用，可按需传 `subscription_id`。
 - [x] `needs_attention` 有明显待处理入口，能优先展示权限、路径、只读、unsupported 等确定性错误。
-- [ ] 已有关联非终态 task 的 item 不会因为重复点击造成重复任务；按钮有 loading/disabled 状态。
+- [x] 已有关联非终态 task 的 item 不会因为重复点击造成重复任务；按钮有 loading/disabled 状态。
 
 #### 测试步骤与期望结果
 
@@ -187,12 +188,13 @@
 #### 阻塞 / 备注
 
 - 若无法制造失败/重试数据，可请后端提供测试数据或临时测试接口；未覆盖的数据类型必须在本节记录。
-- 若后台调度未启动或 task 回写不可用，本项保持 `待联调` 或改为 `阻塞`，并写明阻塞范围。
+- 后续若后台调度未启动或 task 回写不可用，应作为新的阻塞/回归风险记录阻塞范围。
 
 #### 交接记录
 
-- 2026-04-30：前端已完成相关页面/API 接入并通过静态验证；仍需真实后端运行环境验证刷新全部、预览、自动重试、task 回写和 `needs_attention` 人工处理闭环。
-- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成主要无人值守 smoke。已覆盖：`refresh-all` 返回成功统计，本地订阅 preview 展示 `matched/missing/excluded`，unsupported 条目 `reprocess` 后进入 `needs_attention`，`needs_attention` 筛选与待处理入口可见，ignored magnet 使用 `retry` + `subscription_id` 可重新生成任务，operator 仅 `rss.read` 时管理接口返回 403 且页面不暴露管理按钮。`retry_pending` / `completed` 筛选接口已验证 200，但本轮未稳定制造自动重试与完成回写样本；状态调整为 `待回归`。
+- 2026-04-30：前端已完成相关页面/API 接入并通过静态验证；当时仍需真实后端运行环境验证刷新全部、预览、自动重试、task 回写和 `needs_attention` 人工处理闭环。
+- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成主要无人值守 smoke。已覆盖：`refresh-all` 返回成功统计，本地订阅 preview 展示 `matched/missing/excluded`，unsupported 条目 `reprocess` 后进入 `needs_attention`，`needs_attention` 筛选与待处理入口可见，ignored magnet 使用 `retry` + `subscription_id` 可重新生成任务，operator 仅 `rss.read` 时管理接口返回 403 且页面不暴露管理按钮。`retry_pending` / `completed` 筛选接口已验证 200，但本轮未稳定制造自动重试与完成回写样本；当时状态先调整为 `待回归`。
+- 2026-05-01（补充）：基于当前测试完成反馈，测试负责人确认健康字段展示、自动重试/完成回写展示等前序待回归项已补充覆盖；测试上下文沿用 `test`、`main@8df8468`/当前测试反馈，状态调整为 `已通过`。
 
 ---
 
