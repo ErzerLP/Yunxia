@@ -56,9 +56,9 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
-| 待联调 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 全量刷新、规则预览、重试/重处理、`needs_attention` 待处理入口、自动重试状态展示 | [详情](#test-handoff-2026-04-30-rss-unattended) |
-| 待联调 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | RSS 源/订阅/条目基础流、qBittorrent 入队、任务跳转、下载完成后 VFS 目标目录可见 | [详情](#test-handoff-2026-04-29-rss-mvp) |
-| 待回归 | 2026-05-01 | 离线下载 / VFS | 离线下载页、任务页、文件页/VFS | P1 | `POST /api/v1/tasks`、`GET /api/v1/tasks/:id`、`GET /api/v2/fs*` | 新建任务使用当前目标虚拟目录，完成后文件出现在该 VFS 目录；旧 `source_id + save_path` 行为不回退 | [详情](#test-handoff-2026-05-01-offline-task-vfs-target) |
+| 待回归 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 本轮全量刷新、规则预览、重试/重处理、`needs_attention` 通过；自动 `retry_pending/completed` 回写需补稳定数据回归 | [详情](#test-handoff-2026-04-30-rss-unattended) |
+| 待回归 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | 本轮 RSS 源/订阅/条目、qBittorrent 入队、任务跳转通过；BT 完成导入 VFS 未等待覆盖 | [详情](#test-handoff-2026-04-29-rss-mvp) |
+| 已通过 | 2026-05-01 | 离线下载 / VFS | 离线下载页、任务页、文件页/VFS | P1 | `POST /api/v1/tasks`、`GET /api/v1/tasks/:id`、`GET /api/v2/fs*` | 新建任务使用当前目标虚拟目录，完成后文件出现在该 VFS 目录；旧 `source_id + save_path` 行为不回退 | [详情](#test-handoff-2026-05-01-offline-task-vfs-target) |
 
 ---
 
@@ -66,7 +66,7 @@
 
 <a id="test-handoff-2026-04-29-rss-mvp"></a>
 
-### [P1][待联调][RSS] 2026-04-29 RSS 订阅 MVP 联调测试
+### [P1][待回归][RSS] 2026-04-29 RSS 订阅 MVP 联调测试
 
 #### 测试目标
 
@@ -82,16 +82,16 @@
 
 #### Checklist
 
-- [ ] RSS/追番入口按权限展示：有 `rss.read` 可见，无权限不可见。
-- [ ] RSS 页面能展示 qBittorrent 健康状态。
+- [x] RSS/追番入口按权限展示：有 `rss.read` 可见，无权限不可见。
+- [x] RSS 页面能展示 qBittorrent 健康状态。
 - [ ] RSS 源列表、创建、编辑、删除、手动刷新可用。
 - [ ] RSS 订阅列表、创建、编辑、删除、手动执行可用，且能填写 `target_virtual_parent_path`。
-- [ ] RSS 条目列表可按源、订阅、状态筛选。
-- [ ] 条目状态 `new`、`unsupported`、`ignored`、`matched`、`enqueued`、`failed` 文案可理解。
-- [ ] 命中条目可手动入队；入队后 `task_id` 非空并能跳转任务页。
-- [ ] 任务页能展示 RSS 创建的任务，`downloader_type=qbittorrent` 时文案正确。
+- [x] RSS 条目列表可按源、订阅、状态筛选。
+- [x] 条目状态 `new`、`unsupported`、`ignored`、`matched`、`enqueued`、`failed` 文案可理解。
+- [x] 命中条目可手动入队；入队后 `task_id` 非空并能跳转任务页。
+- [x] 任务页能展示 RSS 创建的任务，`downloader_type=qbittorrent` 时文案正确。
 - [ ] 下载完成并导入后，文件页/VFS 中目标目录可见新文件。
-- [ ] 普通 HTTP/HTTPS 离线下载仍按原 Aria2 路径可用。
+- [x] 普通 HTTP/HTTPS 离线下载仍按原 Aria2 路径可用。
 
 #### 测试步骤与期望结果
 
@@ -127,12 +127,13 @@
 #### 交接记录
 
 - 2026-04-30：前端静态检查、构建和 VFS 静态集成检查已在 `backend/FRONTEND_HANDOFF.md` 中记录通过；尚未完成真实运行环境 smoke，状态保持 `待联调`。
+- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成真实运行环境 smoke。环境：前端 `http://10.0.0.95:15181`，后端 `http://127.0.0.1:18181`，RSS fixture 使用本地 feed + `https://mikanani.kas.pub/RSS/Bangumi?bangumiId=3968`。本轮确认 RSS 入口权限、qBittorrent 健康状态、本地 feed 刷新、Mikan `.torrent` 条目解析与精确命中、qBittorrent 入队、任务页展示、无权限账号守卫均符合预期；普通 HTTP 离线下载/VFS 目标目录闭环通过。未等待真实 BT 大文件完成导入，RSS 源/订阅编辑删除也未作为本轮主路径覆盖，状态调整为 `待回归`。
 
 ---
 
 <a id="test-handoff-2026-04-30-rss-unattended"></a>
 
-### [P1][待联调][RSS] 2026-04-30 RSS 无人值守增强联调测试
+### [P1][待回归][RSS] 2026-04-30 RSS 无人值守增强联调测试
 
 #### 测试目标
 
@@ -148,13 +149,13 @@
 #### Checklist
 
 - [ ] RSS 源列表/详情展示 `health_status`、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`、`last_error`。
-- [ ] “刷新全部启用源”可调用 `POST /api/v1/rss/sources/refresh-all`，并逐源展示 `success` / `failed` / `skipped`。
-- [ ] 订阅规则预览可调用 `POST /api/v1/rss/subscriptions/:id/preview`，展示 `matched` / `missing` / `excluded` 解释。
-- [ ] 条目列表支持 `retry_pending`、`completed`、`needs_attention` 状态筛选和文案。
+- [x] “刷新全部启用源”可调用 `POST /api/v1/rss/sources/refresh-all`，并逐源展示 `success` / `failed` / `skipped`。
+- [x] 订阅规则预览可调用 `POST /api/v1/rss/subscriptions/:id/preview`，展示 `matched` / `missing` / `excluded` 解释。
+- [x] 条目列表支持 `retry_pending`、`completed`、`needs_attention` 状态筛选和文案。
 - [ ] 条目卡片/详情展示 `retry_count/max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。
-- [ ] 单条重新处理 `POST /api/v1/rss/items/:id/reprocess` 可用，成功后刷新条目列表。
-- [ ] 单条手动重试 `POST /api/v1/rss/items/:id/retry` 可用，可按需传 `subscription_id`。
-- [ ] `needs_attention` 有明显待处理入口，能优先展示权限、路径、只读、unsupported 等确定性错误。
+- [x] 单条重新处理 `POST /api/v1/rss/items/:id/reprocess` 可用，成功后刷新条目列表。
+- [x] 单条手动重试 `POST /api/v1/rss/items/:id/retry` 可用，可按需传 `subscription_id`。
+- [x] `needs_attention` 有明显待处理入口，能优先展示权限、路径、只读、unsupported 等确定性错误。
 - [ ] 已有关联非终态 task 的 item 不会因为重复点击造成重复任务；按钮有 loading/disabled 状态。
 
 #### 测试步骤与期望结果
@@ -191,12 +192,13 @@
 #### 交接记录
 
 - 2026-04-30：前端已完成相关页面/API 接入并通过静态验证；仍需真实后端运行环境验证刷新全部、预览、自动重试、task 回写和 `needs_attention` 人工处理闭环。
+- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成主要无人值守 smoke。已覆盖：`refresh-all` 返回成功统计，本地订阅 preview 展示 `matched/missing/excluded`，unsupported 条目 `reprocess` 后进入 `needs_attention`，`needs_attention` 筛选与待处理入口可见，ignored magnet 使用 `retry` + `subscription_id` 可重新生成任务，operator 仅 `rss.read` 时管理接口返回 403 且页面不暴露管理按钮。`retry_pending` / `completed` 筛选接口已验证 200，但本轮未稳定制造自动重试与完成回写样本；状态调整为 `待回归`。
 
 ---
 
 <a id="test-handoff-2026-05-01-offline-task-vfs-target"></a>
 
-### [P1][待回归][离线下载/VFS] 2026-05-01 新建任务使用目标虚拟目录回归测试
+### [P1][已通过][离线下载/VFS] 2026-05-01 新建任务使用目标虚拟目录回归测试
 
 #### 测试目标
 
@@ -211,12 +213,12 @@
 
 #### Checklist
 
-- [ ] 从离线下载页新建任务时，目标目录字段使用 VFS 虚拟路径，而不是只依赖旧 `source_id + save_path`。
-- [ ] 创建请求包含 `target_virtual_parent_path=<当前选择目录>`。
-- [ ] 任务详情/列表展示 `target_virtual_parent_path`、`save_virtual_path` 或等效用户可理解路径。
-- [ ] 任务完成后文件页/VFS 对应目录刷新并可见新文件。
-- [ ] 文件下载/预览仍通过 `/api/v2/fs/access-url` / `/api/v2/fs/download` 链路。
-- [ ] 兼容旧任务数据：旧任务列表、错误任务、取消任务仍能展示。
+- [x] 从离线下载页新建任务时，目标目录字段使用 VFS 虚拟路径，而不是只依赖旧 `source_id + save_path`。
+- [x] 创建请求包含 `target_virtual_parent_path=<当前选择目录>`。
+- [x] 任务详情/列表展示 `target_virtual_parent_path`、`save_virtual_path` 或等效用户可理解路径。
+- [x] 任务完成后文件页/VFS 对应目录刷新并可见新文件。
+- [x] 文件下载/预览仍通过 `/api/v2/fs/access-url` / `/api/v2/fs/download` 链路。
+- [x] 兼容旧任务数据：旧任务列表、错误任务、取消任务仍能展示。
 
 #### 测试步骤与期望结果
 
@@ -251,3 +253,4 @@
 #### 交接记录
 
 - 2026-05-01：作为近期离线下载/VFS 修复的重点回归项纳入本文；等待测试负责人在可运行后端环境中执行。
+- 2026-05-01：测试负责人在测试机 `test` 清理旧环境后，从 `main@8df8468` 重新部署并完成回归。覆盖数据：本地 host disk 只读挂载预置 `root-preexisting.txt`、`existing-folder/nested-preexisting.txt`、`中文目录/原有文件.txt`、`space-dir/file with space.txt`；HTTP fixture `traffic.bin` 1MiB。结果：挂载本地硬盘后原有文件和中文/空格路径均可见，只读 mkdir 返回 `SOURCE_READ_ONLY`；VFS 本地 mkdir/rename/delete 正常；离线下载弹窗仅保留“下载链接”和“目标虚拟目录”，请求体为 `target_virtual_parent_path=/local/ui-task-34029160`，任务 `id=6` completed，`save_virtual_path=/local/ui-task-34029160`，文件页/VFS 中 `/local/ui-task-34029160/traffic.bin` 可见；旧 `source_id + save_path` 兼容任务也 completed。公开分享 `/s/<token>` smoke 无控制台错误。状态调整为 `已通过`。
