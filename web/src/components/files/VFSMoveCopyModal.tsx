@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X, Folder, ArrowRight, Copy, FolderInput } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
+import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 interface VFSMoveCopyModalProps {
@@ -21,8 +22,10 @@ export function VFSMoveCopyModal({
   fileName,
   onSuccess,
 }: VFSMoveCopyModalProps) {
+  const { addToast } = useUIStore()
   const [currentPath, setCurrentPath] = useState('/')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState('')
 
   const { data: folders = [], isLoading } = useQuery({
     queryKey: ['vfs-move-copy-folders', currentPath],
@@ -53,6 +56,7 @@ export function VFSMoveCopyModal({
       return
     }
     setIsSubmitting(true)
+    setError('')
     try {
       if (mode === 'move') {
         await fileV2Api.move({
@@ -65,10 +69,13 @@ export function VFSMoveCopyModal({
           target_path: currentPath,
         })
       }
+      addToast(`${fileName} 已${mode === 'move' ? '移动' : '复制'}到 ${currentPath}`, 'success')
       onSuccess?.()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : `${actionLabel}失败`
+      setError(msg)
+      addToast(msg, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -100,6 +107,11 @@ export function VFSMoveCopyModal({
             <ArrowRight className="w-3.5 h-3.5 shrink-0" />
             <span className="truncate">{currentPath}</span>
           </div>
+          {error && (
+            <p className="mt-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive break-all">
+              {error}
+            </p>
+          )}
         </div>
 
         <div className="flex-1 overflow-auto scrollbar-thin p-2">
@@ -135,12 +147,14 @@ export function VFSMoveCopyModal({
 
         <div className="flex items-center justify-end gap-2 px-4 h-14 border-t border-border shrink-0">
           <button
+            type="button"
             onClick={onClose}
             className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
           >
             取消
           </button>
           <button
+            type="button"
             onClick={handleSubmit}
             disabled={isSubmitting || currentPath === sourcePath}
             className={cn(

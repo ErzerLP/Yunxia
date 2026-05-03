@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Folder, FileText, Image, Film, Music, File } from 'lucide-react'
+import { Check, Folder, FileText, Image, Film, Music, File, Square } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { shareApi } from '@/api/share'
 import { sourceApi } from '@/api/source'
@@ -12,6 +12,7 @@ import { FileContextMenu } from './FileContextMenu'
 import { VFSRenameModal } from './VFSRenameModal'
 import { VFSDeleteConfirmModal } from './VFSDeleteConfirmModal'
 import { VFSMoveCopyModal } from './VFSMoveCopyModal'
+import { VFSSelectionBar } from './VFSSelectionBar'
 import type { VFSItem } from '@/types/api'
 
 const iconMap = {
@@ -43,7 +44,7 @@ function FileIcon({ item, className }: { item: VFSItem; className?: string }) {
 }
 
 export function VFSFileGrid() {
-  const { currentVirtualPath, vfsItems, setVfsItems, setCurrentPermissions, setLoading, selectedFiles, navigateVirtualTo } = useFileStore()
+  const { currentVirtualPath, vfsItems, setVfsItems, setCurrentPermissions, setLoading, toggleSelection, clearSelection, selectedFiles, navigateVirtualTo } = useFileStore()
   const { openPreview, addToast } = useUIStore()
   const queryClient = useQueryClient()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: VFSItem } | null>(null)
@@ -79,8 +80,13 @@ export function VFSFileGrid() {
   }, [isLoading, setLoading])
 
   const displayedVfsItems = data?.items ?? vfsItems
+  const selectedVfsItems = displayedVfsItems.filter((item) => selectedFiles.has(item.path))
 
   const handleClick = (item: VFSItem) => {
+    if (selectedFiles.size > 0) {
+      toggleSelection(item.path)
+      return
+    }
     if (item.entry_kind === 'directory') {
       navigateVirtualTo(item.path)
     } else {
@@ -173,8 +179,14 @@ export function VFSFileGrid() {
   }
 
   return (
-    <div className="flex-1 overflow-auto scrollbar-thin p-4">
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+    <>
+      <VFSSelectionBar
+        selectedItems={selectedVfsItems}
+        onClear={clearSelection}
+        onRefresh={refreshFiles}
+      />
+      <div className="flex-1 overflow-auto scrollbar-thin p-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
         {displayedVfsItems.map((item) => {
           const selected = selectedFiles.has(item.path)
           return (
@@ -190,14 +202,24 @@ export function VFSFileGrid() {
               onContextMenu={(e) => handleContextMenu(e, item)}
             >
               <div className="relative w-full aspect-square flex items-center justify-center bg-muted/50 rounded-md">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    toggleSelection(item.path)
+                  }}
+                  className={cn(
+                    'absolute top-1.5 left-1.5 flex h-6 w-6 items-center justify-center rounded-md border bg-background/90 shadow-sm transition-colors',
+                    selected
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border text-muted-foreground hover:border-primary hover:text-primary'
+                  )}
+                  title={selected ? `取消选择 ${item.name}` : `选择 ${item.name}`}
+                  aria-label={selected ? `取消选择 ${item.name}` : `选择 ${item.name}`}
+                >
+                  {selected ? <Check className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+                </button>
                 <FileIcon item={item} className="w-12 h-12" />
-                {selected && (
-                  <div className="absolute top-1.5 left-1.5 w-4 h-4 rounded-full bg-primary flex items-center justify-center">
-                    <svg className="w-2.5 h-2.5 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
-                  </div>
-                )}
               </div>
               <div className="w-full text-center">
                 <p className="text-sm text-foreground truncate">{item.name}</p>
@@ -208,7 +230,7 @@ export function VFSFileGrid() {
             </div>
           )
         })}
-      </div>
+        </div>
 
       {contextMenu && (
         <FileContextMenu
@@ -263,6 +285,7 @@ export function VFSFileGrid() {
           onSuccess={refreshFiles}
         />
       )}
-    </div>
+      </div>
+    </>
   )
 }

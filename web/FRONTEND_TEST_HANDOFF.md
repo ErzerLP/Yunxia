@@ -56,6 +56,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
+| 待联调 | 2026-05-03 | 前端体验完善 | 文件页/VFS、离线下载页、RSS/追番页 | P1 | `/api/v2/fs`、`/api/v1/tasks`、`/api/v1/rss/items` | VFS 批量选择/批量删除、单项文件操作失败提示、任务失败/取消原因、RSS 条目匹配说明展示 | [详情](#test-handoff-2026-05-03-frontend-ux-polish) |
 | 已通过 | 2026-05-03 | RSS/通知增强 | RSS/追番页、任务页、设置页/通知区块 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-*`、`/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/export`、`/api/v1/notifications/*` | 后端修复后已完成完整回归；订阅复制显式禁用、RSS 关联任务取消回写 `needs_attention` 和待处理通知均已通过 | [详情](#test-handoff-2026-05-03-rss-notification-handoff) |
 | 已通过 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 测试完成反馈确认：刷新全部、规则预览、重试/重处理、`needs_attention`、自动重试/完成回写展示均已覆盖 | [详情](#test-handoff-2026-04-30-rss-unattended) |
 | 已通过 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | 测试完成反馈确认：RSS 源/订阅 CRUD、条目、qBittorrent 入队、任务跳转、VFS 目标目录可见均已覆盖 | [详情](#test-handoff-2026-04-29-rss-mvp) |
@@ -64,6 +65,66 @@
 ---
 
 ## 测试记录 / 交接记录
+
+<a id="test-handoff-2026-05-03-frontend-ux-polish"></a>
+
+### [P1][待联调][前端体验完善] 2026-05-03 VFS 批量操作、任务失败原因与 RSS 匹配说明回归测试
+
+#### 测试目标
+
+确认前端 P1 体验完善项可被用户直接感知：文件页/VFS 支持批量选择与批量删除，文件移动/复制/删除失败有可见错误；离线下载页能展示失败/取消原因；RSS 条目能展示匹配说明，便于排查“为什么命中/为什么未命中”。
+
+#### 前置条件
+
+- 使用具备文件/VFS 读写删除权限、`task.read_all`、`rss.read` 的管理员或等效账号。
+- 准备一个可写 VFS 目录，包含至少 2 个可删除测试文件和 1 个目录。
+- 准备一个只读或不可删除场景，用于验证批量删除部分失败提示。
+- 准备至少一个失败或取消的离线下载任务，以及若干已匹配/未匹配/unsupported RSS 条目。
+
+#### Checklist
+
+- [ ] 文件页列表视图可勾选单项、全选当前目录，并显示已选择数量。
+- [ ] 文件页网格视图可勾选单项；选择状态下点击卡片不会误打开文件/进入目录。
+- [ ] 批量删除执行前有确认；完成后展示成功/失败数量，失败项有可读原因。
+- [ ] 单项删除、移动、复制失败时不再静默失败，弹窗内和 toast 都能看到错误。
+- [ ] 离线下载页 failed / canceled 任务展示失败原因或取消原因；无后端原因时有 fallback 文案。
+- [ ] RSS 条目展示匹配说明：命中关键词/正则、排除项状态，unsupported/ignored/new 有可读解释。
+- [ ] 文件/VFS 列表刷新、预览、下载、分享、重命名等既有操作不回退。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 打开文件页列表视图，勾选多个文件 | 顶部选择条显示数量；全选/取消选择可用 |
+| 2 | 执行批量删除 | 出现永久删除确认；删除完成后列表刷新，toast 展示成功/失败数量 |
+| 3 | 在包含不可删除项的目录执行批量删除 | 可看到部分失败提示，失败项原因可读，页面不假装全成功 |
+| 4 | 切换网格视图并勾选条目 | 勾选按钮可用；选择状态下点击卡片切换选择而不是打开 |
+| 5 | 制造单项删除/移动/复制失败 | 弹窗显示错误，toast 同步提示 |
+| 6 | 打开离线下载页查看 failed/canceled 任务 | 任务卡片显示“失败原因”或“取消原因” |
+| 7 | 打开 RSS 条目列表，查看不同状态条目 | matched/enqueued/completed 等显示订阅匹配依据；unsupported/ignored/new 有状态解释 |
+
+#### 期望结果
+
+- 用户能批量处理文件，并能判断哪些删除成功、哪些失败。
+- 任务失败和 RSS 匹配原因不再只能靠后端日志排查。
+- 现有 VFS 下载/预览/share/access-url 链路不受影响。
+
+#### 回归范围
+
+- 文件页/VFS：列表视图、网格视图、选择状态、单项上下文菜单、删除/移动/复制/分享/预览/下载。
+- 离线下载页：任务状态、进度、失败/取消原因、目标 VFS 路径、计划命名。
+- RSS 页面：条目列表、状态筛选、订阅规则展示、已有 preview/批量动作。
+
+#### 阻塞 / 备注
+
+- 当前只做 VFS 批量删除；批量移动/复制和上传进度增强仍保留在 TODO 后续项。
+- 若后端错误响应不包含 request_id，前端本轮只能展示 Error message，request_id 展示需后续扩展 API client 错误结构。
+
+#### 交接记录
+
+- 2026-05-03：前端实现和静态验证完成，等待真实环境联调。已通过：`cd web && npm run lint`、`cd web && npm run build`、`cd web && node scripts/check-vfs-integration.mjs`。
+
+---
 
 <a id="test-handoff-2026-05-03-rss-notification-handoff"></a>
 

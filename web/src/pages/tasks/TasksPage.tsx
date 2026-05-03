@@ -86,6 +86,16 @@ function shouldShowTaskProgress(task: DownloadTask) {
     || task.downloaded_bytes > 0
 }
 
+function getTaskIssueMessage(task: DownloadTask) {
+  if (task.status === 'failed') {
+    return task.error_message || '任务失败，但后端未返回具体原因。请稍后刷新或查看后端日志。'
+  }
+  if (task.status === 'canceled') {
+    return task.error_message || '任务已取消。'
+  }
+  return ''
+}
+
 function getCompletedTaskRefreshKey(task: DownloadTask) {
   return `${task.id}:${task.finished_at ?? task.updated_at}`
 }
@@ -352,6 +362,7 @@ export function TasksPage() {
             {tasks.map((task) => {
               const progressPercent = getTaskProgressPercent(task)
               const showProgress = shouldShowTaskProgress(task)
+              const issueMessage = getTaskIssueMessage(task)
 
               return (
                 <div
@@ -451,8 +462,17 @@ export function TasksPage() {
                   </div>
                 )}
 
-                {task.status === 'failed' && task.error_message && (
-                  <p className="text-xs text-destructive mb-2">{task.error_message}</p>
+                {issueMessage && (
+                  <div
+                    className={cn(
+                      'mb-2 rounded-md px-3 py-2 text-xs break-all',
+                      task.status === 'failed'
+                        ? 'bg-destructive/10 text-destructive'
+                        : 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {task.status === 'failed' ? '失败原因' : '取消原因'}：{issueMessage}
+                  </div>
                 )}
 
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">

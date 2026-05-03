@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X, Trash2, AlertTriangle } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
+import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
 interface VFSDeleteConfirmModalProps {
@@ -12,16 +13,22 @@ interface VFSDeleteConfirmModalProps {
 }
 
 export function VFSDeleteConfirmModal({ isOpen, onClose, path, fileName, onSuccess }: VFSDeleteConfirmModalProps) {
+  const { addToast } = useUIStore()
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState('')
 
   const handleDelete = async () => {
     setIsSubmitting(true)
+    setError('')
     try {
       await fileV2Api.delete({ path, delete_mode: 'permanent' })
+      addToast('文件已删除', 'success')
       onSuccess?.()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '删除失败'
+      setError(msg)
+      addToast(msg, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -54,14 +61,22 @@ export function VFSDeleteConfirmModal({ isOpen, onClose, path, fileName, onSucce
             </div>
           </div>
 
+          {error && (
+            <p className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive break-all">
+              {error}
+            </p>
+          )}
+
           <div className="flex justify-end gap-2">
             <button
+              type="button"
               onClick={onClose}
               className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
             >
               取消
             </button>
             <button
+              type="button"
               onClick={handleDelete}
               disabled={isSubmitting}
               className={cn(

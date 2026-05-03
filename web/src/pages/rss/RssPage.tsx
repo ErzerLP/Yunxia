@@ -267,6 +267,54 @@ function hasParsedInfo(item: RSSItemView) {
   )
 }
 
+function matchesSubscriptionRule(text: string, rule: string, useRegex: boolean, caseSensitive: boolean) {
+  if (!rule) return false
+  if (useRegex) {
+    try {
+      return new RegExp(rule, caseSensitive ? '' : 'i').test(text)
+    } catch {
+      return false
+    }
+  }
+  const haystack = caseSensitive ? text : text.toLowerCase()
+  const needle = caseSensitive ? rule : rule.toLowerCase()
+  return haystack.includes(needle)
+}
+
+function getItemMatchExplanation(item: RSSItemView, subscription?: RSSSubscriptionView) {
+  if (subscription) {
+    const searchableText = [item.title, item.download_url, item.link].filter(Boolean).join('\n')
+    const matchedKeywords = subscription.must_contain.filter((rule) =>
+      matchesSubscriptionRule(searchableText, rule, subscription.use_regex, subscription.case_sensitive)
+    )
+    const excludedKeywords = subscription.must_not_contain.filter((rule) =>
+      matchesSubscriptionRule(searchableText, rule, subscription.use_regex, subscription.case_sensitive)
+    )
+    const positivePart = subscription.must_contain.length === 0
+      ? '未设置必须包含关键词'
+      : matchedKeywords.length > 0
+        ? `命中 ${subscription.use_regex ? '正则/关键词' : '关键词'}：${matchedKeywords.join('、')}`
+        : `匹配订阅规则：${subscription.must_contain.join('、')}`
+    const excludePart = subscription.must_not_contain.length === 0
+      ? '无排除关键词'
+      : excludedKeywords.length > 0
+        ? `注意：当前标题命中排除项 ${excludedKeywords.join('、')}，建议重新预览规则`
+        : `未命中排除项：${subscription.must_not_contain.join('、')}`
+    return `${positivePart}；${excludePart}`
+  }
+
+  if (item.status === 'unsupported') {
+    return '未入队原因：不是 BT/magnet 或 .torrent 链接。'
+  }
+  if (item.status === 'ignored') {
+    return '未匹配任何订阅规则；可调整订阅规则后重新处理或重试。'
+  }
+  if (item.status === 'new') {
+    return '新条目尚未匹配订阅；刷新源或执行订阅后会更新匹配结果。'
+  }
+  return ''
+}
+
 function downloadJSON(filename: string, data: unknown) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -1377,6 +1425,10 @@ export function RssPage() {
     () => new Map(subscriptions.map((subscription) => [subscription.id, subscription.name])),
     [subscriptions]
   )
+  const subscriptionById = useMemo(
+    () => new Map(subscriptions.map((subscription) => [subscription.id, subscription])),
+    [subscriptions]
+  )
   const subscriptionIds = useMemo(() => subscriptions.map((subscription) => subscription.id), [subscriptions])
   const validSelectedSubscriptionIds = useMemo(() => {
     const validIds = new Set(subscriptionIds)
@@ -2299,6 +2351,10 @@ export function RssPage() {
               {items.map((item) => {
                 const disabledReason = getDownloadDisabledReason(item)
                 const retryDisabledReason = getRetryDisabledReason(item)
+                const matchedSubscription = item.matched_subscription_id
+                  ? subscriptionById.get(item.matched_subscription_id)
+                  : undefined
+                const matchExplanation = getItemMatchExplanation(item, matchedSubscription)
                 const isNeedsAttention = item.status === 'needs_attention'
                 const isRetryPending = item.status === 'retry_pending'
                 const isDownloading = activeItemAction?.id === item.id && activeItemAction.type === 'download'
@@ -2386,6 +2442,12 @@ export function RssPage() {
                         <p className="text-xs text-muted-foreground break-all mt-2">
                           下载链接：{item.download_url || item.link}
                         </p>
+                        {matchExplanation && (
+                          <div className="mt-2 rounded-md border border-border bg-muted/30 px-2 py-1.5 text-xs text-muted-foreground">
+                            <span className="font-medium text-foreground">匹配说明：</span>
+                            <span className="break-all">{matchExplanation}</span>
+                          </div>
+                        )}
                         <div className="grid gap-x-3 gap-y-1 text-xs text-muted-foreground mt-2 sm:grid-cols-2">
                           <span>
                             重试次数：{item.retry_count}/{item.max_retry_count}

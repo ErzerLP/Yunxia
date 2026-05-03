@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Folder, FileText, Image, Film, Music, File, MoreHorizontal, Trash2 } from 'lucide-react'
+import { Folder, FileText, Image, Film, Music, File, MoreHorizontal } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { shareApi } from '@/api/share'
 import { sourceApi } from '@/api/source'
@@ -13,6 +13,7 @@ import { FileContextMenu } from './FileContextMenu'
 import { VFSRenameModal } from './VFSRenameModal'
 import { VFSDeleteConfirmModal } from './VFSDeleteConfirmModal'
 import { VFSMoveCopyModal } from './VFSMoveCopyModal'
+import { VFSSelectionBar } from './VFSSelectionBar'
 import type { VFSItem } from '@/types/api'
 
 const iconMap = {
@@ -43,7 +44,7 @@ function FileIcon({ item }: { item: VFSItem }) {
 }
 
 export function VFSFileList() {
-  const { currentVirtualPath, vfsItems, setVfsItems, setCurrentPermissions, setLoading, toggleSelection, selectedFiles, navigateVirtualTo } = useFileStore()
+  const { currentVirtualPath, vfsItems, setVfsItems, setCurrentPermissions, setLoading, toggleSelection, selectAll, clearSelection, selectedFiles, navigateVirtualTo } = useFileStore()
   const { openPreview, addToast } = useUIStore()
   const queryClient = useQueryClient()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: VFSItem } | null>(null)
@@ -79,8 +80,13 @@ export function VFSFileList() {
   }, [isLoading, setLoading])
 
   const displayedVfsItems = data?.items ?? vfsItems
+  const selectedVfsItems = displayedVfsItems.filter((item) => selectedFiles.has(item.path))
 
   const handleClick = (item: VFSItem) => {
+    if (selectedFiles.size > 0) {
+      toggleSelection(item.path)
+      return
+    }
     if (item.entry_kind === 'directory') {
       navigateVirtualTo(item.path)
     } else {
@@ -172,53 +178,29 @@ export function VFSFileList() {
     )
   }
 
-  const hasSelection = selectedFiles.size > 0
-
   return (
     <>
-      {hasSelection && (
-        <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-primary/5 shrink-0">
-          <span className="text-sm text-primary font-medium">已选择 {selectedFiles.size} 项</span>
-          <div className="flex-1" />
-          <button
-            onClick={() => {
-              const paths = Array.from(selectedFiles)
-              Promise.all(
-                paths.map((path) =>
-                  fileV2Api.delete({ path, delete_mode: 'permanent' })
-                )
-              ).then(() => {
-                refreshFiles()
-                useFileStore.getState().clearSelection()
-              })
-            }}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10 transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            批量删除
-          </button>
-          <button
-            onClick={() => useFileStore.getState().clearSelection()}
-            className="px-2.5 py-1 rounded-md text-xs text-muted-foreground hover:bg-accent transition-colors"
-          >
-            取消选择
-          </button>
-        </div>
-      )}
+      <VFSSelectionBar
+        selectedItems={selectedVfsItems}
+        onClear={clearSelection}
+        onRefresh={refreshFiles}
+      />
       <div className="flex-1 overflow-auto scrollbar-thin">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-background z-10">
             <tr className="border-b border-border text-muted-foreground">
               <th className="w-10 px-4 py-2 text-left">
                 <input
+                  aria-label="选择当前目录全部条目"
                   type="checkbox"
+                  name="select_all_vfs_items"
                   className="rounded border-border"
-                  checked={selectedFiles.size === displayedVfsItems.length && displayedVfsItems.length > 0}
+                  checked={selectedVfsItems.length === displayedVfsItems.length && displayedVfsItems.length > 0}
                   onChange={(e) => {
                     if (e.target.checked) {
-                      useFileStore.getState().selectAll(displayedVfsItems.map((f) => f.path))
+                      selectAll(displayedVfsItems.map((f) => f.path))
                     } else {
-                      useFileStore.getState().clearSelection()
+                      clearSelection()
                     }
                   }}
                 />
@@ -244,7 +226,9 @@ export function VFSFileList() {
                 >
                   <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                     <input
+                      aria-label={`选择 ${item.name}`}
                       type="checkbox"
+                      name="selected_vfs_item"
                       className="rounded border-border"
                       checked={selected}
                       onChange={() => toggleSelection(item.path)}
@@ -267,6 +251,7 @@ export function VFSFileList() {
                   </td>
                   <td className="px-4 py-2.5">
                     <button
+                      type="button"
                       className="p-1 rounded hover:bg-accent text-muted-foreground"
                       onClick={(e) => {
                         e.stopPropagation()
