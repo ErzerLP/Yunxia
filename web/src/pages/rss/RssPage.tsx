@@ -5,8 +5,11 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   AlertTriangle,
+  CheckSquare,
+  Copy,
   DownloadCloud,
   ExternalLink,
+  FileDown,
   Filter,
   Loader2,
   Pencil,
@@ -15,7 +18,9 @@ import {
   RadioTower,
   RefreshCcw,
   Rss,
+  Square,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react'
 import { rssApi } from '@/api/rss'
@@ -25,14 +30,21 @@ import { useUIStore } from '@/stores/uiStore'
 import { cn, formatDate } from '@/utils'
 import type {
   RSSItemStatus,
+  RSSItemBatchActionResponse,
   RSSItemView,
+  RSSExportResponse,
+  RSSImportRequest,
+  RSSImportResponse,
   RSSQBitHealthResponse,
   RSSRefreshAllResponse,
   RSSRefreshResponse,
   RSSRefreshStatsView,
   RSSSourceUpsertRequest,
   RSSSourceView,
+  RSSSubscriptionBatchStateResponse,
+  RSSSubscriptionCloneRequest,
   RSSSubscriptionPreviewItem,
+  RSSSubscriptionPreviewRequest,
   RSSSubscriptionPreviewResponse,
   RSSSubscriptionUpsertRequest,
   RSSSubscriptionView,
@@ -223,6 +235,46 @@ function retryReasonLabel(reason?: string | null) {
     default:
       return reason || '-'
   }
+}
+
+function formatBatchSummary(result: { succeeded: number; failed: number }) {
+  return `成功 ${result.succeeded}，失败 ${result.failed}`
+}
+
+function getBatchErrorLines(
+  result: RSSItemBatchActionResponse | RSSSubscriptionBatchStateResponse,
+  idLabel: string
+) {
+  return result.items
+    .filter((item) => !item.success)
+    .slice(0, 5)
+    .map((item) => {
+      const id = 'item_id' in item ? item.item_id : item.subscription_id
+      return `${idLabel} #${id}：${item.error_message || item.error_code || '失败'}`
+    })
+}
+
+function hasParsedInfo(item: RSSItemView) {
+  return Boolean(
+    item.parsed
+    && (
+      item.parsed.anime_title
+      || item.parsed.season
+      || item.parsed.episode
+      || item.parsed.subtitle_group
+      || item.parsed.resolution
+    )
+  )
+}
+
+function downloadJSON(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
 }
 
 function Panel({
@@ -584,12 +636,14 @@ function SubscriptionModal({
   defaultSourceId,
   onClose,
   onSubmit,
+  onPreview,
 }: {
   subscription: RSSSubscriptionView | null
   sources: RSSSourceView[]
   defaultSourceId?: number
   onClose: () => void
   onSubmit: (data: RSSSubscriptionUpsertRequest) => Promise<void>
+  onPreview: (data: RSSSubscriptionPreviewRequest) => Promise<RSSSubscriptionPreviewResponse>
 }) {
   const suffix = subscription ? `edit-${subscription.id}` : 'create'
   const initialSourceId = subscription?.source_id ?? defaultSourceId ?? sources[0]?.id
@@ -601,8 +655,43 @@ function SubscriptionModal({
   const [useRegex, setUseRegex] = useState(subscription?.use_regex ?? false)
   const [caseSensitive, setCaseSensitive] = useState(subscription?.case_sensitive ?? false)
   const [targetPath, setTargetPath] = useState(subscription?.target_virtual_parent_path ?? '/')
+  const [directoryTemplate, setDirectoryTemplate] = useState(subscription?.directory_template ?? '')
+  const [filenameTemplate, setFilenameTemplate] = useState(subscription?.filename_template ?? '')
+  const [preview, setPreview] = useState<RSSSubscriptionPreviewResponse | null>(null)
   const [error, setError] = useState('')
+  const [isPreviewing, setIsPreviewing] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const buildPreviewPayload = (): RSSSubscriptionPreviewRequest | null => {
+    const parsedSourceId = Number(sourceId)
+    if (!parsedSourceId) {
+      setError('请选择 RSS 源后再预览')
+      return null
+    }
+    return {
+      source_id: parsedSourceId,
+      must_contain: parseListText(mustContain),
+      must_not_contain: parseListText(mustNotContain),
+      use_regex: useRegex,
+      case_sensitive: caseSensitive,
+    }
+  }
+
+  const handlePreview = async () => {
+    const payload = buildPreviewPayload()
+    if (!payload) return
+
+    setIsPreviewing(true)
+    setError('')
+    try {
+      const result = await onPreview(payload)
+      setPreview(result)
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '预览订阅规则失败'))
+    } finally {
+      setIsPreviewing(false)
+    }
+  }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -631,6 +720,8 @@ function SubscriptionModal({
         use_regex: useRegex,
         case_sensitive: caseSensitive,
         target_virtual_parent_path: trimmedTarget,
+        directory_template: directoryTemplate.trim(),
+        filename_template: filenameTemplate.trim(),
       })
       onClose()
     } catch (err: unknown) {
@@ -721,6 +812,50 @@ function SubscriptionModal({
 
           <div className="grid gap-3 md:grid-cols-2">
             <div>
+              <label htmlFor={`rss-sub-directory-template-${suffix}`} className="text-sm text-muted-foreground mb-1 block">
+                目录模板
+              </label>
+              <input
+                id={`rss-sub-directory-template-${suffix}`}
+                name="directory_template"
+                type="text"
+                value={directoryTemplate}
+                onChange={(event) => setDirectoryTemplate(event.target.value)}
+                autoComplete="off"
+                className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                placeholder="{anime_title}/{season}"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                留空保持旧行为；只能填写相对路径，不要包含 <code>..</code>、绝对路径或反斜杠。
+              </p>
+            </div>
+            <div>
+              <label htmlFor={`rss-sub-filename-template-${suffix}`} className="text-sm text-muted-foreground mb-1 block">
+                文件名模板
+              </label>
+              <input
+                id={`rss-sub-filename-template-${suffix}`}
+                name="filename_template"
+                type="text"
+                value={filenameTemplate}
+                onChange={(event) => setFilenameTemplate(event.target.value)}
+                autoComplete="off"
+                className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                placeholder="{anime_title} - {episode} [{resolution}]"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                单文件 RSS 下载导入完成时会实际重命名；多文件 torrent 保持原目录结构。
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            支持占位符：<code>{'{anime_title}'}</code>、<code>{'{season}'}</code>、<code>{'{episode}'}</code>、<code>{'{subtitle_group}'}</code>、<code>{'{resolution}'}</code>、<code>{'{title}'}</code>。
+            目录模板会影响后续 RSS 入队任务的目标子目录；文件名模板会写入任务 <code>target_filename</code> 快照。
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
               <label htmlFor={`rss-sub-must-${suffix}`} className="text-sm text-muted-foreground mb-1 block">
                 必须包含
               </label>
@@ -795,6 +930,14 @@ function SubscriptionModal({
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
+              onClick={() => void handlePreview()}
+              disabled={isPreviewing || sources.length === 0}
+              className="mr-auto px-3 py-1.5 rounded-md border border-border text-sm text-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isPreviewing ? '预览中...' : '预览当前规则'}
+            </button>
+            <button
+              type="button"
               onClick={onClose}
               className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors"
             >
@@ -808,7 +951,276 @@ function SubscriptionModal({
               {isSubmitting ? '保存中...' : '保存'}
             </button>
           </div>
+          {preview && <SubscriptionPreviewPanel preview={preview} />}
         </form>
+      </div>
+    </div>
+  )
+}
+
+function CloneSubscriptionModal({
+  subscription,
+  onClose,
+  onSubmit,
+}: {
+  subscription: RSSSubscriptionView
+  onClose: () => void
+  onSubmit: (data: RSSSubscriptionCloneRequest) => Promise<void>
+}) {
+  const [name, setName] = useState(`${subscription.name} Copy`)
+  const [overrideEnabled, setOverrideEnabled] = useState(false)
+  const [isEnabled, setIsEnabled] = useState(subscription.is_enabled)
+  const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setError('')
+    try {
+      await onSubmit({
+        name: name.trim() || undefined,
+        is_enabled: overrideEnabled ? isEnabled : undefined,
+      })
+      onClose()
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, '复制订阅失败'))
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-card border border-border rounded-lg shadow-xl">
+        <div className="flex items-center justify-between px-4 h-12 border-b border-border">
+          <h3 className="font-medium text-foreground flex items-center gap-2">
+            <Copy className="w-4 h-4" />
+            复制订阅
+          </h3>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground" title="关闭">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+          {error && <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+          <p className="text-sm text-muted-foreground">
+            将复制「{subscription.name}」的匹配规则、目标路径和模板，不会修改原订阅。
+          </p>
+          <div>
+            <label htmlFor="rss-clone-name" className="text-sm text-muted-foreground mb-1 block">
+              新订阅名称
+            </label>
+            <input
+              id="rss-clone-name"
+              name="name"
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+            <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+              <input
+                id="rss-clone-override-enabled"
+                name="override_enabled"
+                type="checkbox"
+                checked={overrideEnabled}
+                onChange={(event) => setOverrideEnabled(event.target.checked)}
+                className="rounded border-border"
+              />
+              覆盖新订阅启用状态
+            </label>
+            <label className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
+              <input
+                id="rss-clone-enabled"
+                name="is_enabled"
+                type="checkbox"
+                checked={isEnabled}
+                disabled={!overrideEnabled}
+                onChange={(event) => setIsEnabled(event.target.checked)}
+                className="rounded border-border disabled:opacity-50"
+              />
+              新订阅启用
+            </label>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors">
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isSubmitting ? '复制中...' : '复制'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function RSSImportResultPanel({ result }: { result: RSSImportResponse }) {
+  const sections = [
+    { key: 'sources', label: 'RSS 源', result: result.sources },
+    { key: 'subscriptions', label: '订阅', result: result.subscriptions },
+  ]
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
+        <span>{result.dry_run ? '预检结果' : '导入结果'}</span>
+        {sections.map((section) => (
+          <span key={section.key}>
+            {section.label}：创建 {section.result.created}，复用 {section.result.reused}，跳过 {section.result.skipped}，失败 {section.result.failed}
+          </span>
+        ))}
+      </div>
+      {sections.map((section) => (
+        <div key={section.key} className="space-y-1">
+          <p className="font-medium text-foreground">{section.label}</p>
+          {section.result.items.slice(0, 8).map((item) => (
+            <div key={`${section.key}-${item.index}`} className="rounded border border-border bg-card px-2 py-1">
+              <span className={item.success ? 'text-emerald-500' : 'text-destructive'}>
+                #{item.index} {item.action}
+              </span>
+              <span className="ml-2 text-muted-foreground">{item.name || item.source_url || item.id || '-'}</span>
+              {!item.success && (
+                <span className="ml-2 text-destructive">{item.error_message || item.error_code || '失败'}</span>
+              )}
+            </div>
+          ))}
+          {section.result.items.length > 8 && (
+            <p className="text-muted-foreground">仅展示前 8 条结果。</p>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function RSSImportModal({
+  onClose,
+  onDryRun,
+  onImport,
+}: {
+  onClose: () => void
+  onDryRun: (data: RSSImportRequest) => Promise<RSSImportResponse>
+  onImport: (data: RSSImportRequest) => Promise<RSSImportResponse>
+}) {
+  const [rawJSON, setRawJSON] = useState('')
+  const [result, setResult] = useState<RSSImportResponse | null>(null)
+  const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const parsePayload = (dryRun: boolean): RSSImportRequest | null => {
+    try {
+      const parsed = JSON.parse(rawJSON) as Partial<RSSImportRequest & RSSExportResponse>
+      if (!Array.isArray(parsed.sources) || !Array.isArray(parsed.subscriptions)) {
+        setError('JSON 必须包含 sources[] 与 subscriptions[]')
+        return null
+      }
+      return {
+        dry_run: dryRun,
+        sources: parsed.sources,
+        subscriptions: parsed.subscriptions,
+      }
+    } catch {
+      setError('JSON 格式不正确')
+      return null
+    }
+  }
+
+  const handleFile = async (file?: File) => {
+    if (!file) return
+    setRawJSON(await file.text())
+  }
+
+  const submit = async (dryRun: boolean) => {
+    const payload = parsePayload(dryRun)
+    if (!payload) return
+    setIsSubmitting(true)
+    setError('')
+    try {
+      const response = dryRun ? await onDryRun(payload) : await onImport(payload)
+      setResult(response)
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, dryRun ? '导入预检失败' : '导入失败'))
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative w-full max-w-3xl bg-card border border-border rounded-lg shadow-xl max-h-[90vh] overflow-auto">
+        <div className="flex items-center justify-between px-4 h-12 border-b border-border sticky top-0 bg-card">
+          <h3 className="font-medium text-foreground flex items-center gap-2">
+            <Upload className="w-4 h-4" />
+            导入 RSS 配置
+          </h3>
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground" title="关闭">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-4 space-y-3">
+          {error && <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+          <div>
+            <label htmlFor="rss-import-file" className="text-sm text-muted-foreground mb-1 block">
+              选择导出的 JSON 文件
+            </label>
+            <input
+              id="rss-import-file"
+              name="rss_import_file"
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => void handleFile(event.target.files?.[0])}
+              className="w-full text-sm text-muted-foreground"
+            />
+          </div>
+          <div>
+            <label htmlFor="rss-import-json" className="text-sm text-muted-foreground mb-1 block">
+              或粘贴 JSON
+            </label>
+            <textarea
+              id="rss-import-json"
+              name="rss_import_json"
+              value={rawJSON}
+              onChange={(event) => setRawJSON(event.target.value)}
+              rows={12}
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-xs focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+              placeholder='{"version":1,"sources":[],"subscriptions":[]}'
+            />
+          </div>
+          {result && <RSSImportResultPanel result={result} />}
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-3 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-accent transition-colors">
+              关闭
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit(true)}
+              disabled={!rawJSON.trim() || isSubmitting}
+              className="px-3 py-1.5 rounded-md border border-border text-sm text-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              dry-run 预检
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit(false)}
+              disabled={!rawJSON.trim() || isSubmitting}
+              className="px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isSubmitting ? '处理中...' : '正式导入'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -884,6 +1296,15 @@ export function RssPage() {
   const [runningSubscriptionId, setRunningSubscriptionId] = useState<number | null>(null)
   const [previewingSubscriptionId, setPreviewingSubscriptionId] = useState<number | null>(null)
   const [subscriptionPreviews, setSubscriptionPreviews] = useState<Record<number, RSSSubscriptionPreviewResponse>>({})
+  const [cloneModalTarget, setCloneModalTarget] = useState<RSSSubscriptionView | null>(null)
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [isExportingConfig, setIsExportingConfig] = useState(false)
+  const [selectedSubscriptionIds, setSelectedSubscriptionIds] = useState<Set<number>>(() => new Set())
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(() => new Set())
+  const [subscriptionBatchResult, setSubscriptionBatchResult] = useState<RSSSubscriptionBatchStateResponse | null>(null)
+  const [itemBatchResult, setItemBatchResult] = useState<RSSItemBatchActionResponse | null>(null)
+  const [isBatchingSubscriptions, setIsBatchingSubscriptions] = useState(false)
+  const [isBatchingItems, setIsBatchingItems] = useState(false)
   const [activeItemAction, setActiveItemAction] = useState<{
     id: number
     type: 'download' | 'reprocess' | 'retry'
@@ -956,6 +1377,16 @@ export function RssPage() {
     () => new Map(subscriptions.map((subscription) => [subscription.id, subscription.name])),
     [subscriptions]
   )
+  const subscriptionIds = useMemo(() => subscriptions.map((subscription) => subscription.id), [subscriptions])
+  const validSelectedSubscriptionIds = useMemo(() => {
+    const validIds = new Set(subscriptionIds)
+    return new Set([...selectedSubscriptionIds].filter((id) => validIds.has(id)))
+  }, [selectedSubscriptionIds, subscriptionIds])
+  const itemIds = useMemo(() => items.map((item) => item.id), [items])
+  const validSelectedItemIds = useMemo(() => {
+    const validIds = new Set(itemIds)
+    return new Set([...selectedItemIds].filter((id) => validIds.has(id)))
+  }, [selectedItemIds, itemIds])
 
   const invalidateRSS = () => {
     void queryClient.invalidateQueries({ queryKey: ['rss'] })
@@ -965,6 +1396,44 @@ export function RssPage() {
     setSourceFilter('')
     setSubscriptionFilter('')
     setStatusFilter('needs_attention')
+  }
+
+  const toggleSubscriptionSelection = (id: number) => {
+    setSelectedSubscriptionIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const toggleAllSubscriptions = () => {
+    setSelectedSubscriptionIds(() => {
+      if (validSelectedSubscriptionIds.size === subscriptionIds.length) return new Set()
+      return new Set(subscriptionIds)
+    })
+  }
+
+  const toggleItemSelection = (id: number) => {
+    setSelectedItemIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }
+
+  const toggleAllItems = () => {
+    setSelectedItemIds(() => {
+      if (validSelectedItemIds.size === itemIds.length) return new Set()
+      return new Set(itemIds)
+    })
   }
 
   const handleSaveSource = async (payload: RSSSourceUpsertRequest) => {
@@ -1045,6 +1514,78 @@ export function RssPage() {
       addToast('订阅规则已创建', 'success')
     }
     invalidateRSS()
+  }
+
+  const handlePreviewSubscriptionDraft = async (payload: RSSSubscriptionPreviewRequest) => {
+    const result = await rssApi.previewSubscriptionDraft(payload)
+    addToast(
+      `规则预览完成：命中 ${result.matched}，缺失 ${result.missing}，排除 ${result.excluded}`,
+      'success',
+      6000
+    )
+    return result
+  }
+
+  const handleCloneSubscription = async (payload: RSSSubscriptionCloneRequest) => {
+    if (!cloneModalTarget) return
+    await rssApi.cloneSubscription(cloneModalTarget.id, payload)
+    addToast('订阅已复制', 'success')
+    setCloneModalTarget(null)
+    invalidateRSS()
+  }
+
+  const handleBatchSubscriptionState = async (isEnabled: boolean) => {
+    const ids = [...validSelectedSubscriptionIds]
+    if (ids.length === 0) {
+      addToast('请先选择订阅', 'warning')
+      return
+    }
+
+    setIsBatchingSubscriptions(true)
+    setSubscriptionBatchResult(null)
+    try {
+      const result = await rssApi.batchSubscriptionState({
+        subscription_ids: ids,
+        is_enabled: isEnabled,
+      })
+      setSubscriptionBatchResult(result)
+      addToast(`批量${isEnabled ? '启用' : '禁用'}完成：${formatBatchSummary(result)}`, result.failed > 0 ? 'warning' : 'success', 7000)
+      if (result.failed > 0) {
+        getBatchErrorLines(result, '订阅').forEach((line) => addToast(line, 'error', 8000))
+      }
+      setSelectedSubscriptionIds(new Set())
+      invalidateRSS()
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '批量更新订阅状态失败'), 'error')
+    } finally {
+      setIsBatchingSubscriptions(false)
+    }
+  }
+
+  const handleExportConfig = async () => {
+    setIsExportingConfig(true)
+    try {
+      const result = await rssApi.exportConfig()
+      downloadJSON(`yunxia-rss-export-${new Date().toISOString().slice(0, 10)}.json`, result)
+      addToast(`RSS 配置已导出：${result.sources.length} 个源，${result.subscriptions.length} 个订阅`, 'success')
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '导出 RSS 配置失败'), 'error')
+    } finally {
+      setIsExportingConfig(false)
+    }
+  }
+
+  const handleImportConfig = async (payload: RSSImportRequest) => {
+    const result = await rssApi.importConfig(payload)
+    addToast(
+      `${payload.dry_run ? '导入预检' : '导入'}完成：RSS 源失败 ${result.sources.failed}，订阅失败 ${result.subscriptions.failed}`,
+      result.sources.failed + result.subscriptions.failed > 0 ? 'warning' : 'success',
+      7000
+    )
+    if (!payload.dry_run) {
+      invalidateRSS()
+    }
+    return result
   }
 
   const handleDeleteSubscription = async (subscription: RSSSubscriptionView) => {
@@ -1165,6 +1706,57 @@ export function RssPage() {
     }
   }
 
+  const handleBatchIgnoreItems = async () => {
+    const ids = [...validSelectedItemIds]
+    if (ids.length === 0) {
+      addToast('请先选择 RSS 条目', 'warning')
+      return
+    }
+
+    setIsBatchingItems(true)
+    setItemBatchResult(null)
+    try {
+      const result = await rssApi.batchIgnoreItems(ids)
+      setItemBatchResult(result)
+      addToast(`批量忽略完成：${formatBatchSummary(result)}`, result.failed > 0 ? 'warning' : 'success', 7000)
+      if (result.failed > 0) {
+        getBatchErrorLines(result, '条目').forEach((line) => addToast(line, 'error', 8000))
+      }
+      setSelectedItemIds(new Set())
+      invalidateRSS()
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '批量忽略失败'), 'error')
+    } finally {
+      setIsBatchingItems(false)
+    }
+  }
+
+  const handleBatchRetryItems = async () => {
+    const ids = [...validSelectedItemIds]
+    if (ids.length === 0) {
+      addToast('请先选择 RSS 条目', 'warning')
+      return
+    }
+
+    setIsBatchingItems(true)
+    setItemBatchResult(null)
+    try {
+      const result = await rssApi.batchRetryItems(ids, subscriptionIdFilter)
+      setItemBatchResult(result)
+      addToast(`批量重试完成：${formatBatchSummary(result)}`, result.failed > 0 ? 'warning' : 'success', 7000)
+      if (result.failed > 0) {
+        getBatchErrorLines(result, '条目').forEach((line) => addToast(line, 'error', 8000))
+      }
+      setSelectedItemIds(new Set())
+      invalidateRSS()
+      void queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    } catch (err: unknown) {
+      addToast(getErrorMessage(err, '批量重试失败'), 'error')
+    } finally {
+      setIsBatchingItems(false)
+    }
+  }
+
   if (authLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -1185,6 +1777,23 @@ export function RssPage() {
         </div>
         {canManage && (
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleExportConfig()}
+              disabled={isExportingConfig}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-sm text-foreground hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isExportingConfig ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
+              <span>导出配置</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setImportModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-sm text-foreground hover:bg-accent transition-colors"
+            >
+              <Upload className="w-4 h-4" />
+              <span>导入配置</span>
+            </button>
             <button
               type="button"
               onClick={() => void handleRefreshAllSources()}
@@ -1385,13 +1994,31 @@ export function RssPage() {
             icon={<RadioTower className="w-4 h-4 text-primary" />}
             action={
               canManage && (
-                <button
-                  type="button"
-                  onClick={() => setSubscriptionModalTarget(null)}
-                  className="text-sm text-primary hover:underline"
-                >
-                  新增
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleBatchSubscriptionState(true)}
+                    disabled={validSelectedSubscriptionIds.size === 0 || isBatchingSubscriptions}
+                    className="text-sm text-primary hover:underline disabled:opacity-40 disabled:no-underline"
+                  >
+                    批量启用
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleBatchSubscriptionState(false)}
+                    disabled={validSelectedSubscriptionIds.size === 0 || isBatchingSubscriptions}
+                    className="text-sm text-primary hover:underline disabled:opacity-40 disabled:no-underline"
+                  >
+                    批量禁用
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSubscriptionModalTarget(null)}
+                    className="text-sm text-primary hover:underline"
+                  >
+                    新增
+                  </button>
+                </div>
               )
             }
           >
@@ -1403,6 +2030,27 @@ export function RssPage() {
               <EmptyState icon={<RadioTower className="w-10 h-10" />} text="暂无订阅规则" />
             ) : (
               <div className="space-y-2">
+                {canManage && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    <button
+                      type="button"
+                      onClick={toggleAllSubscriptions}
+                      className="flex items-center gap-1 text-foreground hover:text-primary"
+                    >
+                      {validSelectedSubscriptionIds.size === subscriptions.length ? (
+                        <CheckSquare className="w-4 h-4" />
+                      ) : (
+                        <Square className="w-4 h-4" />
+                      )}
+                      已选 {validSelectedSubscriptionIds.size} / {subscriptions.length}
+                    </button>
+                    {subscriptionBatchResult && (
+                      <span>
+                        最近批量结果：{formatBatchSummary(subscriptionBatchResult)}
+                      </span>
+                    )}
+                  </div>
+                )}
                 {subscriptions.map((subscription) => {
                   const preview = subscriptionPreviews[subscription.id]
                   return (
@@ -1410,6 +2058,20 @@ export function RssPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                         <div className="flex items-center gap-2">
+                          {canManage && (
+                            <button
+                              type="button"
+                              onClick={() => toggleSubscriptionSelection(subscription.id)}
+                              className="text-muted-foreground hover:text-primary"
+                              title={validSelectedSubscriptionIds.has(subscription.id) ? '取消选择' : '选择订阅'}
+                            >
+                              {validSelectedSubscriptionIds.has(subscription.id) ? (
+                                <CheckSquare className="w-4 h-4" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
                           <h3 className="font-medium text-foreground truncate">{subscription.name}</h3>
                           <span
                             className={cn(
@@ -1428,6 +2090,16 @@ export function RssPage() {
                         <p className="text-xs text-muted-foreground mt-1 font-mono">
                           目标：{subscription.target_virtual_parent_path}
                         </p>
+                        {(subscription.directory_template || subscription.filename_template) && (
+                          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                            {subscription.directory_template && (
+                              <p className="font-mono">目录模板：{subscription.directory_template}</p>
+                            )}
+                            {subscription.filename_template && (
+                              <p className="font-mono">文件名模板：{subscription.filename_template}</p>
+                            )}
+                          </div>
+                        )}
                         <div className="flex flex-wrap gap-1 mt-2">
                           {subscription.must_contain.map((item) => (
                             <span key={item} className="rounded border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
@@ -1451,6 +2123,14 @@ export function RssPage() {
                             title="预览规则"
                           >
                             {previewingSubscriptionId === subscription.id ? '预览中' : '预览'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCloneModalTarget(subscription)}
+                            className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
+                            title="复制订阅"
+                          >
+                            <Copy className="w-4 h-4" />
                           </button>
                           <button
                             type="button"
@@ -1493,7 +2173,32 @@ export function RssPage() {
           </Panel>
         </div>
 
-        <Panel title="RSS 条目" icon={<Filter className="w-4 h-4 text-primary" />}>
+        <Panel
+          title="RSS 条目"
+          icon={<Filter className="w-4 h-4 text-primary" />}
+          action={
+            canManage && (
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleBatchIgnoreItems()}
+                  disabled={validSelectedItemIds.size === 0 || isBatchingItems}
+                  className="text-sm text-primary hover:underline disabled:opacity-40 disabled:no-underline"
+                >
+                  批量忽略
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleBatchRetryItems()}
+                  disabled={validSelectedItemIds.size === 0 || isBatchingItems}
+                  className="text-sm text-primary hover:underline disabled:opacity-40 disabled:no-underline"
+                >
+                  批量重试
+                </button>
+              </div>
+            )
+          }
+        >
           <div className="grid gap-2 md:grid-cols-3 mb-4">
             <div>
               <label htmlFor="rss-filter-source" className="text-xs text-muted-foreground mb-1 block">
@@ -1565,6 +2270,32 @@ export function RssPage() {
             <EmptyState icon={<Rss className="w-10 h-10" />} text="暂无 RSS 条目" />
           ) : (
             <div className="space-y-2">
+              {canManage && (
+                <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  <button
+                    type="button"
+                    onClick={toggleAllItems}
+                    className="flex items-center gap-1 text-foreground hover:text-primary"
+                  >
+                    {validSelectedItemIds.size === items.length ? (
+                      <CheckSquare className="w-4 h-4" />
+                    ) : (
+                      <Square className="w-4 h-4" />
+                    )}
+                    已选 {validSelectedItemIds.size} / {items.length}
+                  </button>
+                  {itemBatchResult && (
+                    <span>
+                      最近批量结果：{formatBatchSummary(itemBatchResult)}
+                    </span>
+                  )}
+                  {subscriptionIdFilter ? (
+                    <span>批量重试会使用当前订阅 #{subscriptionIdFilter}</span>
+                  ) : (
+                    <span>批量重试未选择订阅时使用条目已匹配订阅。</span>
+                  )}
+                </div>
+              )}
               {items.map((item) => {
                 const disabledReason = getDownloadDisabledReason(item)
                 const retryDisabledReason = getRetryDisabledReason(item)
@@ -1596,10 +2327,53 @@ export function RssPage() {
                           </div>
                         )}
                         <div className="flex flex-wrap items-center gap-2">
+                          {canManage && (
+                            <button
+                              type="button"
+                              onClick={() => toggleItemSelection(item.id)}
+                              className="text-muted-foreground hover:text-primary"
+                              title={validSelectedItemIds.has(item.id) ? '取消选择' : '选择条目'}
+                            >
+                              {validSelectedItemIds.has(item.id) ? (
+                                <CheckSquare className="w-4 h-4" />
+                              ) : (
+                                <Square className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
                           <h3 className="font-medium text-foreground break-all">{item.title}</h3>
                           <StatusBadge status={item.status} />
                           <LinkTypeBadge type={item.link_type} />
                         </div>
+                        {hasParsedInfo(item) && (
+                          <div className="mt-2 flex flex-wrap gap-1 text-xs">
+                            {item.parsed.anime_title && (
+                              <span className="rounded border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
+                                番剧：{item.parsed.anime_title}
+                              </span>
+                            )}
+                            {item.parsed.season && (
+                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-muted-foreground">
+                                季度：{item.parsed.season}
+                              </span>
+                            )}
+                            {item.parsed.episode && (
+                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-muted-foreground">
+                                集数：{item.parsed.episode}
+                              </span>
+                            )}
+                            {item.parsed.subtitle_group && (
+                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-muted-foreground">
+                                字幕组：{item.parsed.subtitle_group}
+                              </span>
+                            )}
+                            {item.parsed.resolution && (
+                              <span className="rounded border border-border bg-muted px-1.5 py-0.5 text-muted-foreground">
+                                分辨率：{item.parsed.resolution}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground mt-2">
                           <span>RSS 源：{sourceNameById.get(item.source_id) ?? item.source_id}</span>
                           <span>
@@ -1695,6 +2469,23 @@ export function RssPage() {
           defaultSourceId={sourceIdFilter}
           onClose={() => setSubscriptionModalTarget(undefined)}
           onSubmit={handleSaveSubscription}
+          onPreview={handlePreviewSubscriptionDraft}
+        />
+      )}
+
+      {cloneModalTarget && (
+        <CloneSubscriptionModal
+          subscription={cloneModalTarget}
+          onClose={() => setCloneModalTarget(null)}
+          onSubmit={handleCloneSubscription}
+        />
+      )}
+
+      {importModalOpen && (
+        <RSSImportModal
+          onClose={() => setImportModalOpen(false)}
+          onDryRun={(payload) => handleImportConfig({ ...payload, dry_run: true })}
+          onImport={(payload) => handleImportConfig({ ...payload, dry_run: false })}
         />
       )}
     </div>

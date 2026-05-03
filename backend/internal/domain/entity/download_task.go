@@ -12,6 +12,7 @@ type DownloadTask struct {
 	SourceID                uint
 	SavePath                string
 	TargetVirtualParentPath string
+	TargetFilename          string
 	SaveVirtualPath         string
 	ResolvedSourceID        uint
 	ResolvedInnerSavePath   string

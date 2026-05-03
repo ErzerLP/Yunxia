@@ -47,17 +47,23 @@ type TaskImportDriver interface {
 	ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error
 }
 
+// TaskTerminalStatusObserver 接收任务终态变更通知，用于同步跨模块反向引用。
+type TaskTerminalStatusObserver interface {
+	OnTaskTerminalStatus(ctx context.Context, task *entity.DownloadTask) error
+}
+
 // TaskService 负责离线下载任务接口。
 type TaskService struct {
-	taskRepo       domainrepo.TaskRepository
-	sourceRepo     domainrepo.SourceRepository
-	aclAuthorizer  *ACLAuthorizer
-	downloader     Downloader
-	downloadRouter *DownloaderRouter
-	stagingRoot    string
-	stagingRoots   map[string]string
-	importDrivers  map[string]TaskImportDriver
-	vfsResolver    interface {
+	taskRepo               domainrepo.TaskRepository
+	sourceRepo             domainrepo.SourceRepository
+	aclAuthorizer          *ACLAuthorizer
+	downloader             Downloader
+	downloadRouter         *DownloaderRouter
+	stagingRoot            string
+	stagingRoots           map[string]string
+	importDrivers          map[string]TaskImportDriver
+	terminalStatusObserver TaskTerminalStatusObserver
+	vfsResolver            interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
 	logger        *slog.Logger
@@ -72,6 +78,8 @@ type resolvedTaskTarget struct {
 	resolvedSourceID        uint
 	resolvedInnerSavePath   string
 }
+
+const maxTaskTargetFilenameRunes = 240
 
 // NewTaskService 创建任务服务。
 func NewTaskService(taskRepo domainrepo.TaskRepository, sourceRepo domainrepo.SourceRepository, downloader Downloader, options ...TaskServiceOption) *TaskService {
@@ -89,6 +97,11 @@ func NewTaskService(taskRepo domainrepo.TaskRepository, sourceRepo domainrepo.So
 		option(service)
 	}
 	return service
+}
+
+// SetTerminalStatusObserver 注册任务终态观察者。用于依赖后置装配的服务。
+func (s *TaskService) SetTerminalStatusObserver(observer TaskTerminalStatusObserver) {
+	s.terminalStatusObserver = observer
 }
 
 // List 返回任务列表。
@@ -112,6 +125,19 @@ func (s *TaskService) List(ctx context.Context) (*appdto.TaskListResponse, error
 
 // Create 创建任务。
 func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) (*appdto.DownloadTaskView, error) {
+	targetFilename, err := normalizeTaskTargetFilename(req.TargetFilename)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "FILE_NAME_INVALID",
+			SourceID:     &req.SourceID,
+		})
+		return nil, err
+	}
+	req.TargetFilename = targetFilename
+
 	target, err := s.resolveCreateTarget(ctx, req)
 	if err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
@@ -198,6 +224,7 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		SourceID:                source.ID,
 		SavePath:                target.savePath,
 		TargetVirtualParentPath: target.targetVirtualParentPath,
+		TargetFilename:          targetFilename,
 		SaveVirtualPath:         target.saveVirtualPath,
 		ResolvedSourceID:        target.resolvedSourceID,
 		ResolvedInnerSavePath:   target.resolvedInnerSavePath,
@@ -247,10 +274,7 @@ func (s *TaskService) resolveCreateTarget(ctx context.Context, req appdto.Create
 			return resolvedTaskTarget{}, err
 		}
 
-		probeName := guessTaskDisplayName(req.URL)
-		if validateFileName(probeName) != nil {
-			probeName = "download"
-		}
+		probeName := taskTargetProbeName(req)
 		resolved, err := s.requireTaskVFSResolver().ResolveWritableTarget(ctx, joinVirtualPath(virtualParentPath, probeName))
 		if err != nil {
 			return resolvedTaskTarget{}, err
@@ -294,6 +318,17 @@ func (s *TaskService) resolveCreateTarget(ctx context.Context, req appdto.Create
 		resolvedSourceID:      source.ID,
 		resolvedInnerSavePath: savePath,
 	}, nil
+}
+
+func taskTargetProbeName(req appdto.CreateTaskRequest) string {
+	if strings.TrimSpace(req.TargetFilename) != "" {
+		return req.TargetFilename
+	}
+	probeName := guessTaskDisplayName(req.URL)
+	if validateFileName(probeName) != nil {
+		return "download"
+	}
+	return probeName
 }
 
 func (s *TaskService) requireTaskVFSResolver() interface {
@@ -475,6 +510,7 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 		})
 		return nil, err
 	}
+	s.notifyTaskTerminalStatus(ctx, task)
 	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 		ResourceType: "task",
 		Action:       "cancel",
@@ -716,7 +752,11 @@ func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask
 		}
 	}
 	task.UpdatedAt = time.Now()
-	return s.taskRepo.Update(ctx, task)
+	if err := s.taskRepo.Update(ctx, task); err != nil {
+		return err
+	}
+	s.notifyTaskTerminalStatus(ctx, task)
+	return nil
 }
 
 type stagedTaskFile struct {
@@ -756,13 +796,85 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 	}
 
 	for _, file := range files {
-		targetPath := joinVirtualPath(baseTargetPath, filepath.ToSlash(file.relativePath))
+		targetPath := joinVirtualPath(baseTargetPath, taskImportRelativePath(task, file, len(files)))
 		if err := s.importStagedFile(ctx, source, targetPath, file.localPath); err != nil {
 			return err
 		}
 	}
 
 	return os.RemoveAll(task.StagingDir)
+}
+
+func taskImportRelativePath(task *entity.DownloadTask, file stagedTaskFile, fileCount int) string {
+	if task == nil || fileCount != 1 || strings.TrimSpace(task.TargetFilename) == "" {
+		return filepath.ToSlash(file.relativePath)
+	}
+	return taskTargetFilenameWithOriginalExtension(task.TargetFilename, file.relativePath)
+}
+
+func normalizeTaskTargetFilename(input string) (string, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.Contains(trimmed, "/") || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, "..") || hasRSSWindowsDrivePrefix(trimmed) {
+		return "", ErrFileNameInvalid
+	}
+	cleaned := sanitizeRSSPathSegment(trimmed)
+	if cleaned == "" || strings.Contains(cleaned, "..") || validateFileName(cleaned) != nil {
+		return "", ErrFileNameInvalid
+	}
+	return truncateTaskFilename(cleaned, maxTaskTargetFilenameRunes), nil
+}
+
+func taskTargetFilenameWithOriginalExtension(targetFilename string, originalRelativePath string) string {
+	filename := truncateTaskFilename(strings.TrimSpace(targetFilename), maxTaskTargetFilenameRunes)
+	if filename == "" || taskFilenameHasExplicitExtension(filename) {
+		return filename
+	}
+	originalName := path.Base(filepath.ToSlash(originalRelativePath))
+	extension := path.Ext(originalName)
+	if !isSafeTaskFilenameExtension(extension) {
+		return filename
+	}
+	baseLimit := maxTaskTargetFilenameRunes - len([]rune(extension))
+	if baseLimit < 1 {
+		baseLimit = maxTaskTargetFilenameRunes
+	}
+	return truncateTaskFilename(filename, baseLimit) + extension
+}
+
+func taskFilenameHasExplicitExtension(filename string) bool {
+	return isSafeTaskFilenameExtension(path.Ext(filename))
+}
+
+func isSafeTaskFilenameExtension(extension string) bool {
+	if len(extension) < 2 || len(extension) > 16 {
+		return false
+	}
+	hasLetter := false
+	for _, r := range extension[1:] {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			hasLetter = true
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return hasLetter
+}
+
+func truncateTaskFilename(filename string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(strings.TrimSpace(filename))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	return strings.TrimSpace(string(runes[:maxRunes]))
 }
 
 func listStagedTaskFiles(stagingDir string) ([]stagedTaskFile, error) {
@@ -847,6 +959,15 @@ func isTerminalTaskStatus(status string) bool {
 	}
 }
 
+func (s *TaskService) notifyTaskTerminalStatus(ctx context.Context, task *entity.DownloadTask) {
+	if s.terminalStatusObserver == nil || task == nil || !isTerminalTaskStatus(task.Status) {
+		return
+	}
+	if err := s.terminalStatusObserver.OnTaskTerminalStatus(ctx, task); err != nil {
+		s.logger.Warn("task terminal observer failed", slog.String("event", "task.terminal_observer.failed"), slog.Uint64("task_id", uint64(task.ID)), slog.String("status", task.Status), slog.Any("error", err))
+	}
+}
+
 func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 	var finishedAt *string
 	if task.FinishedAt != nil {
@@ -878,6 +999,7 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 		SourceID:                task.SourceID,
 		SavePath:                task.SavePath,
 		TargetVirtualParentPath: task.TargetVirtualParentPath,
+		TargetFilename:          task.TargetFilename,
 		SaveVirtualPath:         task.SaveVirtualPath,
 		ResolvedSourceID:        task.ResolvedSourceID,
 		ResolvedInnerSavePath:   task.ResolvedInnerSavePath,

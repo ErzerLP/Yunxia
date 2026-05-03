@@ -349,6 +349,7 @@ export interface DownloadTask {
   save_virtual_path?: string;
   resolved_source_id?: number;
   resolved_inner_save_path?: string;
+  target_filename?: string;
 }
 
 export interface CreateTaskRequest {
@@ -357,6 +358,7 @@ export interface CreateTaskRequest {
   source_id?: number;
   save_path?: string;
   target_virtual_parent_path?: string;
+  target_filename?: string;
 }
 
 // RSS
@@ -374,6 +376,14 @@ export type RSSLinkType = 'magnet' | 'torrent' | 'http' | 'unsupported' | string
 export type RSSSourceHealthStatus = 'ok' | 'degraded' | 'circuit_open' | string;
 export type RSSRefreshAllItemStatus = 'success' | 'failed' | 'skipped' | string;
 export type RSSSubscriptionPreviewResult = 'matched' | 'missing' | 'excluded' | string;
+
+export interface RSSAnimeParsedView {
+  anime_title: string;
+  season: string;
+  episode: string;
+  subtitle_group: string;
+  resolution: string;
+}
 
 export interface RSSRefreshStatsView {
   source_id: number;
@@ -448,6 +458,8 @@ export interface RSSSubscriptionView {
   use_regex: boolean;
   case_sensitive: boolean;
   target_virtual_parent_path: string;
+  directory_template: string;
+  filename_template: string;
   resolved_source_id?: number;
   resolved_inner_parent_path?: string;
   created_at: string;
@@ -463,6 +475,38 @@ export interface RSSSubscriptionUpsertRequest {
   use_regex: boolean;
   case_sensitive: boolean;
   target_virtual_parent_path: string;
+  directory_template?: string;
+  filename_template?: string;
+}
+
+export interface RSSSubscriptionPreviewRequest {
+  source_id: number;
+  must_contain: string[];
+  must_not_contain: string[];
+  use_regex: boolean;
+  case_sensitive: boolean;
+}
+
+export interface RSSSubscriptionCloneRequest {
+  name?: string;
+  is_enabled?: boolean;
+}
+
+export interface RSSSubscriptionBatchStateRequest {
+  subscription_ids: number[];
+  is_enabled: boolean;
+}
+
+export interface RSSSubscriptionBatchStateResponse {
+  items: Array<{
+    subscription_id: number;
+    success: boolean;
+    subscription?: RSSSubscriptionView;
+    error_code?: string;
+    error_message?: string;
+  }>;
+  succeeded: number;
+  failed: number;
 }
 
 export interface RSSSubscriptionPreviewItem {
@@ -504,14 +548,144 @@ export interface RSSItemView {
   last_attempt_at: string | null;
   next_retry_at: string | null;
   retry_reason: string | null;
+  parsed: RSSAnimeParsedView;
   created_at: string;
   updated_at: string;
+}
+
+export interface RSSItemBatchActionResponse {
+  items: Array<{
+    item_id: number;
+    success: boolean;
+    item?: RSSItemView;
+    error_code?: string;
+    error_message?: string;
+  }>;
+  succeeded: number;
+  failed: number;
+}
+
+export interface RSSExportSource {
+  name: string;
+  url: string;
+  is_enabled: boolean;
+  refresh_interval_seconds: number;
+}
+
+export interface RSSExportSubscription {
+  source_url: string;
+  name: string;
+  is_enabled: boolean;
+  must_contain: string[];
+  must_not_contain: string[];
+  use_regex: boolean;
+  case_sensitive: boolean;
+  target_virtual_parent_path: string;
+  directory_template: string;
+  filename_template: string;
+  source_ref?: string;
+}
+
+export interface RSSExportResponse {
+  version: number;
+  exported_at: string;
+  sources: RSSExportSource[];
+  subscriptions: RSSExportSubscription[];
+}
+
+export interface RSSImportRequest {
+  dry_run: boolean;
+  sources: RSSExportSource[];
+  subscriptions: RSSExportSubscription[];
+}
+
+export interface RSSImportSectionResult {
+  items: Array<{
+    index: number;
+    action: 'create' | 'reuse' | 'skip' | 'failed' | string;
+    success: boolean;
+    id?: number;
+    source_url?: string;
+    name?: string;
+    error_code?: string;
+    error_message?: string;
+  }>;
+  created: number;
+  reused: number;
+  skipped: number;
+  failed: number;
+}
+
+export interface RSSImportResponse {
+  dry_run: boolean;
+  sources: RSSImportSectionResult;
+  subscriptions: RSSImportSectionResult;
 }
 
 export interface RSSQBitHealthResponse {
   enabled: boolean;
   status: 'disabled' | 'ok' | 'unavailable' | string;
   error?: string | null;
+}
+
+export type NotificationEventType =
+  | 'rss.source_failure'
+  | 'rss.item_needs_attention'
+  | 'rss.download_completed'
+  | string;
+
+export type NotificationEventStatus =
+  | 'pending'
+  | 'delivered'
+  | 'retry_pending'
+  | 'failed'
+  | 'skipped'
+  | string;
+
+export interface NotificationChannelConfigView {
+  url: string;
+  secret_configured: boolean;
+}
+
+export interface NotificationChannelView {
+  id: number;
+  name: string;
+  type: 'webhook' | string;
+  is_enabled: boolean;
+  event_types: NotificationEventType[];
+  config: NotificationChannelConfigView;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationChannelUpsertRequest {
+  name: string;
+  type: 'webhook';
+  is_enabled?: boolean;
+  event_types?: NotificationEventType[];
+  config: {
+    url: string;
+    secret?: string;
+  };
+}
+
+export interface NotificationEventView {
+  id: number;
+  user_id?: number;
+  event_type: NotificationEventType;
+  severity: 'info' | 'warning' | 'error' | string;
+  title: string;
+  message: string;
+  payload: Record<string, unknown>;
+  status: NotificationEventStatus;
+  attempts: number;
+  max_attempts: number;
+  last_attempt_at: string | null;
+  next_attempt_at: string | null;
+  delivered_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 // System

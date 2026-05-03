@@ -56,6 +56,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
+| 阻塞 | 2026-05-03 | RSS/通知增强 | RSS/追番页、任务页、设置页/通知区块 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-*`、`/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/export`、`/api/v1/notifications/*` | 主流程已联调；阻塞在订阅复制 `is_enabled=false` 未生效、RSS 关联任务取消后 item 未回写 `needs_attention` / 未触发条目待处理通知 | [详情](#test-handoff-2026-05-03-rss-notification-handoff) |
 | 已通过 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 测试完成反馈确认：刷新全部、规则预览、重试/重处理、`needs_attention`、自动重试/完成回写展示均已覆盖 | [详情](#test-handoff-2026-04-30-rss-unattended) |
 | 已通过 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | 测试完成反馈确认：RSS 源/订阅 CRUD、条目、qBittorrent 入队、任务跳转、VFS 目标目录可见均已覆盖 | [详情](#test-handoff-2026-04-29-rss-mvp) |
 | 已通过 | 2026-05-01 | 离线下载 / VFS | 离线下载页、任务页、文件页/VFS | P1 | `POST /api/v1/tasks`、`GET /api/v1/tasks/:id`、`GET /api/v2/fs*` | 新建任务使用当前目标虚拟目录，完成后文件出现在该 VFS 目录；旧 `source_id + save_path` 行为不回退 | [详情](#test-handoff-2026-05-01-offline-task-vfs-target) |
@@ -63,6 +64,78 @@
 ---
 
 ## 测试记录 / 交接记录
+
+<a id="test-handoff-2026-05-03-rss-notification-handoff"></a>
+
+### [P1][阻塞][RSS/通知增强] 2026-05-03 RSS 模板、批量管理、导入导出与通知告警联调测试
+
+#### 测试目标
+
+确认前端已能消费 2026-05-02 后端 handoff 中的 RSS/通知新增能力：RSS 番剧解析模板、未保存规则预览、条目批量动作、订阅复制/批量启停、RSS 配置导入导出，以及设置页 Webhook 通知通道和通知事件重试。
+
+#### 前置条件
+
+- 使用具备 `rss.read`、`rss.manage`、`notification.read`、`notification.manage`、`task.read_all` 和文件/VFS 查看权限的管理员或等效账号。
+- 后端已包含 `backend/FRONTEND_HANDOFF.md` 中 2026-05-02 RSS/通知接口，qBittorrent 与 RSS 测试源可用。
+- 至少准备一个可写 VFS 目录，例如 `/local/anime-template-test`。
+- 准备可命中的 RSS 条目，标题中最好包含番剧名、季度/集数、字幕组和分辨率；同时准备失败或待处理条目用于批量失败展示。
+- 准备一个可接收测试 POST 的 Webhook endpoint；若无法外连，可使用测试环境内 mock endpoint。
+
+#### Checklist
+
+- [x] 订阅创建/编辑表单可填写 `directory_template`、`filename_template`，有占位符和路径安全说明。
+- [x] 未保存订阅可执行临时 preview，并展示 `matched/missing/excluded`。
+- [x] RSS 条目卡片展示 `parsed.anime_title/season/episode/subtitle_group/resolution`。
+- [x] RSS 入队后任务页能展示 `target_filename` 计划命名快照。
+- [x] 条目多选批量忽略、批量重试可用；HTTP 200/202 下仍按 `items[].success` 展示部分成功/失败。
+- [ ] 订阅复制支持可选新名称和启用状态；订阅批量启用/禁用展示部分成功/失败。
+- [x] RSS 配置导出会下载 JSON；导入支持 `dry_run=true` 预检和真实导入，并展示 source/subscription 逐项结果。
+- [ ] 设置页通知区块按权限可见；Webhook 通道列表、创建、编辑、删除、测试发送可用。
+- [x] 通知事件列表支持状态/事件类型筛选；失败或待重试事件可手动 retry，并以返回的 `event.status` 为准。
+- [x] 无 `rss.manage` / `notification.manage` 权限账号不暴露对应管理按钮；仅 `notification.read` 可进入设置页查看通知事件。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 打开 RSS/追番页，编辑或新建订阅，填写目录模板和文件名模板 | 表单可保存；安全提示清晰；非法模板失败时有可读提示 |
+| 2 | 在未保存/编辑中的规则上点击 preview | 调用临时 preview；展示命中、缺失、排除统计和条目结果 |
+| 3 | 刷新 RSS 条目并查看卡片 | parsed 番剧字段可见；字段为空时不出现异常空白布局 |
+| 4 | 让命中条目入队并查看任务页 | 任务出现，保存虚拟目录正确；若有文件名模板，任务卡片展示计划命名 |
+| 5 | 勾选多个 RSS 条目执行批量忽略/批量重试 | 成功和失败计数准确；单项失败错误码/错误信息可读，列表刷新 |
+| 6 | 复制一个订阅并批量禁用/启用多个订阅 | 复制后列表刷新；批量结果按单项 success/failure 展示 |
+| 7 | 导出 RSS 配置，再用导入弹窗执行 dry-run 和真实导入 | 下载 JSON 结构可用；预检/导入逐项结果、失败原因和汇总计数可见 |
+| 8 | 打开设置页通知区块，新增 Webhook 通道并测试发送 | 通道保存成功；测试发送成功/失败都有明确 toast；失败不显示原始内部错误 |
+| 9 | 筛选通知事件并对失败/待重试事件 retry | 筛选参数生效；retry 返回后事件状态按响应刷新 |
+| 10 | 使用只读/无权限账号回归 | 入口和按钮按 capability 隐藏或只读；路由 guard 与侧边栏一致 |
+
+#### 期望结果
+
+- RSS 新增管理动作、模板字段和导入导出均可在 UI 中完成闭环。
+- 所有批量/导入/通知事件接口都不把 HTTP 成功误判为全部成功，页面能展示逐项失败。
+- 通知区块与系统配置区块权限互不误伤：有 `notification.read` 但无 `system.config.read` 的账号仍能查看通知事件。
+
+#### 回归范围
+
+- RSS 既有源/订阅 CRUD、刷新全部、单条 retry/reprocess、任务跳转。
+- 任务页状态、保存路径、计划命名和完成后 VFS 可见性。
+- 设置页系统配置展示、WebDAV 说明、退出登录等既有功能。
+- 侧边栏设置/RSS 入口权限过滤与路由守卫。
+
+#### 阻塞 / 备注
+
+- 若测试环境无法提供 Webhook endpoint，可先记录 mock endpoint 或后端 fixture；未覆盖真实外部投递时需保留待回归说明。
+- 若无法稳定制造部分失败样本，可请后端准备失败 item/subscription/import fixture；不能只用全成功样本关闭该项。
+- 2026-05-03 实测阻塞：
+  - `POST /api/v1/rss/subscriptions/:id/clone` 传入 `{"is_enabled": false}` 后，返回的新订阅仍为 `is_enabled=true`，RSS 页面也显示复制订阅为“启用”。
+  - RSS 关联 qBittorrent 任务取消后，任务已为 `canceled`，但关联 RSS item 仍停留在 `enqueued`，未进入 `needs_attention`，也未生成 `rss.item_needs_attention` 通知事件。
+
+#### 交接记录
+
+- 2026-05-03：前端实现和静态验证完成，等待真实后端运行环境联调。已通过：`cd web && npm run lint`、`cd web && npm run build`、`cd web && node scripts/check-vfs-integration.mjs`。
+- 2026-05-03：测试负责人在测试机 `test` 清理旧环境后，从 `main@5ada4b2` 拉取仓库并叠加当前本地未提交工作区补丁部署。环境：前端 `http://10.0.0.95:15183`，后端 `http://127.0.0.1:18183`，下载器为内置 Aria2/qBittorrent，Webhook 使用测试环境 mock `http://yunxia-rss-feed:8000/hook` / `/fail`，RSS 数据覆盖本地 fixture 与 `https://mikanani.kas.pub/RSS/Bangumi?bangumiId=3968`。已通过：前端 `npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`；后端 Docker build 与 RSS/Notification 相关 Go 定向测试；本地硬盘挂载原有文件可见；RSS 模板字段、临时 preview、parsed 展示、任务页计划命名、批量忽略/重试部分失败、订阅批量启停部分失败、RSS 导出/导入 dry-run/真实导入、Webhook 成功/失败测试、`rss.source_failure` 通知事件 retry、operator/user 权限 UI 与 API smoke、Mikan 精确命中 `.torrent` 入队。因上方阻塞项，状态调整为 `阻塞`，待后端修复后回归。
+
+---
 
 <a id="test-handoff-2026-04-29-rss-mvp"></a>
 

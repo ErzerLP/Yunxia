@@ -481,6 +481,146 @@ func TestTaskCreateDownloadsIntoStagingAndImportsCompletedLocalFile(t *testing.T
 	}
 }
 
+func TestTaskTargetFilenameRenamesSingleStagedFile(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "文件名模板目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "original.name.mkv",
+		content:  []byte("video"),
+	}
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:           "download",
+		URL:            "https://example.com/original.name.mkv",
+		SourceID:       source.ID,
+		SavePath:       "/downloads",
+		TargetFilename: "Example Show - S01E05 [1080p]",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.TargetFilename != "Example Show - S01E05 [1080p]" {
+		t.Fatalf("created target filename = %q", created.TargetFilename)
+	}
+	stored, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("taskRepo.FindByID() error = %v", err)
+	}
+	if stored.TargetFilename != created.TargetFilename {
+		t.Fatalf("stored target filename = %q", stored.TargetFilename)
+	}
+
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+	targetPath := filepath.Join(basePath, "downloads", "Example Show - S01E05 [1080p].mkv")
+	if content, err := os.ReadFile(targetPath); err != nil || string(content) != "video" {
+		t.Fatalf("expected renamed imported file at %s, content=%q err=%v", targetPath, content, err)
+	}
+	if _, err := os.Stat(filepath.Join(basePath, "downloads", "original.name.mkv")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected original filename not to be imported, stat err=%v", err)
+	}
+}
+
+func TestTaskTargetFilenameIgnoredForMultiFileStaging(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "多文件模板目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		files: map[string][]byte{
+			"TorrentDir/episode.mkv": []byte("video"),
+			"TorrentDir/poster.jpg":  []byte("poster"),
+		},
+	}
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:           "download",
+		URL:            "https://example.com/multifile.zip",
+		SourceID:       source.ID,
+		SavePath:       "/downloads",
+		TargetFilename: "Should Not Apply",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+	if content, err := os.ReadFile(filepath.Join(basePath, "downloads", "TorrentDir", "episode.mkv")); err != nil || string(content) != "video" {
+		t.Fatalf("expected original multi-file path, content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(basePath, "downloads", "TorrentDir", "poster.jpg")); err != nil || string(content) != "poster" {
+		t.Fatalf("expected original poster path, content=%q err=%v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(basePath, "downloads", "Should Not Apply.mkv")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected target filename not applied for multi-file task, stat err=%v", err)
+	}
+}
+
+func TestTaskTargetFilenameExtensionHeuristic(t *testing.T) {
+	if got := taskTargetFilenameWithOriginalExtension("Dr.STONE - S01.05", "downloaded.mkv"); got != "Dr.STONE - S01.05.mkv" {
+		t.Fatalf("expected numeric suffix not to be treated as extension, got %q", got)
+	}
+	if got := taskTargetFilenameWithOriginalExtension("Example Show.mkv", "downloaded.mp4"); got != "Example Show.mkv" {
+		t.Fatalf("expected explicit extension to be preserved, got %q", got)
+	}
+}
+
 func TestTaskCompletedClearsRealtimeDownloadMetrics(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -961,6 +1101,96 @@ func TestTaskCancelSetsTerminalErrorMessage(t *testing.T) {
 	}
 }
 
+func TestTaskCancelUpdatesRSSItemBacklinkNeedsAttention(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	taskRepo := gorm.NewTaskRepository(db)
+	rssRepo := gorm.NewRSSRepository(db)
+	now := time.Date(2026, 5, 3, 11, 0, 0, 0, time.UTC)
+	source := &entity.RSSSource{
+		UserID:    42,
+		Name:      "rss",
+		URL:       "https://example/rss.xml",
+		IsEnabled: true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := rssRepo.CreateSource(context.Background(), source); err != nil {
+		t.Fatalf("CreateSource() error = %v", err)
+	}
+	subscription := &entity.RSSSubscription{
+		UserID:                  42,
+		SourceID:                source.ID,
+		Name:                    "sub",
+		IsEnabled:               true,
+		TargetVirtualParentPath: "/anime",
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := rssRepo.CreateSubscription(context.Background(), subscription); err != nil {
+		t.Fatalf("CreateSubscription() error = %v", err)
+	}
+	task := &entity.DownloadTask{
+		UserID:         42,
+		Type:           "download",
+		DownloaderType: DownloaderTypeAria2,
+		Status:         "running",
+		SourceURL:      "magnet:?xt=urn:btih:cancel",
+		ExternalID:     "gid-cancel",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("taskRepo.Create() error = %v", err)
+	}
+	item := &entity.RSSItem{
+		UserID:                42,
+		SourceID:              source.ID,
+		Title:                 "cancel",
+		DownloadURL:           task.SourceURL,
+		LinkType:              RSSLinkTypeMagnet,
+		Status:                RSSItemStatusEnqueued,
+		MatchedSubscriptionID: &subscription.ID,
+		TaskID:                &task.ID,
+		MaxRetryCount:         3,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	if err := rssRepo.CreateItem(context.Background(), item); err != nil {
+		t.Fatalf("CreateItem() error = %v", err)
+	}
+
+	taskSvc := NewTaskService(taskRepo, nil, taskServiceTestDownloader{})
+	rssSvc := NewRSSService(rssRepo, nil, nil, WithRSSNow(func() time.Time { return now }))
+	taskSvc.SetTerminalStatusObserver(rssSvc)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	if _, err := taskSvc.Cancel(ctx, task.ID, false); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	storedTask, err := taskRepo.FindByID(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("FindByID() task error = %v", err)
+	}
+	if storedTask.Status != "canceled" {
+		t.Fatalf("task status = %q", storedTask.Status)
+	}
+	storedItem, err := rssRepo.FindItemByID(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("FindItemByID() item error = %v", err)
+	}
+	if storedItem.Status != RSSItemStatusNeedsAttention || storedItem.NextRetryAt != nil {
+		t.Fatalf("rss item after cancel = %#v", storedItem)
+	}
+	if storedItem.ErrorMessage == nil || *storedItem.ErrorMessage != "download canceled by user" {
+		t.Fatalf("rss cancel error message = %#v", storedItem.ErrorMessage)
+	}
+	if storedItem.RetryReason == nil || *storedItem.RetryReason != RSSRetryReasonTaskFailed {
+		t.Fatalf("rss retry reason = %#v", storedItem.RetryReason)
+	}
+}
+
 func TestUserServiceManagementLifecycle(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1399,6 +1629,7 @@ func (taskServiceTestDownloader) Remove(context.Context, string) error {
 type completedWritingDownloader struct {
 	filename      string
 	content       []byte
+	files         map[string][]byte
 	downloadSpeed int64
 	etaSeconds    *int64
 	errorMessage  *string
@@ -1410,14 +1641,23 @@ func (d *completedWritingDownloader) AddURI(_ context.Context, _ string, dir str
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, d.filename), d.content, 0o644); err != nil {
-		return "", err
+	for name, content := range d.stagedFiles() {
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(target, content, 0o644); err != nil {
+			return "", err
+		}
 	}
 	return "gid-completed", nil
 }
 
 func (d *completedWritingDownloader) TellStatus(context.Context, string) (*DownloadStatus, error) {
-	size := int64(len(d.content))
+	var size int64
+	for _, content := range d.stagedFiles() {
+		size += int64(len(content))
+	}
 	return &DownloadStatus{
 		Status:         "completed",
 		CompletedBytes: size,
@@ -1427,6 +1667,13 @@ func (d *completedWritingDownloader) TellStatus(context.Context, string) (*Downl
 		ErrorMessage:   d.errorMessage,
 		DisplayName:    d.filename,
 	}, nil
+}
+
+func (d *completedWritingDownloader) stagedFiles() map[string][]byte {
+	if len(d.files) > 0 {
+		return d.files
+	}
+	return map[string][]byte{d.filename: d.content}
 }
 
 func (d *completedWritingDownloader) Pause(context.Context, string) error {

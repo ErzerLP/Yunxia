@@ -95,6 +95,7 @@ type DownloadTaskModel struct {
 	SourceID                uint    `gorm:"index;not null"`
 	SavePath                string  `gorm:"size:1024;not null"`
 	TargetVirtualParentPath string  `gorm:"size:1024;not null;default:''"`
+	TargetFilename          string  `gorm:"size:255;not null;default:''"`
 	SaveVirtualPath         string  `gorm:"size:1024;not null;default:''"`
 	ResolvedSourceID        uint    `gorm:"index;not null;default:0"`
 	ResolvedInnerSavePath   string  `gorm:"size:1024;not null;default:''"`
@@ -145,6 +146,8 @@ type RSSSubscriptionModel struct {
 	UseRegex                bool      `gorm:"not null;default:false"`
 	CaseSensitive           bool      `gorm:"not null;default:false"`
 	TargetVirtualParentPath string    `gorm:"size:1024;not null"`
+	DirectoryTemplate       string    `gorm:"size:1024;not null;default:''"`
+	FilenameTemplate        string    `gorm:"size:1024;not null;default:''"`
 	ResolvedSourceID        uint      `gorm:"index;not null;default:0"`
 	ResolvedInnerParentPath string    `gorm:"size:1024;not null;default:''"`
 	CreatedAt               time.Time `gorm:"not null"`
@@ -163,6 +166,7 @@ type RSSItemModel struct {
 	DedupKey              string  `gorm:"uniqueIndex:idx_rss_item_source_dedup;size:128;not null"`
 	DownloadURL           string  `gorm:"type:text;not null;default:''"`
 	LinkType              string  `gorm:"size:32;not null;default:'unsupported'"`
+	ParsedJSON            string  `gorm:"type:text;not null;default:''"`
 	Status                string  `gorm:"index;size:32;not null"`
 	MatchedSubscriptionID *uint   `gorm:"index"`
 	TaskID                *uint   `gorm:"index"`
@@ -255,4 +259,36 @@ type AuditLogModel struct {
 	AfterJSON        string    `gorm:"type:text;not null;default:''"`
 	DetailJSON       string    `gorm:"type:text;not null;default:''"`
 	CreatedAt        time.Time `gorm:"not null"`
+}
+
+// NotificationChannelModel 表示通知通道表。
+type NotificationChannelModel struct {
+	ID             uint      `gorm:"primaryKey"`
+	Name           string    `gorm:"size:128;not null"`
+	Type           string    `gorm:"index;size:32;not null"`
+	IsEnabled      bool      `gorm:"index;not null;default:true"`
+	EventTypesJSON string    `gorm:"type:text;not null;default:'[]'"`
+	ConfigJSON     string    `gorm:"type:text;not null"`
+	CreatedAt      time.Time `gorm:"not null"`
+	UpdatedAt      time.Time `gorm:"not null"`
+}
+
+// NotificationEventModel 表示通知事件表。
+type NotificationEventModel struct {
+	ID            uint       `gorm:"primaryKey"`
+	UserID        uint       `gorm:"index;not null;default:0"`
+	EventType     string     `gorm:"index;size:96;not null"`
+	Severity      string     `gorm:"size:16;not null"`
+	Title         string     `gorm:"size:255;not null"`
+	Message       string     `gorm:"type:text;not null"`
+	PayloadJSON   string     `gorm:"type:text;not null;default:'{}'"`
+	Status        string     `gorm:"index;size:32;not null"`
+	Attempts      int        `gorm:"not null;default:0"`
+	MaxAttempts   int        `gorm:"not null;default:3"`
+	LastAttemptAt *time.Time `gorm:"index"`
+	NextAttemptAt *time.Time `gorm:"index"`
+	DeliveredAt   *time.Time `gorm:"index"`
+	LastError     *string    `gorm:"type:text"`
+	CreatedAt     time.Time  `gorm:"index;not null"`
+	UpdatedAt     time.Time  `gorm:"not null"`
 }

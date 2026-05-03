@@ -34,10 +34,21 @@ type RSSSubscription struct {
 	UseRegex                bool
 	CaseSensitive           bool
 	TargetVirtualParentPath string
+	DirectoryTemplate       string
+	FilenameTemplate        string
 	ResolvedSourceID        uint
 	ResolvedInnerParentPath string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+}
+
+// RSSAnimeParsed 表示从 RSS 标题提取出的轻量番剧元信息。
+type RSSAnimeParsed struct {
+	AnimeTitle    string
+	Season        string
+	Episode       string
+	SubtitleGroup string
+	Resolution    string
 }
 
 // RSSItem 表示抓取并去重后的 RSS 条目。
@@ -52,6 +63,7 @@ type RSSItem struct {
 	DedupKey              string
 	DownloadURL           string
 	LinkType              string
+	Parsed                RSSAnimeParsed
 	Status                string
 	MatchedSubscriptionID *uint
 	TaskID                *uint

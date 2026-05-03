@@ -27,6 +27,7 @@ type RSSItemFilter struct {
 	IncludeAll     bool
 	SourceID       uint
 	SubscriptionID uint
+	TaskID         uint
 	Status         string
 	Limit          int
 }

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -24,19 +25,26 @@ type RSSHandler struct {
 		DeleteSource(ctx context.Context, id uint) error
 		RefreshSource(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
 		RefreshAllSources(ctx context.Context) (*appdto.RSSRefreshAllResponse, error)
+		ExportConfig(ctx context.Context) (*appdto.RSSExportResponse, error)
+		ImportConfig(ctx context.Context, req appdto.RSSImportRequest) (*appdto.RSSImportResponse, error)
 
 		ListSubscriptions(ctx context.Context, sourceID uint) (*appdto.RSSSubscriptionListResponse, error)
 		CreateSubscription(ctx context.Context, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
+		CloneSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionCloneRequest) (*appdto.RSSSubscriptionView, error)
 		GetSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionView, error)
 		UpdateSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
 		DeleteSubscription(ctx context.Context, id uint) error
+		BatchUpdateSubscriptionState(ctx context.Context, req appdto.RSSSubscriptionBatchStateRequest) (*appdto.RSSSubscriptionBatchStateResponse, error)
 		RunSubscription(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
 		PreviewSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionPreviewResponse, error)
+		PreviewSubscriptionRules(ctx context.Context, req appdto.RSSSubscriptionPreviewRequest) (*appdto.RSSSubscriptionPreviewResponse, error)
 
 		ListItems(ctx context.Context, filter domainrepo.RSSItemFilter) (*appdto.RSSItemListResponse, error)
 		DownloadItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
 		ReprocessItem(ctx context.Context, id uint) (*appdto.RSSItemView, error)
 		RetryItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
+		BatchIgnoreItems(ctx context.Context, req appdto.RSSItemBatchIgnoreRequest) (*appdto.RSSItemBatchActionResponse, error)
+		BatchRetryItems(ctx context.Context, req appdto.RSSItemBatchRetryRequest) (*appdto.RSSItemBatchActionResponse, error)
 		QBitHealth(ctx context.Context) (*appdto.RSSQBitHealthResponse, error)
 	}
 }
@@ -50,19 +58,26 @@ func NewRSSHandler(service interface {
 	DeleteSource(ctx context.Context, id uint) error
 	RefreshSource(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
 	RefreshAllSources(ctx context.Context) (*appdto.RSSRefreshAllResponse, error)
+	ExportConfig(ctx context.Context) (*appdto.RSSExportResponse, error)
+	ImportConfig(ctx context.Context, req appdto.RSSImportRequest) (*appdto.RSSImportResponse, error)
 
 	ListSubscriptions(ctx context.Context, sourceID uint) (*appdto.RSSSubscriptionListResponse, error)
 	CreateSubscription(ctx context.Context, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
+	CloneSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionCloneRequest) (*appdto.RSSSubscriptionView, error)
 	GetSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionView, error)
 	UpdateSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionUpsertRequest) (*appdto.RSSSubscriptionView, error)
 	DeleteSubscription(ctx context.Context, id uint) error
+	BatchUpdateSubscriptionState(ctx context.Context, req appdto.RSSSubscriptionBatchStateRequest) (*appdto.RSSSubscriptionBatchStateResponse, error)
 	RunSubscription(ctx context.Context, id uint) (*appdto.RSSRefreshResponse, error)
 	PreviewSubscription(ctx context.Context, id uint) (*appdto.RSSSubscriptionPreviewResponse, error)
+	PreviewSubscriptionRules(ctx context.Context, req appdto.RSSSubscriptionPreviewRequest) (*appdto.RSSSubscriptionPreviewResponse, error)
 
 	ListItems(ctx context.Context, filter domainrepo.RSSItemFilter) (*appdto.RSSItemListResponse, error)
 	DownloadItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
 	ReprocessItem(ctx context.Context, id uint) (*appdto.RSSItemView, error)
 	RetryItem(ctx context.Context, id uint, req appdto.RSSManualDownloadRequest) (*appdto.RSSItemView, error)
+	BatchIgnoreItems(ctx context.Context, req appdto.RSSItemBatchIgnoreRequest) (*appdto.RSSItemBatchActionResponse, error)
+	BatchRetryItems(ctx context.Context, req appdto.RSSItemBatchRetryRequest) (*appdto.RSSItemBatchActionResponse, error)
 	QBitHealth(ctx context.Context) (*appdto.RSSQBitHealthResponse, error)
 }) *RSSHandler {
 	return &RSSHandler{service: service}
@@ -160,6 +175,29 @@ func (h *RSSHandler) RefreshAllSources(c *gin.Context) {
 	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
 }
 
+func (h *RSSHandler) ExportConfig(c *gin.Context) {
+	resp, err := h.service.ExportConfig(c.Request.Context())
+	if err != nil {
+		h.writeError(c, err, "RSS_SOURCE_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
+func (h *RSSHandler) ImportConfig(c *gin.Context) {
+	var req appdto.RSSImportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.ImportConfig(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err, "RSS_SOURCE_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
 func (h *RSSHandler) ListSubscriptions(c *gin.Context) {
 	sourceID, err := parseUintQuery(c, "source_id")
 	if err != nil {
@@ -181,6 +219,27 @@ func (h *RSSHandler) CreateSubscription(c *gin.Context) {
 		return
 	}
 	resp, err := h.service.CreateSubscription(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err, "RSS_SUBSCRIPTION_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusCreated, "OK", "ok", gin.H{"subscription": resp})
+}
+
+func (h *RSSHandler) CloneSubscription(c *gin.Context) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	var req appdto.RSSSubscriptionCloneRequest
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+			return
+		}
+	}
+	resp, err := h.service.CloneSubscription(c.Request.Context(), id, req)
 	if err != nil {
 		h.writeError(c, err, "RSS_SUBSCRIPTION_NOT_FOUND")
 		return
@@ -234,6 +293,20 @@ func (h *RSSHandler) DeleteSubscription(c *gin.Context) {
 	httpresp.JSON(c, http.StatusOK, "OK", "ok", gin.H{"deleted": true, "id": id})
 }
 
+func (h *RSSHandler) BatchUpdateSubscriptionState(c *gin.Context) {
+	var req appdto.RSSSubscriptionBatchStateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.BatchUpdateSubscriptionState(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err, "RSS_SUBSCRIPTION_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
 func (h *RSSHandler) RunSubscription(c *gin.Context) {
 	id, err := parseUintParam(c, "id")
 	if err != nil {
@@ -257,6 +330,20 @@ func (h *RSSHandler) PreviewSubscription(c *gin.Context) {
 	resp, err := h.service.PreviewSubscription(c.Request.Context(), id)
 	if err != nil {
 		h.writeError(c, err, "RSS_SUBSCRIPTION_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
+func (h *RSSHandler) PreviewSubscriptionRules(c *gin.Context) {
+	var req appdto.RSSSubscriptionPreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.PreviewSubscriptionRules(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err, "RSS_SOURCE_NOT_FOUND")
 		return
 	}
 	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
@@ -337,6 +424,34 @@ func (h *RSSHandler) RetryItem(c *gin.Context) {
 		return
 	}
 	httpresp.JSON(c, http.StatusAccepted, "OK", "ok", gin.H{"item": resp})
+}
+
+func (h *RSSHandler) BatchIgnoreItems(c *gin.Context) {
+	var req appdto.RSSItemBatchIgnoreRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.BatchIgnoreItems(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err, "RSS_ITEM_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
+func (h *RSSHandler) BatchRetryItems(c *gin.Context) {
+	var req appdto.RSSItemBatchRetryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	resp, err := h.service.BatchRetryItems(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err, "RSS_ITEM_NOT_FOUND")
+		return
+	}
+	httpresp.JSON(c, http.StatusAccepted, "OK", "ok", resp)
 }
 
 func (h *RSSHandler) QBitHealth(c *gin.Context) {

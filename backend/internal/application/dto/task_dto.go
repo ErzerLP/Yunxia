@@ -9,6 +9,7 @@ type DownloadTaskView struct {
 	SourceID                uint    `json:"source_id"`
 	SavePath                string  `json:"save_path"`
 	TargetVirtualParentPath string  `json:"target_virtual_parent_path,omitempty"`
+	TargetFilename          string  `json:"target_filename,omitempty"`
 	SaveVirtualPath         string  `json:"save_virtual_path,omitempty"`
 	ResolvedSourceID        uint    `json:"resolved_source_id,omitempty"`
 	ResolvedInnerSavePath   string  `json:"resolved_inner_save_path,omitempty"`
@@ -37,6 +38,7 @@ type CreateTaskRequest struct {
 	SourceID                uint   `json:"source_id"`
 	SavePath                string `json:"save_path"`
 	TargetVirtualParentPath string `json:"target_virtual_parent_path,omitempty"`
+	TargetFilename          string `json:"target_filename,omitempty"`
 }
 
 // CancelTaskResponse 表示取消任务响应。

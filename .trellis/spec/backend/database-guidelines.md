@@ -85,6 +85,27 @@ if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
 *user = *userEntityFromModel(model)
 ```
 
+> **Warning**: GORM fields with `gorm:"default:..."` may use the database
+> default for Go zero values during `Create`. For `bool` fields whose default is
+> `true`, an intentional `false` must be persisted explicitly, then covered by a
+> repository/service regression test.
+
+Example:
+
+```go
+requestedEnabled := subscription.IsEnabled
+if err := r.db.WithContext(ctx).Create(model).Error; err != nil { return err }
+if !requestedEnabled {
+    if err := r.db.WithContext(ctx).
+        Model(&RSSSubscriptionModel{}).
+        Where("id = ?", model.ID).
+        UpdateColumn("is_enabled", false).Error; err != nil {
+        return err
+    }
+    model.IsEnabled = false
+}
+```
+
 ### Find
 
 ```go
@@ -116,6 +137,7 @@ if result.RowsAffected == 0 { return domainrepo.ErrNotFound }
 | Unique constraint conflict | Prefer service pre-validation + sentinel conflict error for user-facing cases |
 | Invalid path/config before persistence | Service sentinel such as `ErrPathInvalid` / `ErrConfigInvalid` |
 | Update/delete affects zero rows | `domainrepo.ErrNotFound` |
+| `Create` receives explicit `false` for a `default:true` bool | Persist `false` explicitly; do not let DB default rewrite it to `true` |
 
 Do not compare error strings; use `errors.Is`.
 
@@ -126,6 +148,7 @@ For DB-related changes, add/update:
 - Repository tests in `backend/internal/infrastructure/persistence/gorm/*_test.go`
 - Service tests in `backend/internal/application/service/*_test.go`
 - HTTP workflow tests in `backend/internal/interfaces/http/*_test.go` when visible through API
+- Explicit false regression tests when touching `default:true` bool fields.
 
 Run from `backend/`:
 

@@ -4,14 +4,23 @@ import { useAuthStore } from '@/stores/authStore'
 import { useUIStore } from '@/stores/uiStore'
 import { cn } from '@/utils'
 
-const navItems = [
+interface NavItem {
+  id: string
+  label: string
+  icon: typeof FolderTree
+  path: string
+  capability?: string
+  capabilities?: string[]
+}
+
+const navItems: NavItem[] = [
   { id: 'files', label: '文件', icon: FolderTree, path: '/files' },
   { id: 'sources', label: '存储源', icon: HardDrive, path: '/sources', capability: 'source.read' },
   { id: 'tasks', label: '离线下载', icon: Download, path: '/tasks', capability: 'task.read_all' },
   { id: 'rss', label: 'RSS 追番', icon: Rss, path: '/rss', capability: 'rss.read' },
   { id: 'trash', label: '回收站', icon: Trash2, path: '/trash' },
   { id: 'shares', label: '分享', icon: Link, path: '/shares', capability: 'share.read_all' },
-  { id: 'settings', label: '设置', icon: Settings, path: '/settings', capability: 'system.config.read' },
+  { id: 'settings', label: '设置', icon: Settings, path: '/settings', capabilities: ['system.config.read', 'notification.read'] },
   { id: 'users', label: '用户', icon: Users, path: '/users', capability: 'user.read' },
   { id: 'acl', label: 'ACL', icon: Shield, path: '/acl', capability: 'acl.read' },
   { id: 'audit', label: '审计', icon: ScrollText, path: '/audit', capability: 'audit.read' },
@@ -25,10 +34,13 @@ export function Sidebar() {
   const { hasCapability } = useAuthStore()
 
   const visibleNavItems = navItems.filter(
-    (item) => !item.capability || hasCapability(item.capability)
+    (item) => {
+      if (item.capabilities) return item.capabilities.some((cap) => hasCapability(cap))
+      return !item.capability || hasCapability(item.capability)
+    }
   )
 
-  const handleNavigate = (item: typeof navItems[0]) => {
+  const handleNavigate = (item: NavItem) => {
     setSidebarActive(item.id)
     navigate(item.path)
   }

@@ -226,6 +226,33 @@ func RegisterAuditRoutes(
 	auditDetail.GET("/audit/logs/:id", auditHandler.Get)
 }
 
+// RegisterNotificationRoutes 注册通知通道与事件路由。
+func RegisterNotificationRoutes(
+	r *gin.Engine,
+	notificationHandler *handler.NotificationHandler,
+	authMiddleware *middleware.AuthMiddleware,
+	auditRecorder *appaudit.Recorder,
+	rootLogger *slog.Logger,
+) {
+	api := r.Group("/api/v1")
+
+	authorized := api.Group("")
+	authorized.Use(authMiddleware.RequireAuth())
+
+	notificationRead := authorized.Group("/notifications")
+	notificationRead.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "notification", "read", permission.CapabilityNotificationRead))
+	notificationRead.GET("/channels", notificationHandler.ListChannels)
+	notificationRead.GET("/events", notificationHandler.ListEvents)
+
+	notificationManage := authorized.Group("/notifications")
+	notificationManage.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "notification", "manage", permission.CapabilityNotificationManage))
+	notificationManage.POST("/channels", notificationHandler.CreateChannel)
+	notificationManage.PUT("/channels/:id", notificationHandler.UpdateChannel)
+	notificationManage.DELETE("/channels/:id", notificationHandler.DeleteChannel)
+	notificationManage.POST("/channels/:id/test", notificationHandler.TestChannel)
+	notificationManage.POST("/events/:id/retry", notificationHandler.RetryEvent)
+}
+
 // RegisterTaskRoutes 注册离线任务相关路由。
 func RegisterTaskRoutes(
 	r *gin.Engine,
@@ -268,16 +295,23 @@ func RegisterRSSRoutes(
 
 	rssManage := authorized.Group("/rss")
 	rssManage.Use(middleware.RequireCapabilitiesForAction(auditRecorder, rootLogger, "rss", "manage", permission.CapabilityRSSManage))
+	rssManage.GET("/export", rssHandler.ExportConfig)
+	rssManage.POST("/import", rssHandler.ImportConfig)
 	rssManage.POST("/sources", rssHandler.CreateSource)
 	rssManage.PATCH("/sources/:id", rssHandler.UpdateSource)
 	rssManage.DELETE("/sources/:id", rssHandler.DeleteSource)
 	rssManage.POST("/sources/refresh-all", rssHandler.RefreshAllSources)
 	rssManage.POST("/sources/:id/refresh", rssHandler.RefreshSource)
 	rssManage.POST("/subscriptions", rssHandler.CreateSubscription)
+	rssManage.POST("/subscriptions/preview", rssHandler.PreviewSubscriptionRules)
+	rssManage.POST("/subscriptions/batch-state", rssHandler.BatchUpdateSubscriptionState)
 	rssManage.PATCH("/subscriptions/:id", rssHandler.UpdateSubscription)
 	rssManage.DELETE("/subscriptions/:id", rssHandler.DeleteSubscription)
+	rssManage.POST("/subscriptions/:id/clone", rssHandler.CloneSubscription)
 	rssManage.POST("/subscriptions/:id/run", rssHandler.RunSubscription)
 	rssManage.POST("/subscriptions/:id/preview", rssHandler.PreviewSubscription)
+	rssManage.POST("/items/batch-ignore", rssHandler.BatchIgnoreItems)
+	rssManage.POST("/items/batch-retry", rssHandler.BatchRetryItems)
 	rssManage.POST("/items/:id/download", rssHandler.DownloadItem)
 	rssManage.POST("/items/:id/reprocess", rssHandler.ReprocessItem)
 	rssManage.POST("/items/:id/retry", rssHandler.RetryItem)

@@ -17,6 +17,7 @@ import (
 	appsvc "yunxia/internal/application/service"
 	appcfg "yunxia/internal/infrastructure/config"
 	"yunxia/internal/infrastructure/downloader"
+	infraNotification "yunxia/internal/infrastructure/notification"
 	appLog "yunxia/internal/infrastructure/observability/logging"
 	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
 	infraRSS "yunxia/internal/infrastructure/rss"
@@ -68,6 +69,7 @@ func main() {
 	uploadRepo := gormrepo.NewUploadSessionRepository(db)
 	taskRepo := gormrepo.NewTaskRepository(db)
 	rssRepo := gormrepo.NewRSSRepository(db)
+	notificationRepo := gormrepo.NewNotificationRepository(db)
 	trashRepo := gormrepo.NewTrashItemRepository(db)
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
@@ -173,13 +175,19 @@ func main() {
 		appsvc.WithTaskVFSResolver(vfsSvc),
 		appsvc.WithTaskDownloadRouter(downloadRouter),
 	)
-	go taskSvc.StartSyncWorker(context.Background(), 5*time.Second)
+	notificationSvc := appsvc.NewNotificationService(
+		notificationRepo,
+		appsvc.WithNotificationWebhookSender(infraNotification.NewWebhookSender(10*time.Second)),
+		appsvc.WithNotificationLogger(appLog.Component(rootLogger, "service.notification")),
+	)
+	go notificationSvc.StartRetryWorker(context.Background(), time.Minute)
 	rssOptions := []appsvc.RSSServiceOption{
 		appsvc.WithRSSFetcher(infraRSS.NewFetcher()),
 		appsvc.WithRSSVFSResolver(vfsSvc),
 		appsvc.WithRSSACLAuthorizer(aclAuthorizer),
 		appsvc.WithRSSUserRepository(userRepo),
 		appsvc.WithRSSTaskRepository(taskRepo),
+		appsvc.WithRSSNotifier(notificationSvc),
 	}
 	if qbitClient != nil {
 		rssOptions = append(rssOptions, appsvc.WithRSSQBitHealthChecker(qbitClient))
@@ -190,6 +198,8 @@ func main() {
 		taskSvc,
 		rssOptions...,
 	)
+	taskSvc.SetTerminalStatusObserver(rssSvc)
+	go taskSvc.StartSyncWorker(context.Background(), 5*time.Second)
 	go rssSvc.StartRefreshWorker(context.Background(), time.Minute)
 	go rssSvc.StartRetryWorker(context.Background(), time.Minute)
 	shareSvc := appsvc.NewShareService(
@@ -213,6 +223,7 @@ func main() {
 	trashHandler := httphandler.NewTrashHandler(trashSvc)
 	uploadHandler := httphandler.NewUploadHandler(uploadSvc)
 	taskHandler := httphandler.NewTaskHandler(taskSvc)
+	notificationHandler := httphandler.NewNotificationHandler(notificationSvc)
 	rssHandler := httphandler.NewRSSHandler(rssSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
@@ -233,6 +244,7 @@ func main() {
 	httpiface.RegisterUserRoutes(engine, userHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterACLRoutes(engine, aclHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterAuditRoutes(engine, auditHandler, authMW, auditRecorder, rootLogger)
+	httpiface.RegisterNotificationRoutes(engine, notificationHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterTaskRoutes(engine, taskHandler, authMW)
 	httpiface.RegisterRSSRoutes(engine, rssHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterShareRoutes(engine, shareHandler, authMW)

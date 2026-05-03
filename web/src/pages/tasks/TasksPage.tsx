@@ -457,6 +457,9 @@ export function TasksPage() {
 
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
                   <span>保存至: {getTaskSavePathLabel(task)}</span>
+                  {task.target_filename && (
+                    <span>计划命名: {task.target_filename}</span>
+                  )}
                   <span>创建于: {formatDate(task.created_at)}</span>
                   {task.status === 'completed' && task.finished_at && (
                     <span>完成于: {formatDate(task.finished_at)}</span>

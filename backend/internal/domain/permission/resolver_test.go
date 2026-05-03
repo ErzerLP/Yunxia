@@ -43,6 +43,8 @@ func TestResolveCapabilitiesByRole(t *testing.T) {
 				CapabilityShareManageAll,
 				CapabilityRSSRead,
 				CapabilityRSSManage,
+				CapabilityNotificationRead,
+				CapabilityNotificationManage,
 				CapabilityAuditRead,
 			},
 		},
@@ -56,6 +58,7 @@ func TestResolveCapabilitiesByRole(t *testing.T) {
 				CapabilityTaskReadAll,
 				CapabilityTaskManageAll,
 				CapabilityRSSRead,
+				CapabilityNotificationRead,
 			},
 		},
 		{

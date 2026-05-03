@@ -42,6 +42,11 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
+| 待联调 | 2026-05-02 | RSS 导入导出 | RSS/追番页、设置/备份页 | P1 | `/api/v1/rss/export`、`/api/v1/rss/import` | [详情](#handoff-2026-05-02-rss-import-export) |
+| 待联调 | 2026-05-02 | RSS 订阅批量控制 | RSS/追番页、订阅列表 | P1 | `/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/subscriptions/batch-state` | [详情](#handoff-2026-05-02-rss-subscription-bulk-controls) |
+| 待联调 | 2026-05-02 | RSS 管理动作 | RSS/追番页、订阅编辑页、条目列表 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-ignore`、`/api/v1/rss/items/batch-retry` | [详情](#handoff-2026-05-02-rss-management-actions) |
+| 待联调 | 2026-05-02 | RSS 番剧模板 | RSS/追番页、任务页 | P1 | `/api/v1/rss/subscriptions`、`/api/v1/rss/items`、`/api/v1/tasks` | [详情](#handoff-2026-05-02-rss-anime-templates) |
 | 已适配 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry` | [详情](#handoff-2026-04-30-rss-unattended) |
 | 已适配 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页 | P1 | `/api/v1/rss/*`、`/api/v1/tasks` | [详情](#handoff-2026-04-29-rss) |
 
@@ -414,3 +419,425 @@ node scripts/check-vfs-integration.mjs # pass
 ```
 
 2026-05-01 测试完成说明：运行环境 smoke 与前序待回归项已由测试负责人补充完成，当前无前端适配阻塞项。
+
+---
+
+<a id="handoff-2026-05-02-rss-anime-templates"></a>
+
+### [P1][待联调][RSS] 2026-05-02 RSS 番剧解析与目录模板
+
+#### 前端适配 checklist
+
+- [x] `RSSSubscriptionView` / 创建更新表单接入 `directory_template`。
+- [x] `RSSSubscriptionView` / 创建更新表单接入 `filename_template`，并说明它会在单文件 RSS 下载导入完成时实际重命名。
+- [x] `RSSItemView` 展示 `parsed.anime_title`、`parsed.season`、`parsed.episode`、`parsed.subtitle_group`、`parsed.resolution`。
+- [x] 订阅编辑页给出模板占位符提示：`{anime_title}`、`{season}`、`{episode}`、`{subtitle_group}`、`{resolution}`、`{title}`。
+- [x] 模板输入提示路径安全限制：目录模板必须是相对路径；不要输入 `..`、绝对路径或反斜杠。
+- [x] 条目/任务联动页说明：`directory_template` 会影响后续 RSS 入队任务的 `target_virtual_parent_path`；`filename_template` 会写入任务 `target_filename` 快照。
+
+#### 背景 / 变更摘要
+
+后端已新增 AutoBangumi-lite 标题解析：RSS 条目刷新/创建时会从常见 Mikan/字幕组标题提取番剧名、季度、集数、字幕组和分辨率，并持久化到 item。订阅新增 `directory_template` 与 `filename_template` 字段；目录模板会在入队前基于条目解析结果渲染为 `target_virtual_parent_path` 下的安全子目录；文件名模板会渲染为离线任务的 `target_filename` 快照，并在任务完成后的后端导入阶段对单文件产物重命名。
+
+#### 接口与字段
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.10 rss`。前端重点变更：
+
+```ts
+type RSSAnimeParsedView = {
+  anime_title: string
+  season: string
+  episode: string
+  subtitle_group: string
+  resolution: string
+}
+
+type RSSItemView = {
+  parsed: RSSAnimeParsedView
+}
+
+type RSSSubscriptionView = {
+  directory_template: string
+  filename_template: string
+}
+
+type DownloadTaskView = {
+  target_filename?: string
+}
+```
+
+订阅创建/更新请求可传：
+
+```json
+{
+  "target_virtual_parent_path": "/anime",
+  "directory_template": "{anime_title}/{season}",
+  "filename_template": "{anime_title} - {episode} [{resolution}]"
+}
+```
+
+#### 注意事项
+
+- `directory_template=""`：旧行为不变，入队目标仍为订阅的 `target_virtual_parent_path`。
+- `directory_template` 非空：后端会将渲染结果作为安全相对子目录拼到 `target_virtual_parent_path` 下，例如 `/anime/Example Show/S01`。
+- 未知占位符或非法模板返回 `PATH_INVALID`；绝对路径、Windows drive-style 前缀（如 `C:/anime` / `C:anime`）、`..` 和反斜杠都属于非法模板；条目解析字段缺失时对应占位会渲染为空或安全 fallback；后端会清洗路径片段。
+- `filename_template=""`：旧行为不变，导入时保持下载器产物原文件名。
+- `filename_template` 非空：RSS 入队时后端渲染为任务 `target_filename`；下载完成后，如果 staging 中只有一个有效文件，导入到目标目录时会使用该文件名。模板结果不含明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名）时后端保留原文件扩展名，例如模板渲染为 `Example Show - S01E05 [1080p]`、原文件为 `.mkv` 时，最终文件为 `Example Show - S01E05 [1080p].mkv`。
+- 多文件 torrent / 多文件 staging 不应用 `filename_template`，仍保留原相对路径，避免破坏 torrent 目录结构。
+- `DownloadTaskView.target_filename` 是任务创建时的快照，便于任务页展示“计划命名”；最终文件扩展名可能由导入阶段按原文件补齐。
+
+#### 前端验证记录
+
+- 2026-05-03：前端已完成页面/API client/DTO/权限入口适配，静态验证通过；尚未在真实后端运行环境完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
+
+<a id="handoff-2026-05-02-rss-management-actions"></a>
+
+### [P1][待联调][RSS] 2026-05-02 RSS 管理动作：临时预览、批量忽略、批量重试
+
+#### 前端适配 checklist
+
+- [x] 订阅创建/编辑表单接入临时规则预览：`POST /api/v1/rss/subscriptions/preview`，未保存订阅也可按 `source_id` + 规则查看 `matched/missing/excluded`。
+- [x] API client/types 新增 `RSSSubscriptionPreviewRequest`、`RSSItemBatchActionResponse`。
+- [x] 条目列表支持多选后调用 `POST /api/v1/rss/items/batch-ignore`。
+- [x] 条目列表支持多选后调用 `POST /api/v1/rss/items/batch-retry`，保留可选 `subscription_id`。
+- [x] 批量动作结果按 `items[].success` 展示部分成功/失败，不要只看 HTTP 成功状态。
+- [x] 对 `TASK_INVALID_STATE`、`DOWNLOAD_LINK_UNSUPPORTED`、`RSS_REGEX_INVALID` 给出用户可理解提示。
+
+#### 背景 / 变更摘要
+
+后端补齐三项 RSS 高频管理动作：规则可以在保存前临时 preview；误命中的 RSS item 可以批量忽略；失败或待处理 item 可以批量手动 retry。所有接口仍要求 `rss.manage`，并按 item/source owner 做后端授权。
+
+#### 接口与字段
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.10 rss`。新增接口：
+
+| 动作 | 方法 | 路径 | 权限 | 成功响应 |
+|---|---|---|---|---|
+| 临时规则 preview | POST | `/api/v1/rss/subscriptions/preview` | `rss.manage` | `RSSSubscriptionPreviewResponse`，`subscription_id=0` |
+| 批量忽略 item | POST | `/api/v1/rss/items/batch-ignore` | `rss.manage` | `RSSItemBatchActionResponse` |
+| 批量重试 item | POST | `/api/v1/rss/items/batch-retry` | `rss.manage` | `RSSItemBatchActionResponse` |
+
+临时 preview 请求：
+
+```json
+{
+  "source_id": 1,
+  "must_contain": ["Frieren", "1080p"],
+  "must_not_contain": ["CHT"],
+  "use_regex": false,
+  "case_sensitive": false
+}
+```
+
+批量忽略：
+
+```json
+{
+  "item_ids": [10, 11, 12]
+}
+```
+
+批量重试：
+
+```json
+{
+  "item_ids": [10, 11, 12],
+  "subscription_id": 3
+}
+```
+
+批量响应：
+
+```ts
+type RSSItemBatchActionResponse = {
+  items: Array<{
+    item_id: number
+    success: boolean
+    item?: RSSItemView
+    error_code?: string
+    error_message?: string
+  }>
+  succeeded: number
+  failed: number
+}
+```
+
+#### 注意事项
+
+- 临时 preview 不要求 `target_virtual_parent_path`，也不会创建/更新 subscription；返回结构沿用已保存订阅 preview，差异是 `subscription_id=0`。
+- 批量忽略成功项会变成 `ignored`，并清空 `error_message`、`retry_reason`、`next_retry_at`；已完成或已有活跃 task 的 item 会单项失败 `TASK_INVALID_STATE`。
+- 批量 retry 复用单条 retry 语义；已有关联非终态 task 的 item 不会重复入队，失败项通过 `error_code/error_message` 返回。
+- 批量接口的 HTTP 200/202 只表示请求被处理；前端必须读取 `succeeded/failed` 和每项结果。
+
+#### 前端验证记录
+
+- 2026-05-03：前端已完成页面/API client/DTO/权限入口适配，静态验证通过；尚未在真实后端运行环境完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
+
+<a id="handoff-2026-05-02-rss-subscription-bulk-controls"></a>
+
+### [P1][待联调][RSS] 2026-05-02 RSS 订阅复制与批量启停
+
+#### 前端适配 checklist
+
+- [x] 订阅列表新增“复制”动作：调用 `POST /api/v1/rss/subscriptions/:id/clone`，成功后插入或刷新订阅列表。
+- [x] 复制弹窗/快捷动作支持可选 `name` 与 `is_enabled`；不传 `name` 时后端生成 `原名 Copy`，不传 `is_enabled` 时保持原状态。
+- [x] 订阅列表支持多选后调用 `POST /api/v1/rss/subscriptions/batch-state` 实现批量启用/禁用。
+- [x] API client/types 新增 `RSSSubscriptionCloneRequest`、`RSSSubscriptionBatchStateRequest`、`RSSSubscriptionBatchStateResponse`。
+- [x] 批量启停结果按 `items[].success` 展示部分成功/失败，不要只看 HTTP 200。
+- [x] 对 `RSS_SUBSCRIPTION_NOT_FOUND`、`PERMISSION_DENIED`、`CONFIG_INVALID` 给出用户可理解提示，并在失败后刷新列表。
+
+#### 背景 / 变更摘要
+
+后端补齐 RSS 订阅管理列表的两个高频操作：复制已有订阅规则，以及批量启用/禁用订阅。所有接口仍要求 `rss.manage`；复制和批量状态更新都会按原订阅 owner 做后端授权。
+
+#### 接口与字段
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.10 rss`。新增接口：
+
+| 动作 | 方法 | 路径 | 权限 | 成功响应 |
+|---|---|---|---|---|
+| 复制订阅 | POST | `/api/v1/rss/subscriptions/:id/clone` | `rss.manage` | 201，`{subscription}` |
+| 批量启停订阅 | POST | `/api/v1/rss/subscriptions/batch-state` | `rss.manage` | 200，`RSSSubscriptionBatchStateResponse` |
+
+复制订阅请求体可为空：
+
+```json
+{
+  "name": "Frieren 1080p Copy",
+  "is_enabled": false
+}
+```
+
+批量启停请求：
+
+```json
+{
+  "subscription_ids": [1, 2, 3],
+  "is_enabled": false
+}
+```
+
+批量启停响应：
+
+```ts
+type RSSSubscriptionBatchStateResponse = {
+  items: Array<{
+    subscription_id: number
+    success: boolean
+    subscription?: RSSSubscriptionView
+    error_code?: string
+    error_message?: string
+  }>
+  succeeded: number
+  failed: number
+}
+```
+
+#### 注意事项
+
+- 复制会保留 `source_id`、匹配规则、regex/case 设置、`target_virtual_parent_path`、`directory_template`、`filename_template`、`resolved_source_id`、`resolved_inner_parent_path`，但使用新的 `id/created_at/updated_at`；不会修改原订阅。
+- 批量启停成功项会返回更新后的 `RSSSubscriptionView`；失败项只影响对应 `subscription_id`，整体 HTTP 仍为 200。
+- `is_enabled=false` 是合法值；前端提交批量启停时必须显式带上 `is_enabled` 字段。
+
+#### 前端验证记录
+
+- 2026-05-03：前端已完成页面/API client/DTO/权限入口适配，静态验证通过；尚未在真实后端运行环境完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
+
+<a id="handoff-2026-05-02-rss-import-export"></a>
+
+### [P1][待联调][RSS] 2026-05-02 RSS 源/订阅导入导出
+
+#### 前端适配 checklist
+
+- [x] RSS 页面或设置/备份页新增“导出配置”：调用 `GET /api/v1/rss/export` 并下载/复制返回 JSON。
+- [x] 新增“导入配置”入口：读取 JSON 后调用 `POST /api/v1/rss/import`。
+- [x] 支持 `dry_run=true` 预检，展示每个 source/subscription 的 `action/success/error_code/error_message` 与汇总计数。
+- [x] API client/types 新增 `RSSExportResponse`、`RSSImportRequest`、`RSSImportResponse`。
+- [x] 导入部分失败时不要把 HTTP 200 当作全成功，必须读取 `sources.failed`、`subscriptions.failed` 和 `items[]`。
+- [x] 对 `CONFIG_INVALID`、`PATH_INVALID`、`NO_BACKING_STORAGE`、`SOURCE_READ_ONLY`、`PERMISSION_DENIED`、`RSS_SOURCE_NOT_FOUND` 给出逐项提示。
+
+#### 背景 / 变更摘要
+
+后端新增 RSS 配置迁移能力：导出只包含 RSS 源与订阅规则的可迁移配置，不包含 RSS item、下载任务、刷新健康、retry 等运行时状态；导入按当前用户 owner + URL 精确复用已有 source，不覆盖已有 source，缺失 source 才创建。订阅导入会重新校验目标 VFS 路径可写，单项失败不会中断整个导入。
+
+#### 接口与字段
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.10 rss`。新增接口：
+
+| 动作 | 方法 | 路径 | 权限 | 成功响应 |
+|---|---|---|---|---|
+| 导出 RSS 配置 | GET | `/api/v1/rss/export` | `rss.manage` | 200，`RSSExportResponse` |
+| 导入 RSS 配置 | POST | `/api/v1/rss/import` | `rss.manage` | 200，`RSSImportResponse` |
+
+导出响应核心字段：
+
+```ts
+type RSSExportResponse = {
+  version: number
+  exported_at: string
+  sources: Array<{
+    name: string
+    url: string
+    is_enabled: boolean
+    refresh_interval_seconds: number
+  }>
+  subscriptions: Array<{
+    source_url: string
+    name: string
+    is_enabled: boolean
+    must_contain: string[]
+    must_not_contain: string[]
+    use_regex: boolean
+    case_sensitive: boolean
+    target_virtual_parent_path: string
+    directory_template: string
+    filename_template: string
+  }>
+}
+```
+
+导入请求：
+
+```ts
+type RSSImportRequest = {
+  dry_run: boolean
+  sources: RSSExportResponse["sources"]
+  subscriptions: Array<RSSExportResponse["subscriptions"][number] & {
+    source_ref?: string
+  }>
+}
+```
+
+导入响应：
+
+```ts
+type RSSImportResponse = {
+  dry_run: boolean
+  sources: RSSImportSectionResult
+  subscriptions: RSSImportSectionResult
+}
+
+type RSSImportSectionResult = {
+  items: Array<{
+    index: number
+    action: "create" | "reuse" | "skip" | "failed"
+    success: boolean
+    id?: number
+    source_url?: string
+    name?: string
+    error_code?: string
+    error_message?: string
+  }>
+  created: number
+  reused: number
+  skipped: number
+  failed: number
+}
+```
+
+#### 注意事项
+
+- `dry_run=true` 会完整执行字段与目标路径校验，但不会创建 source/subscription；`created` 表示“将创建”的数量。
+- 已存在 source 按当前导入 owner + URL 精确复用，不会覆盖名称、启用状态或刷新间隔。
+- subscription 推荐使用 `source_url` 关联 source；`source_ref` 只是兼容别名。
+- 导出范围沿用后端现有 RSS service auth 语义；具备 `rss.manage` 的管理身份会按 `IncludeAll` 导出可管理范围。
+
+#### 前端验证记录
+
+- 2026-05-03：前端已完成页面/API client/DTO/权限入口适配，静态验证通过；尚未在真实后端运行环境完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
+
+<a id="handoff-2026-05-02-notifications"></a>
+
+### [P1][待联调][通知告警] 2026-05-02 Webhook 通知与 RSS 告警事件
+
+#### 前端适配 checklist
+
+- [x] 新增设置/通知页或管理区块，接入通知通道列表：`GET /api/v1/notifications/channels`。
+- [x] 支持创建 / 更新 / 删除 Webhook 通道：`POST|PUT|DELETE /api/v1/notifications/channels`。
+- [x] 支持测试发送：`POST /api/v1/notifications/channels/:id/test`，失败时展示 `NOTIFICATION_DELIVERY_FAILED`。
+- [x] 新增通知事件列表或 RSS 待处理入口：`GET /api/v1/notifications/events?status=retry_pending|failed&event_type=...`。
+- [x] 支持对失败 / 待重试事件手动 retry：`POST /api/v1/notifications/events/:id/retry`。
+- [x] API client/types 新增 `NotificationChannelView`、`NotificationEventView`、`NotificationChannelUpsertRequest`。
+- [x] UI 权限控制：通道管理看 `notification.manage`，事件查看看 `notification.read`。
+
+#### 背景 / 变更摘要
+
+后端新增通知模块，当前通道类型只支持 `webhook`，用于把 RSS 无人值守过程中的关键状态推送到外部系统，并为前端提供可查询的待处理事件列表。事件先入库再投递；Webhook 失败会进入 `retry_pending` / `failed`，不会丢失事件。
+
+#### 接口与字段
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.11 notifications`。核心接口：
+
+| 动作 | 方法 | 路径 | 权限 | 成功响应 |
+|---|---|---|---|---|
+| 列出通道 | GET | `/api/v1/notifications/channels` | `notification.read` | 200，`{items[]}` |
+| 创建通道 | POST | `/api/v1/notifications/channels` | `notification.manage` | 201，`{channel}` |
+| 更新通道 | PUT | `/api/v1/notifications/channels/:id` | `notification.manage` | 200，`{channel}` |
+| 删除通道 | DELETE | `/api/v1/notifications/channels/:id` | `notification.manage` | 200，`{deleted,id}` |
+| 测试通道 | POST | `/api/v1/notifications/channels/:id/test` | `notification.manage` | 200，`{ok:true}` |
+| 列出事件 | GET | `/api/v1/notifications/events` | `notification.read` | 200，`{items[]}` |
+| 重试事件 | POST | `/api/v1/notifications/events/:id/retry` | `notification.manage` | 202，`{event}` |
+
+通道请求：
+
+```ts
+type NotificationChannelUpsertRequest = {
+  name: string
+  type: "webhook"
+  is_enabled?: boolean
+  event_types?: Array<"rss.source_failure" | "rss.item_needs_attention" | "rss.download_completed">
+  config: {
+    url: string
+    secret?: string
+  }
+}
+```
+
+通道响应不会返回 secret 明文：
+
+```ts
+type NotificationChannelView = {
+  id: number
+  name: string
+  type: "webhook"
+  is_enabled: boolean
+  event_types: string[]
+  config: { url: string; secret_configured: boolean }
+  created_at: string
+  updated_at: string
+}
+```
+
+事件状态：
+
+```ts
+type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "failed" | "skipped"
+```
+
+#### 注意事项
+
+- `event_types=[]` 或省略表示该通道接收全部支持事件。
+- `is_enabled` 创建时省略默认为 `true`；更新时省略会保留原启用状态。
+- `config.secret` 仅提交；后端响应只给 `secret_configured`。更新时不传 `secret` 会保留旧值，传空字符串会清空。
+- Webhook 签名头：`X-Yunxia-Timestamp` 与 `X-Yunxia-Signature: sha256=...`。如果前端只是配置，不需要计算签名。
+- `POST /notifications/events/:id/retry` 返回 202 只代表本次重试已处理；最终状态以返回的 `event.status` 为准。
+- `skipped` 表示事件产生时没有匹配的启用通道，通常只做历史记录展示。
+
+#### 前端验证记录
+
+- 2026-05-03：前端已完成页面/API client/DTO/权限入口适配，静态验证通过；尚未在真实后端运行环境完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass

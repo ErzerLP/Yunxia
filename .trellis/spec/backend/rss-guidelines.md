@@ -38,6 +38,17 @@ func (c *QBittorrentClient) AddURI(ctx context.Context, uri string, dir string) 
 func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (*service.DownloadStatus, error)
 ```
 
+- RSS-created task naming snapshot:
+
+```go
+type CreateTaskRequest struct {
+    TargetVirtualParentPath string `json:"target_virtual_parent_path,omitempty"`
+    TargetFilename          string `json:"target_filename,omitempty"`
+}
+
+func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.DownloadTask) error
+```
+
 ### 3. Contracts
 
 - RSS `published_at` must be populated when any supported feed field is
@@ -77,6 +88,27 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
 - RSS subscription preview must evaluate existing items and return explainable
   `matched`, `missing`, and `excluded` keyword lists. Do not return only a
   boolean match result.
+- Temporary RSS subscription preview must accept only rule fields and
+  `source_id`, validate the source owner and regexes, evaluate existing source
+  items, return the same preview shape with `subscription_id=0`, and must not
+  create or update a persisted subscription.
+- RSS anime title parsing is lightweight and best-effort. When RSS items are
+  created or updated from feeds, persist parsed metadata and expose it through
+  the item DTO:
+  `anime_title`, `season`, `episode`, `subtitle_group`, and `resolution`.
+- RSS subscription directory templates are rendered only as safe relative
+  subdirectories below `target_virtual_parent_path`. Supported placeholders
+  are `{anime_title}`, `{season}`, `{episode}`, `{subtitle_group}`,
+  `{resolution}`, and `{title}`. Unknown placeholders, absolute paths,
+  backslashes, and `..` must fail validation with `PATH_INVALID`.
+- RSS `filename_template` is rendered at RSS enqueue time into the created
+  download task's `target_filename` snapshot. Downloaders still write into
+  backend-visible staging; the task import pipeline may rename only when there
+  is exactly one effective staged file. If the rendered filename has no clear
+  extension (last suffix is alphanumeric and contains at least one letter),
+  preserve the original staged file extension. Multi-file torrents /
+  multi-file staging must keep original relative paths and must not rewrite
+  torrent contents.
 - RSS item unattended retry state must use clear statuses:
   `retry_pending`, `completed`, and `needs_attention`, plus retry fields
   `retry_count`, `max_retry_count`, `last_attempt_at`, `next_retry_at`, and
@@ -97,9 +129,54 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
   must write the error back to the item and classify it as `retry_pending` or
   `needs_attention`. User/task cancellation is not treated as transient and
   should move the item to `needs_attention` rather than silently re-queueing.
+- Task terminal backlink must not depend only on periodic RSS workers. When
+  `TaskService` changes an RSS-created task to `completed`, `failed`, or
+  `canceled` through refresh/sync/cancel paths, it must notify the RSS backlink
+  handler immediately so the item state is visible before the next scheduled
+  refresh/retry cycle.
 - RSS-created tasks should run under the RSS subscription/source owner context,
   even when refresh/retry is triggered by an administrator or background
   worker, so task ownership and VFS/ACL checks stay tied to the owner.
+- RSS item batch actions must return per-item results and aggregate
+  `succeeded` / `failed` counts. Item-level failures such as not found,
+  permission denied, unsupported links, or invalid state must not fail the whole
+  batch response.
+- RSS subscription clone must authorize the original subscription owner, copy
+  rule/template/target snapshot fields, allocate a new ID and timestamps, and
+  leave the original subscription unchanged. Optional `name` and `is_enabled`
+  only affect the clone; missing `name` should use a stable `Original Copy`
+  style default.
+- RSS subscription batch state changes must return per-subscription results and
+  aggregate `succeeded` / `failed` counts. Each ID is fetched and authorized
+  independently; successful items update `is_enabled` and `updated_at`, while
+  item-level not-found or permission failures stay inside that result item.
+- RSS import/export is configuration-only. Export must include
+  `version`, `exported_at`, source `name/url/is_enabled/refresh_interval_seconds`,
+  and subscription `source_url/name/is_enabled/must_contain/must_not_contain/use_regex/case_sensitive/target_virtual_parent_path/directory_template/filename_template`.
+  It must not export items, tasks, refresh health, retry state, or other runtime
+  fields.
+- RSS import must return per-source and per-subscription item results with
+  `action=create|reuse|skip|failed`, `success`, optional `id`, and optional
+  `error_code/error_message`. Source import reuses an existing source by current
+  owner + exact URL and must not overwrite that source. `dry_run` validates and
+  previews all actions without persisting new sources or subscriptions.
+- RSS import subscriptions resolve `source_url` (or legacy `source_ref`) through
+  imported/reused sources and must revalidate `target_virtual_parent_path`
+  writability with the same path normalization/write checks as subscription
+  create/update. Item-level invalid source, regex, template, path, ACL, or
+  read-only failures stay in the import response and do not fail the whole
+  HTTP request.
+- Batch ignore must refuse completed items and items with active non-terminal
+  tasks using per-item `TASK_INVALID_STATE`; successful ignores set
+  `status=ignored`, clear `error_message`, `retry_reason`, and `next_retry_at`,
+  and avoid destructive task linkage cleanup.
+- Batch retry must reuse the single-item manual retry semantics per item,
+  including optional `subscription_id`, owner context, duplicate-active-task
+  protection, retry attempt accounting, and per-item error codes.
+- RSS source failure notifications are emitted only when health transitions into
+  `degraded` or `circuit_open`; RSS item notifications are emitted when items
+  transition into `needs_attention`; completed RSS task backlinks emit
+  `rss.download_completed`.
 
 ### 4. Validation & Error Matrix
 
@@ -120,13 +197,31 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
 | Enabled source has future `next_refresh_at` but refresh-all is called | Refresh it anyway |
 | Preview sees must keyword missing | Return `result=missing` with missing keyword list |
 | Preview sees must-not keyword matched | Return `result=excluded` with excluded keyword list |
+| Temporary preview receives valid rules | Return `subscription_id=0`; do not persist a subscription |
+| Temporary preview receives invalid regex | Return `RSS_REGEX_INVALID`; do not persist a subscription |
+| RSS title contains common subtitle-group / SxxEyy / resolution tokens | Persist parsed anime metadata and return it in item DTO |
+| Subscription `directory_template=""` | Preserve old behavior and enqueue into `target_virtual_parent_path` |
+| Subscription `directory_template="{anime_title}/{season}"` | Enqueue into a safe child path below `target_virtual_parent_path` |
+| Subscription template has unknown placeholder / absolute path / `..` / backslash | Reject with `PATH_INVALID` |
+| `filename_template` is set and the completed task has one staged file | Render to task `target_filename`; import the file under that name, preserving the original extension when the template lacks a clear one |
+| `filename_template` is set and the completed task has multiple staged files | Keep original staged relative paths; do not apply task `target_filename` |
 | RSS item has active non-terminal task | Do not create another task during retry/reprocess |
 | RSS item is `retry_pending` / `needs_attention` / `completed` during source refresh | Do not create another task |
 | Admin refreshes another user's RSS source | Created download task uses the source/subscription owner's user context |
 | Task completed for RSS item | Mark item `completed` |
 | Task failed with transient error | Mark item `retry_pending` until max retries, then `needs_attention` |
 | Task canceled for RSS item | Mark item `needs_attention` with the cancellation reason |
+| User cancels an RSS-linked task through task API | Immediately update the linked RSS item to `needs_attention`; do not wait for the next RSS worker tick |
 | Deterministic item failure | Mark item `needs_attention`; do not auto retry |
+| Subscription clone omits name/is_enabled | Create a new subscription named `Original Copy` (or simple numbered variant) and preserve the original enabled state |
+| Subscription clone provides name/is_enabled | Apply the overrides only to the clone and do not mutate the source subscription |
+| Batch subscription state mixes owned, missing, and unauthorized IDs | Return HTTP success with per-subscription success/failure, `RSS_SUBSCRIPTION_NOT_FOUND`, or `PERMISSION_DENIED` as applicable |
+| RSS export has sources with runtime refresh state | Export only portable config fields; omit health, refresh, retry, items, and tasks |
+| RSS import receives an existing owner+URL source | Return source item `action=reuse`; do not overwrite existing source fields |
+| RSS import runs with `dry_run=true` | Validate and return would-create/reuse/fail results without creating sources or subscriptions |
+| RSS import subscription target is invalid/unwritable | Return subscription item `action=failed` with `PATH_INVALID`, `NO_BACKING_STORAGE`, `SOURCE_READ_ONLY`, or `PERMISSION_DENIED`; continue other items |
+| Batch ignore mixes mutable and invalid-state items | Return HTTP success with per-item success/failure and `TASK_INVALID_STATE` for completed/active-task items |
+| Batch retry mixes retryable and unsupported items | Retry eligible items and return per-item `DOWNLOAD_LINK_UNSUPPORTED` for unsupported items |
 
 ### 5. Good/Base/Bad Cases
 
@@ -160,10 +255,27 @@ func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (
   - source failure backoff and successful recovery
   - refresh-all continues after one source fails
   - subscription preview explains matched/missing/excluded
+  - anime title parser extracts common Mikan/subtitle-group metadata
+  - subscription template fields persist and are returned in DTOs
+  - filename_template renders task target_filename during RSS enqueue
+  - task import applies target_filename only for single-file staging and preserves multi-file paths
+  - directory template rendering is path-safe and preserves old empty-template
+    behavior
   - manual item retry and reprocess endpoints/service paths
   - automatic retry backoff and max-attempt `needs_attention`
   - task terminal status writes back to RSS item
+  - canceling an RSS-linked task through TaskService immediately writes back the
+    RSS item as `needs_attention`
   - active task prevents duplicate enqueue
+  - temporary subscription preview does not persist a subscription
+  - subscription clone preserves rules/templates/target snapshots without mutating the original
+  - batch subscription state returns partial success/failure and updates only authorized items
+  - export DTO/json omits runtime refresh, item, task, and retry fields
+  - import `dry_run` does not persist sources or subscriptions
+  - import reuses an existing same-owner URL source and creates subscriptions against it
+  - import subscription invalid/unwritable target returns an item-level failure
+  - batch ignore returns partial success/failure and preserves active/completed items
+  - batch retry returns partial success/failure while reusing manual retry behavior
 - Full gate: `go test -count=1 ./...`.
 
 ### 7. Wrong vs Correct

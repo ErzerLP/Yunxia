@@ -1,12 +1,20 @@
 import { apiClient } from './client'
 import type {
   RSSItemStatus,
+  RSSItemBatchActionResponse,
   RSSItemView,
+  RSSExportResponse,
+  RSSImportRequest,
+  RSSImportResponse,
   RSSQBitHealthResponse,
   RSSRefreshAllResponse,
   RSSRefreshResponse,
   RSSSourceUpsertRequest,
   RSSSourceView,
+  RSSSubscriptionBatchStateRequest,
+  RSSSubscriptionBatchStateResponse,
+  RSSSubscriptionCloneRequest,
+  RSSSubscriptionPreviewRequest,
   RSSSubscriptionPreviewResponse,
   RSSSubscriptionUpsertRequest,
   RSSSubscriptionView,
@@ -56,6 +64,12 @@ export const rssApi = {
   refreshAllSources: () =>
     apiClient.post<RSSRefreshAllResponse>('/rss/sources/refresh-all'),
 
+  exportConfig: () =>
+    apiClient.get<RSSExportResponse>('/rss/export'),
+
+  importConfig: (data: RSSImportRequest) =>
+    apiClient.post<RSSImportResponse>('/rss/import', data),
+
   listSubscriptions: (params?: ListRSSSubscriptionsParams) =>
     apiClient.get<{ items: RSSSubscriptionView[] }>('/rss/subscriptions', {
       params: compactParams(params),
@@ -73,11 +87,20 @@ export const rssApi = {
   deleteSubscription: (id: number) =>
     apiClient.delete<RSSDeleteResponse>(`/rss/subscriptions/${id}`),
 
+  cloneSubscription: (id: number, data?: RSSSubscriptionCloneRequest) =>
+    apiClient.post<{ subscription: RSSSubscriptionView }>(`/rss/subscriptions/${id}/clone`, data ?? {}),
+
+  batchSubscriptionState: (data: RSSSubscriptionBatchStateRequest) =>
+    apiClient.post<RSSSubscriptionBatchStateResponse>('/rss/subscriptions/batch-state', data),
+
   runSubscription: (id: number) =>
     apiClient.post<RSSRefreshResponse>(`/rss/subscriptions/${id}/run`),
 
   previewSubscription: (id: number) =>
     apiClient.post<RSSSubscriptionPreviewResponse>(`/rss/subscriptions/${id}/preview`),
+
+  previewSubscriptionDraft: (data: RSSSubscriptionPreviewRequest) =>
+    apiClient.post<RSSSubscriptionPreviewResponse>('/rss/subscriptions/preview', data),
 
   listItems: (params?: ListRSSItemsParams) =>
     apiClient.get<{ items: RSSItemView[] }>('/rss/items', {
@@ -97,6 +120,15 @@ export const rssApi = {
     apiClient.post<{ item: RSSItemView }>(
       `/rss/items/${id}/retry`,
       subscriptionId ? { subscription_id: subscriptionId } : {}
+    ),
+
+  batchIgnoreItems: (itemIds: number[]) =>
+    apiClient.post<RSSItemBatchActionResponse>('/rss/items/batch-ignore', { item_ids: itemIds }),
+
+  batchRetryItems: (itemIds: number[], subscriptionId?: number) =>
+    apiClient.post<RSSItemBatchActionResponse>(
+      '/rss/items/batch-retry',
+      subscriptionId ? { item_ids: itemIds, subscription_id: subscriptionId } : { item_ids: itemIds }
     ),
 
   qbitHealth: () =>

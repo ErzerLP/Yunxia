@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
@@ -52,6 +53,14 @@ const defaultRSSRefreshIntervalSeconds = 1800
 const (
 	defaultRSSItemMaxRetryCount = 3
 	defaultRSSRetryWorkerLimit  = 20
+	rssExportVersion            = 1
+)
+
+const (
+	rssImportActionCreate = "create"
+	rssImportActionReuse  = "reuse"
+	rssImportActionSkip   = "skip"
+	rssImportActionFailed = "failed"
 )
 
 var (
@@ -59,6 +68,23 @@ var (
 	rssDigitRunPattern            = regexp.MustCompile(`[0-9]+`)
 	rssDateLikePattern            = regexp.MustCompile(`[0-9]{4}[-/.年][0-9]{1,2}[-/.月][0-9]{1,2}(?:日)?`)
 	rssMonthDayLikePattern        = regexp.MustCompile(`(?:^|[^0-9])[0-9]{1,2}[-/.月][0-9]{1,2}(?:日)?(?:$|[^0-9])`)
+	rssTemplatePlaceholderPattern = regexp.MustCompile(`\{([a-z_]+)\}`)
+	rssAllowedTemplateTokens      = map[string]struct{}{
+		"anime_title":    {},
+		"season":         {},
+		"episode":        {},
+		"subtitle_group": {},
+		"resolution":     {},
+		"title":          {},
+	}
+	rssResolutionPattern     = regexp.MustCompile(`(?i)(?:2160|1440|1080|720|480)p|[48]k`)
+	rssSxxEyyPattern         = regexp.MustCompile(`(?i)\bS([0-9]{1,2})\s*E([0-9]{1,4}(?:\.[0-9]+)?)(?:v[0-9]+)?\b`)
+	rssSeasonWordPattern     = regexp.MustCompile(`(?i)\b(?:Season\s*([0-9]{1,2})|([0-9]{1,2})(?:st|nd|rd|th)\s+Season)\b`)
+	rssChineseSeasonPattern  = regexp.MustCompile(`第\s*([0-9]{1,2})\s*季`)
+	rssChineseEpisodePattern = regexp.MustCompile(`第\s*([0-9]{1,4}(?:\.[0-9]+)?)\s*(?:集|话|話|回)`)
+	rssEpisodeWordPattern    = regexp.MustCompile(`(?i)\b(?:EP|Episode)\.?\s*([0-9]{1,4}(?:\.[0-9]+)?)(?:v[0-9]+)?\b`)
+	rssDashEpisodePattern    = regexp.MustCompile(`(?i)(?:^|\s)[-–—]\s*([0-9]{1,4}(?:\.[0-9]+)?)(?:v[0-9]+)?(?:\b|[^0-9])`)
+	rssBracketTokenPattern   = regexp.MustCompile(`[\[【]([^\]】]+)[\]】]`)
 )
 
 // RSSFetchedItem 表示 RSS fetcher 解析出的原始条目。
@@ -88,6 +114,10 @@ type rssTaskReader interface {
 	FindByID(ctx context.Context, id uint) (*entity.DownloadTask, error)
 }
 
+type rssNotifier interface {
+	Notify(ctx context.Context, input NotificationEventInput) (*entity.NotificationEvent, error)
+}
+
 // RSSService 负责 RSS 源、订阅、条目和下载入队流程。
 type RSSService struct {
 	rssRepo       domainrepo.RSSRepository
@@ -95,6 +125,7 @@ type RSSService struct {
 	userRepo      domainrepo.UserRepository
 	taskCreator   rssTaskCreator
 	taskReader    rssTaskReader
+	notifier      rssNotifier
 	fetcher       RSSFetcher
 	healthChecker QBitHealthChecker
 	vfsResolver   interface {
@@ -145,6 +176,13 @@ func WithRSSUserRepository(repo domainrepo.UserRepository) RSSServiceOption {
 func WithRSSTaskRepository(repo rssTaskReader) RSSServiceOption {
 	return func(s *RSSService) {
 		s.taskReader = repo
+	}
+}
+
+// WithRSSNotifier 注入 RSS 通知器。
+func WithRSSNotifier(notifier rssNotifier) RSSServiceOption {
+	return func(s *RSSService) {
+		s.notifier = notifier
 	}
 }
 
@@ -344,6 +382,217 @@ func (s *RSSService) RefreshAllSources(ctx context.Context) (*appdto.RSSRefreshA
 	return resp, nil
 }
 
+// ExportConfig 导出当前身份可管理范围内的 RSS 源和订阅配置，不包含运行时状态。
+func (s *RSSService) ExportConfig(ctx context.Context) (*appdto.RSSExportResponse, error) {
+	auth, err := currentRSSAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	includeAll := permission.HasCapability(auth.Capabilities, permission.CapabilityRSSManage)
+	sources, err := s.rssRepo.ListSources(ctx, domainrepo.RSSSourceFilter{
+		UserID:     auth.UserID,
+		IncludeAll: includeAll,
+	})
+	if err != nil {
+		return nil, err
+	}
+	subscriptions, err := s.rssRepo.ListSubscriptions(ctx, domainrepo.RSSSubscriptionFilter{
+		UserID:     auth.UserID,
+		IncludeAll: includeAll,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := &appdto.RSSExportResponse{
+		Version:       rssExportVersion,
+		ExportedAt:    s.now().Format(time.RFC3339),
+		Sources:       make([]appdto.RSSExportSource, 0, len(sources)),
+		Subscriptions: make([]appdto.RSSExportSubscription, 0, len(subscriptions)),
+	}
+	sourceURLByID := make(map[uint]string, len(sources))
+	for _, source := range sources {
+		sourceURLByID[source.ID] = source.URL
+		resp.Sources = append(resp.Sources, appdto.RSSExportSource{
+			Name:                   source.Name,
+			URL:                    source.URL,
+			IsEnabled:              source.IsEnabled,
+			RefreshIntervalSeconds: source.RefreshIntervalSeconds,
+		})
+	}
+	for _, subscription := range subscriptions {
+		sourceURL := sourceURLByID[subscription.SourceID]
+		if sourceURL == "" {
+			continue
+		}
+		resp.Subscriptions = append(resp.Subscriptions, appdto.RSSExportSubscription{
+			SourceURL:               sourceURL,
+			Name:                    subscription.Name,
+			IsEnabled:               subscription.IsEnabled,
+			MustContain:             append([]string{}, subscription.MustContain...),
+			MustNotContain:          append([]string{}, subscription.MustNotContain...),
+			UseRegex:                subscription.UseRegex,
+			CaseSensitive:           subscription.CaseSensitive,
+			TargetVirtualParentPath: subscription.TargetVirtualParentPath,
+			DirectoryTemplate:       subscription.DirectoryTemplate,
+			FilenameTemplate:        subscription.FilenameTemplate,
+		})
+	}
+	return resp, nil
+}
+
+// ImportConfig 导入 RSS 源和订阅配置；逐项返回结果，单项失败不影响后续条目。
+func (s *RSSService) ImportConfig(ctx context.Context, req appdto.RSSImportRequest) (*appdto.RSSImportResponse, error) {
+	auth, err := currentRSSAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp := &appdto.RSSImportResponse{
+		DryRun: req.DryRun,
+		Sources: appdto.RSSImportSectionResult{
+			Items: make([]appdto.RSSImportItemResult, 0, len(req.Sources)),
+		},
+		Subscriptions: appdto.RSSImportSectionResult{
+			Items: make([]appdto.RSSImportItemResult, 0, len(req.Subscriptions)),
+		},
+	}
+	existingSources, err := s.rssRepo.ListSources(ctx, domainrepo.RSSSourceFilter{UserID: auth.UserID})
+	if err != nil {
+		return nil, err
+	}
+	sourceByURL := make(map[string]*entity.RSSSource, len(existingSources)+len(req.Sources))
+	for _, source := range existingSources {
+		sourceByURL[strings.TrimSpace(source.URL)] = source
+	}
+	now := s.now()
+	for index, sourceReq := range req.Sources {
+		result := appdto.RSSImportItemResult{
+			Index:     index,
+			SourceURL: strings.TrimSpace(sourceReq.URL),
+			Name:      strings.TrimSpace(sourceReq.Name),
+		}
+		name, rawURL, interval, normalizeErr := normalizeRSSSourceInput(appdto.RSSSourceUpsertRequest{
+			Name:                   sourceReq.Name,
+			URL:                    sourceReq.URL,
+			IsEnabled:              sourceReq.IsEnabled,
+			RefreshIntervalSeconds: sourceReq.RefreshIntervalSeconds,
+		})
+		if normalizeErr != nil {
+			fillRSSImportError(&result, normalizeErr, "RSS_SOURCE_NOT_FOUND")
+			appendRSSImportResult(&resp.Sources, result)
+			continue
+		}
+		result.SourceURL = rawURL
+		result.Name = name
+		if existing, ok := sourceByURL[rawURL]; ok {
+			result.Action = rssImportActionReuse
+			result.Success = true
+			result.ID = existing.ID
+			appendRSSImportResult(&resp.Sources, result)
+			continue
+		}
+		enabled := boolDefault(sourceReq.IsEnabled, true)
+		if req.DryRun {
+			result.Action = rssImportActionCreate
+			result.Success = true
+			sourceByURL[rawURL] = &entity.RSSSource{
+				UserID:                 auth.UserID,
+				Name:                   name,
+				URL:                    rawURL,
+				IsEnabled:              enabled,
+				RefreshIntervalSeconds: interval,
+			}
+			appendRSSImportResult(&resp.Sources, result)
+			continue
+		}
+		source := &entity.RSSSource{
+			UserID:                 auth.UserID,
+			Name:                   name,
+			URL:                    rawURL,
+			IsEnabled:              enabled,
+			RefreshIntervalSeconds: interval,
+			HealthStatus:           RSSSourceHealthOK,
+			NextRefreshAt:          &now,
+			CreatedAt:              now,
+			UpdatedAt:              now,
+		}
+		if err := s.rssRepo.CreateSource(ctx, source); err != nil {
+			fillRSSImportError(&result, err, "RSS_SOURCE_NOT_FOUND")
+			appendRSSImportResult(&resp.Sources, result)
+			continue
+		}
+		sourceByURL[rawURL] = source
+		result.Action = rssImportActionCreate
+		result.Success = true
+		result.ID = source.ID
+		appendRSSImportResult(&resp.Sources, result)
+	}
+	for index, subscriptionReq := range req.Subscriptions {
+		sourceURL := firstNonEmpty(subscriptionReq.SourceURL, subscriptionReq.SourceRef)
+		result := appdto.RSSImportItemResult{
+			Index:     index,
+			SourceURL: sourceURL,
+			Name:      strings.TrimSpace(subscriptionReq.Name),
+		}
+		source, ok := sourceByURL[sourceURL]
+		if !ok {
+			fillRSSImportError(&result, domainrepo.ErrNotFound, "RSS_SOURCE_NOT_FOUND")
+			appendRSSImportResult(&resp.Subscriptions, result)
+			continue
+		}
+		upsertReq := appdto.RSSSubscriptionUpsertRequest{
+			SourceID:                source.ID,
+			Name:                    subscriptionReq.Name,
+			IsEnabled:               subscriptionReq.IsEnabled,
+			MustContain:             subscriptionReq.MustContain,
+			MustNotContain:          subscriptionReq.MustNotContain,
+			UseRegex:                subscriptionReq.UseRegex,
+			CaseSensitive:           subscriptionReq.CaseSensitive,
+			TargetVirtualParentPath: subscriptionReq.TargetVirtualParentPath,
+			DirectoryTemplate:       subscriptionReq.DirectoryTemplate,
+			FilenameTemplate:        subscriptionReq.FilenameTemplate,
+		}
+		resolved, normalizeErr := s.normalizeSubscriptionRequest(ctx, upsertReq)
+		if normalizeErr != nil {
+			fillRSSImportError(&result, normalizeErr, "RSS_SUBSCRIPTION_NOT_FOUND")
+			appendRSSImportResult(&resp.Subscriptions, result)
+			continue
+		}
+		if req.DryRun {
+			result.Action = rssImportActionCreate
+			result.Success = true
+			appendRSSImportResult(&resp.Subscriptions, result)
+			continue
+		}
+		subscription := &entity.RSSSubscription{
+			UserID:                  auth.UserID,
+			SourceID:                source.ID,
+			Name:                    strings.TrimSpace(subscriptionReq.Name),
+			IsEnabled:               boolDefault(subscriptionReq.IsEnabled, true),
+			MustContain:             trimStringList(subscriptionReq.MustContain),
+			MustNotContain:          trimStringList(subscriptionReq.MustNotContain),
+			UseRegex:                subscriptionReq.UseRegex,
+			CaseSensitive:           subscriptionReq.CaseSensitive,
+			TargetVirtualParentPath: resolved.targetVirtualParentPath,
+			DirectoryTemplate:       resolved.directoryTemplate,
+			FilenameTemplate:        resolved.filenameTemplate,
+			ResolvedSourceID:        resolved.resolvedSourceID,
+			ResolvedInnerParentPath: resolved.resolvedInnerParentPath,
+			CreatedAt:               now,
+			UpdatedAt:               now,
+		}
+		if err := s.rssRepo.CreateSubscription(ctx, subscription); err != nil {
+			fillRSSImportError(&result, err, "RSS_SUBSCRIPTION_NOT_FOUND")
+			appendRSSImportResult(&resp.Subscriptions, result)
+			continue
+		}
+		result.Action = rssImportActionCreate
+		result.Success = true
+		result.ID = subscription.ID
+		appendRSSImportResult(&resp.Subscriptions, result)
+	}
+	return resp, nil
+}
+
 // RefreshDueSources 刷新到期的启用 RSS 源。
 func (s *RSSService) RefreshDueSources(ctx context.Context) error {
 	enabled := true
@@ -418,6 +667,14 @@ func (s *RSSService) RunRetryCycle(ctx context.Context, limit int) (int, error) 
 	return processed, joined
 }
 
+// OnTaskTerminalStatus 立即同步关联 RSS item 的下载任务终态。
+func (s *RSSService) OnTaskTerminalStatus(ctx context.Context, task *entity.DownloadTask) error {
+	if task == nil || !isTerminalTaskStatus(task.Status) {
+		return nil
+	}
+	return s.reconcileSingleTaskBacklink(ctx, task)
+}
+
 // ListSubscriptions 返回订阅列表。
 func (s *RSSService) ListSubscriptions(ctx context.Context, sourceID uint) (*appdto.RSSSubscriptionListResponse, error) {
 	auth, err := currentRSSAuth(ctx)
@@ -467,6 +724,8 @@ func (s *RSSService) CreateSubscription(ctx context.Context, req appdto.RSSSubsc
 		UseRegex:                req.UseRegex,
 		CaseSensitive:           req.CaseSensitive,
 		TargetVirtualParentPath: resolved.targetVirtualParentPath,
+		DirectoryTemplate:       resolved.directoryTemplate,
+		FilenameTemplate:        resolved.filenameTemplate,
 		ResolvedSourceID:        resolved.resolvedSourceID,
 		ResolvedInnerParentPath: resolved.resolvedInnerParentPath,
 		CreatedAt:               now,
@@ -476,6 +735,50 @@ func (s *RSSService) CreateSubscription(ctx context.Context, req appdto.RSSSubsc
 		return nil, err
 	}
 	view := toRSSSubscriptionView(subscription)
+	return &view, nil
+}
+
+// CloneSubscription 复制一条订阅规则，不重新解析目标路径快照。
+func (s *RSSService) CloneSubscription(ctx context.Context, id uint, req appdto.RSSSubscriptionCloneRequest) (*appdto.RSSSubscriptionView, error) {
+	original, err := s.rssRepo.FindSubscriptionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeRSSOwner(ctx, original.UserID); err != nil {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = s.defaultRSSSubscriptionCloneName(ctx, original)
+	}
+	isEnabled := original.IsEnabled
+	if req.IsEnabled != nil {
+		isEnabled = *req.IsEnabled
+	}
+
+	now := s.now()
+	clone := &entity.RSSSubscription{
+		UserID:                  original.UserID,
+		SourceID:                original.SourceID,
+		Name:                    name,
+		IsEnabled:               isEnabled,
+		MustContain:             append([]string{}, original.MustContain...),
+		MustNotContain:          append([]string{}, original.MustNotContain...),
+		UseRegex:                original.UseRegex,
+		CaseSensitive:           original.CaseSensitive,
+		TargetVirtualParentPath: original.TargetVirtualParentPath,
+		DirectoryTemplate:       original.DirectoryTemplate,
+		FilenameTemplate:        original.FilenameTemplate,
+		ResolvedSourceID:        original.ResolvedSourceID,
+		ResolvedInnerParentPath: original.ResolvedInnerParentPath,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := s.rssRepo.CreateSubscription(ctx, clone); err != nil {
+		return nil, err
+	}
+	view := toRSSSubscriptionView(clone)
 	return &view, nil
 }
 
@@ -520,6 +823,8 @@ func (s *RSSService) UpdateSubscription(ctx context.Context, id uint, req appdto
 	subscription.UseRegex = req.UseRegex
 	subscription.CaseSensitive = req.CaseSensitive
 	subscription.TargetVirtualParentPath = resolved.targetVirtualParentPath
+	subscription.DirectoryTemplate = resolved.directoryTemplate
+	subscription.FilenameTemplate = resolved.filenameTemplate
 	subscription.ResolvedSourceID = resolved.resolvedSourceID
 	subscription.ResolvedInnerParentPath = resolved.resolvedInnerParentPath
 	subscription.UpdatedAt = s.now()
@@ -540,6 +845,44 @@ func (s *RSSService) DeleteSubscription(ctx context.Context, id uint) error {
 		return err
 	}
 	return s.rssRepo.DeleteSubscription(ctx, id)
+}
+
+// BatchUpdateSubscriptionState 批量启用或禁用订阅；单项失败不影响其他 subscription。
+func (s *RSSService) BatchUpdateSubscriptionState(ctx context.Context, req appdto.RSSSubscriptionBatchStateRequest) (*appdto.RSSSubscriptionBatchStateResponse, error) {
+	if _, err := currentRSSAuth(ctx); err != nil {
+		return nil, err
+	}
+	if len(req.SubscriptionIDs) == 0 || req.IsEnabled == nil {
+		return nil, ErrConfigInvalid
+	}
+	resp := &appdto.RSSSubscriptionBatchStateResponse{
+		Items: make([]appdto.RSSSubscriptionBatchStateResult, 0, len(req.SubscriptionIDs)),
+	}
+	now := s.now()
+	for _, subscriptionID := range req.SubscriptionIDs {
+		result := appdto.RSSSubscriptionBatchStateResult{SubscriptionID: subscriptionID}
+		subscription, err := s.rssRepo.FindSubscriptionByID(ctx, subscriptionID)
+		if err == nil {
+			err = s.authorizeRSSOwner(ctx, subscription.UserID)
+		}
+		if err == nil {
+			subscription.IsEnabled = *req.IsEnabled
+			subscription.UpdatedAt = now
+			err = s.rssRepo.UpdateSubscription(ctx, subscription)
+		}
+		if err != nil {
+			fillRSSSubscriptionBatchError(&result, err)
+			resp.Failed++
+			resp.Items = append(resp.Items, result)
+			continue
+		}
+		view := toRSSSubscriptionView(subscription)
+		result.Success = true
+		result.Subscription = &view
+		resp.Succeeded++
+		resp.Items = append(resp.Items, result)
+	}
+	return resp, nil
 }
 
 // RunSubscription 对已入库条目手动执行订阅匹配和入队。
@@ -576,6 +919,37 @@ func (s *RSSService) PreviewSubscription(ctx context.Context, id uint) (*appdto.
 	}
 	if err := s.authorizeRSSOwner(ctx, subscription.UserID); err != nil {
 		return nil, err
+	}
+	return s.previewRSSSubscription(ctx, subscription)
+}
+
+// PreviewSubscriptionRules 用不落库的临时订阅规则预览已有条目命中情况。
+func (s *RSSService) PreviewSubscriptionRules(ctx context.Context, req appdto.RSSSubscriptionPreviewRequest) (*appdto.RSSSubscriptionPreviewResponse, error) {
+	source, err := s.rssRepo.FindSourceByID(ctx, req.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeRSSOwner(ctx, source.UserID); err != nil {
+		return nil, err
+	}
+	if err := validateRSSRulePatterns(req.MustContain, req.MustNotContain, req.UseRegex); err != nil {
+		return nil, err
+	}
+	subscription := &entity.RSSSubscription{
+		SourceID:       source.ID,
+		UserID:         source.UserID,
+		IsEnabled:      true,
+		MustContain:    trimStringList(req.MustContain),
+		MustNotContain: trimStringList(req.MustNotContain),
+		UseRegex:       req.UseRegex,
+		CaseSensitive:  req.CaseSensitive,
+	}
+	return s.previewRSSSubscription(ctx, subscription)
+}
+
+func (s *RSSService) previewRSSSubscription(ctx context.Context, subscription *entity.RSSSubscription) (*appdto.RSSSubscriptionPreviewResponse, error) {
+	if subscription == nil {
+		return nil, ErrPathInvalid
 	}
 	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{IncludeAll: true, SourceID: subscription.SourceID})
 	if err != nil {
@@ -676,6 +1050,64 @@ func (s *RSSService) RetryItem(ctx context.Context, id uint, req appdto.RSSManua
 	return &view, nil
 }
 
+// BatchIgnoreItems 批量忽略 RSS 条目；单项失败不影响其他 item。
+func (s *RSSService) BatchIgnoreItems(ctx context.Context, req appdto.RSSItemBatchIgnoreRequest) (*appdto.RSSItemBatchActionResponse, error) {
+	if _, err := currentRSSAuth(ctx); err != nil {
+		return nil, err
+	}
+	if len(req.ItemIDs) == 0 {
+		return nil, ErrConfigInvalid
+	}
+	resp := &appdto.RSSItemBatchActionResponse{
+		Items: make([]appdto.RSSItemBatchActionResult, 0, len(req.ItemIDs)),
+	}
+	for _, itemID := range req.ItemIDs {
+		result := appdto.RSSItemBatchActionResult{ItemID: itemID}
+		item, err := s.ignoreRSSItem(ctx, itemID)
+		if err != nil {
+			fillRSSItemBatchError(&result, err)
+			resp.Failed++
+			resp.Items = append(resp.Items, result)
+			continue
+		}
+		view := toRSSItemView(item)
+		result.Success = true
+		result.Item = &view
+		resp.Succeeded++
+		resp.Items = append(resp.Items, result)
+	}
+	return resp, nil
+}
+
+// BatchRetryItems 批量执行手动 retry；复用单条 RetryItem 语义并返回逐项结果。
+func (s *RSSService) BatchRetryItems(ctx context.Context, req appdto.RSSItemBatchRetryRequest) (*appdto.RSSItemBatchActionResponse, error) {
+	if _, err := currentRSSAuth(ctx); err != nil {
+		return nil, err
+	}
+	if len(req.ItemIDs) == 0 {
+		return nil, ErrConfigInvalid
+	}
+	resp := &appdto.RSSItemBatchActionResponse{
+		Items: make([]appdto.RSSItemBatchActionResult, 0, len(req.ItemIDs)),
+	}
+	retryReq := appdto.RSSManualDownloadRequest{SubscriptionID: req.SubscriptionID}
+	for _, itemID := range req.ItemIDs {
+		result := appdto.RSSItemBatchActionResult{ItemID: itemID}
+		item, err := s.RetryItem(ctx, itemID, retryReq)
+		if err != nil {
+			fillRSSItemBatchError(&result, err)
+			resp.Failed++
+			resp.Items = append(resp.Items, result)
+			continue
+		}
+		result.Success = true
+		result.Item = item
+		resp.Succeeded++
+		resp.Items = append(resp.Items, result)
+	}
+	return resp, nil
+}
+
 // ListItems 返回 RSS 条目列表。
 func (s *RSSService) ListItems(ctx context.Context, filter domainrepo.RSSItemFilter) (*appdto.RSSItemListResponse, error) {
 	auth, err := currentRSSAuth(ctx)
@@ -769,6 +1201,7 @@ func (s *RSSService) refreshSourceEntity(ctx context.Context, source *entity.RSS
 	stats := rssRefreshStats{SourceID: source.ID}
 	items, err := s.fetcher.Fetch(ctx, source.URL)
 	now := s.now()
+	previousHealth := normalizeRSSSourceHealth(source.HealthStatus)
 	source.LastRefreshedAt = &now
 	source.UpdatedAt = now
 	if err != nil {
@@ -777,6 +1210,7 @@ func (s *RSSService) refreshSourceEntity(ctx context.Context, source *entity.RSS
 		stats.Failed = 1
 		s.applyRSSSourceRefreshFailure(source, stats, now)
 		_ = s.rssRepo.UpdateSource(ctx, source)
+		s.notifyRSSSourceFailure(ctx, source, err, previousHealth)
 		return nil, err
 	}
 	source.LastError = nil
@@ -822,6 +1256,7 @@ func (s *RSSService) upsertFetchedItem(ctx context.Context, source *entity.RSSSo
 	if linkType == RSSLinkTypeUnsupported {
 		status = RSSItemStatusUnsupported
 	}
+	parsed := parseRSSAnimeTitle(fetched.Title)
 	dedupKey := buildRSSDedupKey(source.ID, fetched)
 	existing, err := s.rssRepo.FindItemByDedupKey(ctx, source.ID, dedupKey)
 	if err != nil && !errors.Is(err, domainrepo.ErrNotFound) {
@@ -839,6 +1274,7 @@ func (s *RSSService) upsertFetchedItem(ctx context.Context, source *entity.RSSSo
 			DedupKey:      dedupKey,
 			DownloadURL:   downloadURL,
 			LinkType:      linkType,
+			Parsed:        parsed,
 			Status:        status,
 			MaxRetryCount: defaultRSSItemMaxRetryCount,
 			CreatedAt:     now,
@@ -856,6 +1292,7 @@ func (s *RSSService) upsertFetchedItem(ctx context.Context, source *entity.RSSSo
 	existing.GUID = strings.TrimSpace(fetched.GUID)
 	existing.DownloadURL = downloadURL
 	existing.LinkType = linkType
+	existing.Parsed = parsed
 	ensureRSSItemRetryDefaults(existing)
 	if existing.Status == RSSItemStatusNew || existing.Status == RSSItemStatusIgnored || existing.Status == RSSItemStatusUnsupported {
 		existing.Status = status
@@ -946,11 +1383,20 @@ func (s *RSSService) enqueueItemWithAttempt(ctx context.Context, item *entity.RS
 	if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
 		return err
 	}
+	targetVirtualParentPath, err := renderRSSTargetVirtualParentPath(subscription, item)
+	if err != nil {
+		return err
+	}
+	targetFilename, err := renderRSSFilenameTemplate(subscription, item)
+	if err != nil {
+		return err
+	}
 	taskCtx := s.contextForRSSOwner(ctx, subscription.UserID)
 	task, err := s.taskCreator.Create(taskCtx, appdto.CreateTaskRequest{
 		Type:                    "download",
 		URL:                     item.DownloadURL,
-		TargetVirtualParentPath: subscription.TargetVirtualParentPath,
+		TargetVirtualParentPath: targetVirtualParentPath,
+		TargetFilename:          targetFilename,
 	})
 	if err != nil {
 		return err
@@ -969,8 +1415,41 @@ func (s *RSSService) enqueueItemWithAttempt(ctx context.Context, item *entity.RS
 
 type resolvedRSSSubscriptionTarget struct {
 	targetVirtualParentPath string
+	directoryTemplate       string
+	filenameTemplate        string
 	resolvedSourceID        uint
 	resolvedInnerParentPath string
+}
+
+func (s *RSSService) defaultRSSSubscriptionCloneName(ctx context.Context, original *entity.RSSSubscription) string {
+	base := strings.TrimSpace(original.Name)
+	if base == "" {
+		base = "Subscription"
+	}
+	candidate := base + " Copy"
+	existing, err := s.rssRepo.ListSubscriptions(ctx, domainrepo.RSSSubscriptionFilter{
+		IncludeAll: true,
+		SourceID:   original.SourceID,
+	})
+	if err != nil {
+		return candidate
+	}
+	used := map[string]struct{}{}
+	for _, subscription := range existing {
+		if subscription.UserID != original.UserID {
+			continue
+		}
+		used[strings.TrimSpace(subscription.Name)] = struct{}{}
+	}
+	if _, ok := used[candidate]; !ok {
+		return candidate
+	}
+	for index := 2; ; index++ {
+		next := fmt.Sprintf("%s Copy %d", base, index)
+		if _, ok := used[next]; !ok {
+			return next
+		}
+	}
 }
 
 func (s *RSSService) normalizeSubscriptionRequest(ctx context.Context, req appdto.RSSSubscriptionUpsertRequest) (resolvedRSSSubscriptionTarget, error) {
@@ -980,7 +1459,21 @@ func (s *RSSService) normalizeSubscriptionRequest(ctx context.Context, req appdt
 	if err := validateRSSRulePatterns(req.MustContain, req.MustNotContain, req.UseRegex); err != nil {
 		return resolvedRSSSubscriptionTarget{}, err
 	}
-	return s.validateWritableTarget(ctx, req.TargetVirtualParentPath)
+	directoryTemplate := strings.TrimSpace(req.DirectoryTemplate)
+	if err := validateRSSDirectoryTemplate(directoryTemplate); err != nil {
+		return resolvedRSSSubscriptionTarget{}, err
+	}
+	filenameTemplate := strings.TrimSpace(req.FilenameTemplate)
+	if err := validateRSSFilenameTemplate(filenameTemplate); err != nil {
+		return resolvedRSSSubscriptionTarget{}, err
+	}
+	resolved, err := s.validateWritableTarget(ctx, req.TargetVirtualParentPath)
+	if err != nil {
+		return resolvedRSSSubscriptionTarget{}, err
+	}
+	resolved.directoryTemplate = directoryTemplate
+	resolved.filenameTemplate = filenameTemplate
+	return resolved, nil
 }
 
 func (s *RSSService) validateWritableTarget(ctx context.Context, targetVirtualParentPath string) (resolvedRSSSubscriptionTarget, error) {
@@ -1177,6 +1670,112 @@ func rssSourceHealthForFailures(failures int) string {
 	}
 }
 
+func normalizeRSSSourceHealth(health string) string {
+	if strings.TrimSpace(health) == "" {
+		return RSSSourceHealthOK
+	}
+	return strings.TrimSpace(health)
+}
+
+func (s *RSSService) notifyRSSSourceFailure(ctx context.Context, source *entity.RSSSource, refreshErr error, previousHealth string) {
+	if source == nil || refreshErr == nil {
+		return
+	}
+	currentHealth := normalizeRSSSourceHealth(source.HealthStatus)
+	if currentHealth != RSSSourceHealthDegraded && currentHealth != RSSSourceHealthCircuitOpen {
+		return
+	}
+	if previousHealth == currentHealth {
+		return
+	}
+	s.emitRSSNotification(ctx, NotificationEventInput{
+		UserID:    source.UserID,
+		EventType: NotificationEventRSSSourceFailure,
+		Severity:  NotificationSeverityWarning,
+		Title:     "RSS source refresh failures",
+		Message:   fmt.Sprintf("RSS source %s entered %s after %d consecutive failures", source.Name, currentHealth, source.ConsecutiveFailures),
+		Payload: map[string]any{
+			"source_id":            source.ID,
+			"user_id":              source.UserID,
+			"name":                 source.Name,
+			"url":                  source.URL,
+			"health_status":        currentHealth,
+			"consecutive_failures": source.ConsecutiveFailures,
+			"error":                refreshErr.Error(),
+		},
+	})
+}
+
+func (s *RSSService) notifyRSSItemNeedsAttention(ctx context.Context, item *entity.RSSItem, itemErr error) {
+	if item == nil {
+		return
+	}
+	message := "RSS item needs attention"
+	if itemErr != nil {
+		message = itemErr.Error()
+	} else if item.ErrorMessage != nil && strings.TrimSpace(*item.ErrorMessage) != "" {
+		message = strings.TrimSpace(*item.ErrorMessage)
+	}
+	s.emitRSSNotification(ctx, NotificationEventInput{
+		UserID:    item.UserID,
+		EventType: NotificationEventRSSItemNeedsAttention,
+		Severity:  NotificationSeverityError,
+		Title:     "RSS item needs attention",
+		Message:   message,
+		Payload: map[string]any{
+			"item_id":                 item.ID,
+			"user_id":                 item.UserID,
+			"source_id":               item.SourceID,
+			"title":                   item.Title,
+			"status":                  item.Status,
+			"matched_subscription_id": item.MatchedSubscriptionID,
+			"task_id":                 item.TaskID,
+			"retry_count":             item.RetryCount,
+			"max_retry_count":         item.MaxRetryCount,
+			"retry_reason":            item.RetryReason,
+			"error":                   message,
+		},
+	})
+}
+
+func (s *RSSService) notifyRSSDownloadCompleted(ctx context.Context, item *entity.RSSItem, task *entity.DownloadTask) {
+	if item == nil {
+		return
+	}
+	payload := map[string]any{
+		"item_id":                 item.ID,
+		"user_id":                 item.UserID,
+		"source_id":               item.SourceID,
+		"title":                   item.Title,
+		"matched_subscription_id": item.MatchedSubscriptionID,
+		"task_id":                 item.TaskID,
+	}
+	if task != nil {
+		payload["download_task_id"] = task.ID
+		payload["display_name"] = task.DisplayName
+		payload["target_virtual_parent_path"] = task.TargetVirtualParentPath
+		payload["save_virtual_path"] = task.SaveVirtualPath
+		payload["downloader_type"] = task.DownloaderType
+	}
+	s.emitRSSNotification(ctx, NotificationEventInput{
+		UserID:    item.UserID,
+		EventType: NotificationEventRSSDownloadCompleted,
+		Severity:  NotificationSeverityInfo,
+		Title:     "RSS download completed",
+		Message:   fmt.Sprintf("RSS download completed: %s", item.Title),
+		Payload:   payload,
+	})
+}
+
+func (s *RSSService) emitRSSNotification(ctx context.Context, input NotificationEventInput) {
+	if s.notifier == nil {
+		return
+	}
+	if _, err := s.notifier.Notify(ctx, input); err != nil {
+		s.logger.Warn("rss notification failed", slog.String("event", "rss.notification.failed"), slog.String("notification_event_type", input.EventType), slog.Any("error", err))
+	}
+}
+
 func rssSourceFailureBackoff(source *entity.RSSSource) time.Duration {
 	interval := time.Duration(normalizeRSSRefreshInterval(source.RefreshIntervalSeconds)) * time.Second
 	switch {
@@ -1235,6 +1834,41 @@ func (s *RSSService) tryLockRSSItem(itemID uint) (func(), bool) {
 	return mutex.Unlock, true
 }
 
+func (s *RSSService) ignoreRSSItem(ctx context.Context, itemID uint) (*entity.RSSItem, error) {
+	item, err := s.rssRepo.FindItemByID(ctx, itemID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeRSSOwner(ctx, item.UserID); err != nil {
+		return nil, err
+	}
+	unlock, locked := s.tryLockRSSItem(item.ID)
+	if !locked {
+		return nil, ErrTaskInvalidState
+	}
+	defer unlock()
+	current, err := s.rssRepo.FindItemByID(ctx, item.ID)
+	if err != nil {
+		return nil, err
+	}
+	item = current
+	if err := s.authorizeRSSOwner(ctx, item.UserID); err != nil {
+		return nil, err
+	}
+	if s.itemHasActiveTask(ctx, item) || rssItemIsCompleted(item) {
+		return nil, ErrTaskInvalidState
+	}
+	item.Status = RSSItemStatusIgnored
+	item.ErrorMessage = nil
+	item.RetryReason = nil
+	item.NextRetryAt = nil
+	item.UpdatedAt = s.now()
+	if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
 func (s *RSSService) itemHasActiveTask(ctx context.Context, item *entity.RSSItem) bool {
 	if item == nil || item.TaskID == nil {
 		return false
@@ -1277,25 +1911,59 @@ func (s *RSSService) reconcileTaskBacklinks(ctx context.Context, limit int, proc
 			joined = errors.Join(joined, err)
 			continue
 		}
-		switch task.Status {
-		case "completed":
-			item.Status = RSSItemStatusCompleted
-			item.ErrorMessage = nil
-			item.RetryReason = nil
-			item.NextRetryAt = nil
-			item.UpdatedAt = now
-			if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
-				joined = errors.Join(joined, err)
-				continue
-			}
-			(*processed)++
-		case "failed", "canceled":
-			taskErr := errors.New(taskTerminalErrorMessage(task))
-			s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), taskErr, now, false)
+		if err := s.applyRSSItemTaskBacklink(ctx, item, task, now); err != nil {
+			joined = errors.Join(joined, err)
+			continue
+		}
+		if isTerminalTaskStatus(task.Status) {
 			(*processed)++
 		}
 	}
 	return joined
+}
+
+func (s *RSSService) reconcileSingleTaskBacklink(ctx context.Context, task *entity.DownloadTask) error {
+	if task == nil || !isTerminalTaskStatus(task.Status) {
+		return nil
+	}
+	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{
+		IncludeAll: true,
+		TaskID:     task.ID,
+		Status:     RSSItemStatusEnqueued,
+	})
+	if err != nil {
+		return err
+	}
+	var joined error
+	now := s.now()
+	for _, item := range items {
+		if err := s.applyRSSItemTaskBacklink(ctx, item, task, now); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
+}
+
+func (s *RSSService) applyRSSItemTaskBacklink(ctx context.Context, item *entity.RSSItem, task *entity.DownloadTask, now time.Time) error {
+	if item == nil || task == nil {
+		return nil
+	}
+	switch task.Status {
+	case "completed":
+		item.Status = RSSItemStatusCompleted
+		item.ErrorMessage = nil
+		item.RetryReason = nil
+		item.NextRetryAt = nil
+		item.UpdatedAt = now
+		if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
+			return err
+		}
+		s.notifyRSSDownloadCompleted(ctx, item, task)
+	case "failed", "canceled":
+		taskErr := errors.New(taskTerminalErrorMessage(task))
+		s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), taskErr, now, false)
+	}
+	return nil
 }
 
 func (s *RSSService) retryDueItems(ctx context.Context, limit int, processed *int) error {
@@ -1329,6 +1997,8 @@ func (s *RSSService) retryDueItems(ctx context.Context, limit int, processed *in
 			item.UpdatedAt = now
 			if updateErr := s.rssRepo.UpdateItem(ctx, item); updateErr != nil {
 				joined = errors.Join(joined, updateErr)
+			} else {
+				s.notifyRSSItemNeedsAttention(ctx, item, err)
 			}
 			(*processed)++
 			continue
@@ -1391,6 +2061,7 @@ func (s *RSSService) markItemRetryOrAttention(ctx context.Context, item *entity.
 	if item == nil || err == nil {
 		return
 	}
+	previousStatus := item.Status
 	ensureRSSItemRetryDefaults(item)
 	if countAttempt {
 		item.RetryCount++
@@ -1418,6 +2089,10 @@ func (s *RSSService) markItemRetryOrAttention(ctx context.Context, item *entity.
 	item.UpdatedAt = now
 	if updateErr := s.rssRepo.UpdateItem(ctx, item); updateErr != nil {
 		s.logger.Warn("rss item retry state update failed", slog.String("event", "rss.item.retry_state_update_failed"), slog.Uint64("item_id", uint64(item.ID)), slog.Any("error", updateErr))
+		return
+	}
+	if item.Status == RSSItemStatusNeedsAttention && previousStatus != RSSItemStatusNeedsAttention {
+		s.notifyRSSItemNeedsAttention(ctx, item, err)
 	}
 }
 
@@ -1481,6 +2156,155 @@ func taskTerminalErrorMessage(task *entity.DownloadTask) string {
 	return "download failed"
 }
 
+func appendRSSImportResult(section *appdto.RSSImportSectionResult, result appdto.RSSImportItemResult) {
+	if section == nil {
+		return
+	}
+	if result.Action == "" {
+		if result.Success {
+			result.Action = rssImportActionSkip
+		} else {
+			result.Action = rssImportActionFailed
+		}
+	}
+	section.Items = append(section.Items, result)
+	switch result.Action {
+	case rssImportActionCreate:
+		if result.Success {
+			section.Created++
+		} else {
+			section.Failed++
+		}
+	case rssImportActionReuse:
+		if result.Success {
+			section.Reused++
+		} else {
+			section.Failed++
+		}
+	case rssImportActionSkip:
+		if result.Success {
+			section.Skipped++
+		} else {
+			section.Failed++
+		}
+	default:
+		section.Failed++
+	}
+}
+
+func fillRSSImportError(result *appdto.RSSImportItemResult, err error, notFoundCode string) {
+	if result == nil || err == nil {
+		return
+	}
+	code := rssImportErrorCode(err, notFoundCode)
+	message := err.Error()
+	result.Action = rssImportActionFailed
+	result.Success = false
+	result.ErrorCode = &code
+	result.ErrorMessage = &message
+}
+
+func rssImportErrorCode(err error, notFoundCode string) string {
+	switch {
+	case errors.Is(err, domainrepo.ErrNotFound):
+		return notFoundCode
+	case errors.Is(err, ErrConfigInvalid):
+		return "CONFIG_INVALID"
+	case errors.Is(err, ErrPathInvalid):
+		return "PATH_INVALID"
+	case errors.Is(err, ErrNoBackingStorage):
+		return "NO_BACKING_STORAGE"
+	case errors.Is(err, ErrNameConflict):
+		return "NAME_CONFLICT"
+	case errors.Is(err, ErrSourceReadOnly):
+		return "SOURCE_READ_ONLY"
+	case errors.Is(err, ErrACLDenied), errors.Is(err, ErrPermissionDenied):
+		return "PERMISSION_DENIED"
+	case errors.Is(err, ErrRSSRegexInvalid):
+		return "RSS_REGEX_INVALID"
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "DOWNLOADER_UNAVAILABLE"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
+func fillRSSSubscriptionBatchError(result *appdto.RSSSubscriptionBatchStateResult, err error) {
+	if result == nil || err == nil {
+		return
+	}
+	code := rssSubscriptionBatchErrorCode(err)
+	message := err.Error()
+	result.Success = false
+	result.ErrorCode = &code
+	result.ErrorMessage = &message
+}
+
+func rssSubscriptionBatchErrorCode(err error) string {
+	switch {
+	case errors.Is(err, domainrepo.ErrNotFound):
+		return "RSS_SUBSCRIPTION_NOT_FOUND"
+	case errors.Is(err, ErrConfigInvalid):
+		return "CONFIG_INVALID"
+	case errors.Is(err, ErrPathInvalid):
+		return "PATH_INVALID"
+	case errors.Is(err, ErrNoBackingStorage):
+		return "NO_BACKING_STORAGE"
+	case errors.Is(err, ErrNameConflict):
+		return "NAME_CONFLICT"
+	case errors.Is(err, ErrSourceReadOnly):
+		return "SOURCE_READ_ONLY"
+	case errors.Is(err, ErrACLDenied), errors.Is(err, ErrPermissionDenied):
+		return "PERMISSION_DENIED"
+	case errors.Is(err, ErrRSSRegexInvalid):
+		return "RSS_REGEX_INVALID"
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "DOWNLOADER_UNAVAILABLE"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
+func fillRSSItemBatchError(result *appdto.RSSItemBatchActionResult, err error) {
+	if result == nil || err == nil {
+		return
+	}
+	code := rssItemBatchErrorCode(err)
+	message := err.Error()
+	result.Success = false
+	result.ErrorCode = &code
+	result.ErrorMessage = &message
+}
+
+func rssItemBatchErrorCode(err error) string {
+	switch {
+	case errors.Is(err, domainrepo.ErrNotFound):
+		return "RSS_ITEM_NOT_FOUND"
+	case errors.Is(err, ErrConfigInvalid):
+		return "CONFIG_INVALID"
+	case errors.Is(err, ErrPathInvalid):
+		return "PATH_INVALID"
+	case errors.Is(err, ErrNoBackingStorage):
+		return "NO_BACKING_STORAGE"
+	case errors.Is(err, ErrNameConflict):
+		return "NAME_CONFLICT"
+	case errors.Is(err, ErrSourceReadOnly):
+		return "SOURCE_READ_ONLY"
+	case errors.Is(err, ErrACLDenied), errors.Is(err, ErrPermissionDenied):
+		return "PERMISSION_DENIED"
+	case errors.Is(err, ErrDownloadLinkUnsupported):
+		return "DOWNLOAD_LINK_UNSUPPORTED"
+	case errors.Is(err, ErrRSSRegexInvalid):
+		return "RSS_REGEX_INVALID"
+	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "DOWNLOADER_UNAVAILABLE"
+	case errors.Is(err, ErrTaskInvalidState):
+		return "TASK_INVALID_STATE"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
 func valueOrZero(value *uint) uint {
 	if value == nil {
 		return 0
@@ -1524,6 +2348,456 @@ func evaluateRSSSubscriptionPreview(subscription *entity.RSSSubscription, item *
 		result.Result = "matched"
 	}
 	return result
+}
+
+func parseRSSAnimeTitle(title string) entity.RSSAnimeParsed {
+	original := strings.TrimSpace(title)
+	withoutGroup, subtitleGroup := stripRSSSubtitleGroup(original)
+	working := stripRSSReleaseDecorations(withoutGroup)
+	season, episode := parseRSSSeasonEpisode(original)
+	animeTitle := cleanupRSSAnimeTitle(extractRSSAnimeTitle(working))
+	if animeTitle == "" {
+		animeTitle = cleanupRSSAnimeTitle(working)
+	}
+	if animeTitle == "" {
+		animeTitle = original
+	}
+	return entity.RSSAnimeParsed{
+		AnimeTitle:    animeTitle,
+		Season:        season,
+		Episode:       episode,
+		SubtitleGroup: subtitleGroup,
+		Resolution:    normalizeRSSResolution(rssResolutionPattern.FindString(original)),
+	}
+}
+
+func stripRSSSubtitleGroup(title string) (string, string) {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return "", ""
+	}
+	open, close := "", ""
+	switch {
+	case strings.HasPrefix(trimmed, "["):
+		open, close = "[", "]"
+	case strings.HasPrefix(trimmed, "【"):
+		open, close = "【", "】"
+	default:
+		return trimmed, ""
+	}
+	end := strings.Index(trimmed[len(open):], close)
+	if end < 0 {
+		return trimmed, ""
+	}
+	end += len(open)
+	group := strings.TrimSpace(trimmed[len(open):end])
+	if group == "" || isRSSMetadataToken(group) {
+		return trimmed, ""
+	}
+	rest := strings.TrimSpace(trimmed[end+len(close):])
+	return rest, group
+}
+
+func stripRSSReleaseDecorations(title string) string {
+	out := strings.TrimSpace(title)
+	for strings.HasPrefix(out, "★") {
+		next := strings.Index(out[len("★"):], "★")
+		if next < 0 {
+			break
+		}
+		next += len("★")
+		token := out[:next+len("★")]
+		if !strings.Contains(token, "新番") && !strings.Contains(token, "月") {
+			break
+		}
+		out = strings.TrimSpace(out[next+len("★"):])
+	}
+	return out
+}
+
+func parseRSSSeasonEpisode(title string) (string, string) {
+	if matches := rssSxxEyyPattern.FindStringSubmatch(title); len(matches) >= 3 {
+		return formatRSSSeason(matches[1]), normalizeRSSEpisodeValue(matches[2])
+	}
+	season := ""
+	if matches := rssSeasonWordPattern.FindStringSubmatch(title); len(matches) >= 3 {
+		if matches[1] != "" {
+			season = formatRSSSeason(matches[1])
+		} else {
+			season = formatRSSSeason(matches[2])
+		}
+	}
+	if season == "" {
+		if matches := rssChineseSeasonPattern.FindStringSubmatch(title); len(matches) >= 2 {
+			season = formatRSSSeason(matches[1])
+		}
+	}
+	for _, expr := range []*regexp.Regexp{rssChineseEpisodePattern, rssEpisodeWordPattern, rssDashEpisodePattern} {
+		if matches := expr.FindStringSubmatch(title); len(matches) >= 2 && isRSSEpisodeToken(matches[1]) {
+			return season, normalizeRSSEpisodeValue(matches[1])
+		}
+	}
+	for _, matches := range rssBracketTokenPattern.FindAllStringSubmatch(title, -1) {
+		if len(matches) >= 2 && isRSSEpisodeToken(matches[1]) {
+			return season, normalizeRSSEpisodeValue(matches[1])
+		}
+	}
+	return season, ""
+}
+
+func extractRSSAnimeTitle(title string) string {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return ""
+	}
+	for _, expr := range []*regexp.Regexp{rssSxxEyyPattern, rssDashEpisodePattern, rssChineseEpisodePattern, rssEpisodeWordPattern} {
+		if loc := expr.FindStringIndex(trimmed); loc != nil && loc[0] > 0 {
+			return trimmed[:loc[0]]
+		}
+	}
+	matches := rssBracketTokenPattern.FindAllStringSubmatchIndex(trimmed, -1)
+	for i, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		token := trimmed[match[2]:match[3]]
+		if !isRSSEpisodeToken(token) {
+			continue
+		}
+		if i > 0 {
+			previous := matches[i-1]
+			previousToken := strings.TrimSpace(trimmed[previous[2]:previous[3]])
+			if previousToken != "" && !isRSSMetadataToken(previousToken) {
+				return previousToken
+			}
+		}
+		if match[0] > 0 {
+			return trimmed[:match[0]]
+		}
+	}
+	return trimRSSMetadataSuffix(trimmed)
+}
+
+func cleanupRSSAnimeTitle(title string) string {
+	out := trimRSSMetadataSuffix(strings.TrimSpace(title))
+	out = strings.Trim(out, " \t\r\n-–—_")
+	out = strings.TrimSpace(out)
+	if strings.HasPrefix(out, "[") && strings.HasSuffix(out, "]") && len(out) > 2 {
+		out = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(out, "["), "]"))
+	}
+	if strings.HasPrefix(out, "【") && strings.HasSuffix(out, "】") && len(out) > len("【】") {
+		out = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(out, "【"), "】"))
+	}
+	return out
+}
+
+func trimRSSMetadataSuffix(title string) string {
+	out := strings.TrimSpace(title)
+	for {
+		changed := false
+		if strings.HasSuffix(out, ")") {
+			if start := strings.LastIndex(out, "("); start >= 0 {
+				token := strings.TrimSpace(out[start+1 : len(out)-1])
+				if isRSSMetadataToken(token) || isRSSEpisodeToken(token) {
+					out = strings.TrimSpace(out[:start])
+					changed = true
+				}
+			}
+		}
+		matches := rssBracketTokenPattern.FindAllStringSubmatchIndex(out, -1)
+		if len(matches) > 0 {
+			last := matches[len(matches)-1]
+			if strings.TrimSpace(out[last[1]:]) == "" {
+				token := strings.TrimSpace(out[last[2]:last[3]])
+				if isRSSMetadataToken(token) || isRSSEpisodeToken(token) {
+					out = strings.TrimSpace(out[:last[0]])
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return out
+		}
+	}
+}
+
+func isRSSMetadataToken(token string) bool {
+	trimmed := strings.TrimSpace(token)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if normalizeRSSResolution(trimmed) != "" {
+		return true
+	}
+	metadataHints := []string{
+		"web-dl", "webrip", "baha", "aac", "avc", "hevc", "x264", "x265",
+		"h264", "h265", "mp4", "mkv", "chs", "cht", "gb", "big5", "繁", "简",
+		"字幕", "内嵌", "內嵌", "招募", "sc", "tc",
+	}
+	for _, hint := range metadataHints {
+		if strings.Contains(lower, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRSSEpisodeToken(token string) bool {
+	trimmed := normalizeRSSEpisodeValue(token)
+	if trimmed == "" {
+		return false
+	}
+	if !regexp.MustCompile(`^[0-9]{1,4}(?:\.[0-9]+)?$`).MatchString(trimmed) {
+		return false
+	}
+	integerPart := strings.SplitN(trimmed, ".", 2)[0]
+	if len(integerPart) == 4 && integerPart >= "1900" && integerPart <= "2100" {
+		return false
+	}
+	if normalizeRSSResolution(trimmed+"p") != "" && (trimmed == "480" || trimmed == "720" || trimmed == "1080" || trimmed == "1440" || trimmed == "2160") {
+		return false
+	}
+	return true
+}
+
+func normalizeRSSEpisodeValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	trimmed = regexp.MustCompile(`(?i)v[0-9]+$`).ReplaceAllString(trimmed, "")
+	return strings.TrimSpace(trimmed)
+}
+
+func formatRSSSeason(value string) string {
+	normalized := normalizeRSSNumber(value)
+	if normalized == "" {
+		return ""
+	}
+	if len(normalized) == 1 {
+		return "S0" + normalized
+	}
+	return "S" + normalized
+}
+
+func normalizeRSSResolution(value string) string {
+	match := rssResolutionPattern.FindString(strings.TrimSpace(value))
+	if match == "" {
+		return ""
+	}
+	lower := strings.ToLower(match)
+	if strings.HasSuffix(lower, "p") {
+		return strings.TrimSuffix(lower, "p") + "p"
+	}
+	return strings.ToUpper(lower)
+}
+
+func validateRSSDirectoryTemplate(template string) error {
+	trimmed := strings.TrimSpace(template)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.Contains(trimmed, "\\") || strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || hasRSSWindowsDrivePrefix(trimmed) {
+		return ErrPathInvalid
+	}
+	if err := validateRSSTemplatePlaceholders(trimmed); err != nil {
+		return err
+	}
+	_, err := renderRSSDirectoryTemplate(trimmed, &entity.RSSItem{})
+	return err
+}
+
+func validateRSSFilenameTemplate(template string) error {
+	trimmed := strings.TrimSpace(template)
+	if trimmed == "" {
+		return nil
+	}
+	if strings.Contains(trimmed, "\\") || strings.Contains(trimmed, "/") || strings.Contains(trimmed, "..") || hasRSSWindowsDrivePrefix(trimmed) {
+		return ErrPathInvalid
+	}
+	if err := validateRSSTemplatePlaceholders(trimmed); err != nil {
+		return err
+	}
+	rendered := renderRSSTemplate(trimmed, &entity.RSSItem{})
+	if strings.TrimSpace(rendered) == "" {
+		return nil
+	}
+	segment := sanitizeRSSPathSegment(rendered)
+	if segment == "" || strings.Contains(segment, "..") {
+		return ErrPathInvalid
+	}
+	return nil
+}
+
+func validateRSSTemplatePlaceholders(template string) error {
+	for i := 0; i < len(template); i++ {
+		switch template[i] {
+		case '{':
+			end := strings.IndexByte(template[i+1:], '}')
+			if end < 0 {
+				return ErrPathInvalid
+			}
+			token := template[i+1 : i+1+end]
+			if token == "" || strings.ContainsAny(token, "{}") {
+				return ErrPathInvalid
+			}
+			if _, ok := rssAllowedTemplateTokens[token]; !ok {
+				return ErrPathInvalid
+			}
+			i += end + 1
+		case '}':
+			return ErrPathInvalid
+		}
+	}
+	return nil
+}
+
+func hasRSSWindowsDrivePrefix(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) < 2 || trimmed[1] != ':' {
+		return false
+	}
+	ch := trimmed[0]
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
+}
+
+func renderRSSTargetVirtualParentPath(subscription *entity.RSSSubscription, item *entity.RSSItem) (string, error) {
+	if subscription == nil {
+		return "", ErrPathInvalid
+	}
+	base, err := normalizeVirtualPath(strings.TrimSpace(subscription.TargetVirtualParentPath))
+	if err != nil {
+		return "", err
+	}
+	relativeDir, err := renderRSSDirectoryTemplate(subscription.DirectoryTemplate, item)
+	if err != nil {
+		return "", err
+	}
+	if relativeDir == "" {
+		return base, nil
+	}
+	target := joinVirtualPath(base, relativeDir)
+	normalized, err := normalizeVirtualPath(target)
+	if err != nil {
+		return "", err
+	}
+	if !isSubPath(base, normalized) {
+		return "", ErrPathInvalid
+	}
+	return normalized, nil
+}
+
+func renderRSSDirectoryTemplate(template string, item *entity.RSSItem) (string, error) {
+	trimmed := strings.TrimSpace(template)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.Contains(trimmed, "\\") || strings.HasPrefix(trimmed, "/") || strings.Contains(trimmed, "..") || hasRSSWindowsDrivePrefix(trimmed) {
+		return "", ErrPathInvalid
+	}
+	if err := validateRSSTemplatePlaceholders(trimmed); err != nil {
+		return "", err
+	}
+	rendered := renderRSSTemplate(trimmed, item)
+	return sanitizeRSSRelativePath(rendered)
+}
+
+func renderRSSFilenameTemplate(subscription *entity.RSSSubscription, item *entity.RSSItem) (string, error) {
+	if subscription == nil {
+		return "", ErrPathInvalid
+	}
+	trimmed := strings.TrimSpace(subscription.FilenameTemplate)
+	if trimmed == "" {
+		return "", nil
+	}
+	if err := validateRSSFilenameTemplate(trimmed); err != nil {
+		return "", err
+	}
+	rendered := renderRSSTemplate(trimmed, item)
+	targetFilename, err := normalizeTaskTargetFilename(rendered)
+	if err != nil {
+		return "", ErrPathInvalid
+	}
+	return targetFilename, nil
+}
+
+func renderRSSTemplate(template string, item *entity.RSSItem) string {
+	if item == nil {
+		item = &entity.RSSItem{}
+	}
+	parsed := item.Parsed
+	if parsed.AnimeTitle == "" && parsed.Season == "" && parsed.Episode == "" && parsed.SubtitleGroup == "" && parsed.Resolution == "" && strings.TrimSpace(item.Title) != "" {
+		parsed = parseRSSAnimeTitle(item.Title)
+	}
+	values := map[string]string{
+		"anime_title":    firstNonEmpty(parsed.AnimeTitle, item.Title),
+		"season":         parsed.Season,
+		"episode":        parsed.Episode,
+		"subtitle_group": parsed.SubtitleGroup,
+		"resolution":     parsed.Resolution,
+		"title":          item.Title,
+	}
+	return rssTemplatePlaceholderPattern.ReplaceAllStringFunc(template, func(placeholder string) string {
+		matches := rssTemplatePlaceholderPattern.FindStringSubmatch(placeholder)
+		if len(matches) != 2 {
+			return ""
+		}
+		return sanitizeRSSPathSegment(values[matches[1]])
+	})
+}
+
+func sanitizeRSSRelativePath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	if strings.Contains(trimmed, "\\") || strings.Contains(trimmed, "..") {
+		return "", ErrPathInvalid
+	}
+	segments := strings.Split(trimmed, "/")
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		cleaned := sanitizeRSSPathSegment(segment)
+		if cleaned == "" {
+			continue
+		}
+		if cleaned == "." || cleaned == ".." || strings.Contains(cleaned, "..") {
+			return "", ErrPathInvalid
+		}
+		out = append(out, cleaned)
+	}
+	return strings.Join(out, "/"), nil
+}
+
+func sanitizeRSSPathSegment(value string) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(value) {
+		switch {
+		case r == '/' || r == '\\' || r == 0 || unicode.IsControl(r):
+			builder.WriteRune(' ')
+		case strings.ContainsRune(`<>:"|?*`, r):
+			builder.WriteRune(' ')
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	collapsed := strings.Join(strings.Fields(builder.String()), " ")
+	collapsed = strings.Trim(collapsed, " .")
+	for strings.Contains(collapsed, "..") {
+		collapsed = strings.ReplaceAll(collapsed, "..", ".")
+	}
+	collapsed = strings.Trim(collapsed, " .")
+	if collapsed == "." || collapsed == ".." {
+		return ""
+	}
+	return collapsed
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func normalizeRSSSourceInput(req appdto.RSSSourceUpsertRequest) (string, string, int, error) {
@@ -1822,6 +3096,8 @@ func toRSSSubscriptionView(subscription *entity.RSSSubscription) appdto.RSSSubsc
 		UseRegex:                subscription.UseRegex,
 		CaseSensitive:           subscription.CaseSensitive,
 		TargetVirtualParentPath: subscription.TargetVirtualParentPath,
+		DirectoryTemplate:       subscription.DirectoryTemplate,
+		FilenameTemplate:        subscription.FilenameTemplate,
 		ResolvedSourceID:        subscription.ResolvedSourceID,
 		ResolvedInnerParentPath: subscription.ResolvedInnerParentPath,
 		CreatedAt:               subscription.CreatedAt.Format(time.RFC3339),
@@ -1850,15 +3126,22 @@ func toRSSItemView(item *entity.RSSItem) appdto.RSSItemView {
 		maxRetryCount = defaultRSSItemMaxRetryCount
 	}
 	return appdto.RSSItemView{
-		ID:                    item.ID,
-		UserID:                item.UserID,
-		SourceID:              item.SourceID,
-		Title:                 item.Title,
-		Link:                  item.Link,
-		PublishedAt:           publishedAt,
-		GUID:                  item.GUID,
-		DownloadURL:           item.DownloadURL,
-		LinkType:              item.LinkType,
+		ID:          item.ID,
+		UserID:      item.UserID,
+		SourceID:    item.SourceID,
+		Title:       item.Title,
+		Link:        item.Link,
+		PublishedAt: publishedAt,
+		GUID:        item.GUID,
+		DownloadURL: item.DownloadURL,
+		LinkType:    item.LinkType,
+		Parsed: appdto.RSSAnimeParsedView{
+			AnimeTitle:    item.Parsed.AnimeTitle,
+			Season:        item.Parsed.Season,
+			Episode:       item.Parsed.Episode,
+			SubtitleGroup: item.Parsed.SubtitleGroup,
+			Resolution:    item.Parsed.Resolution,
+		},
 		Status:                item.Status,
 		MatchedSubscriptionID: item.MatchedSubscriptionID,
 		TaskID:                item.TaskID,

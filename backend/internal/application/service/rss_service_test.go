@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	domainrepo "yunxia/internal/domain/repository"
+	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
 	"yunxia/internal/infrastructure/security"
 )
 
@@ -178,6 +180,513 @@ func TestRSSSubscriptionRegexModeCanStillMatchMetadata(t *testing.T) {
 	}
 }
 
+func TestParseRSSAnimeTitleExtractsCommonMikanFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		title         string
+		animeTitle    string
+		season        string
+		episode       string
+		subtitleGroup string
+		resolution    string
+	}{
+		{
+			name:          "dash episode",
+			title:         "[SubsPlease] Sousou no Frieren - 05 [1080p]",
+			animeTitle:    "Sousou no Frieren",
+			episode:       "05",
+			subtitleGroup: "SubsPlease",
+			resolution:    "1080p",
+		},
+		{
+			name:          "sxxeyy",
+			title:         "[ANi] Summer Pockets S02E03 [1080P][Baha][WEB-DL][CHT]",
+			animeTitle:    "Summer Pockets",
+			season:        "S02",
+			episode:       "03",
+			subtitleGroup: "ANi",
+			resolution:    "1080p",
+		},
+		{
+			name:          "mikan bracket title",
+			title:         "【喵萌奶茶屋】★04月新番★[夏日口袋/Summer Pockets][04][1080p][简日双语]",
+			animeTitle:    "夏日口袋/Summer Pockets",
+			episode:       "04",
+			subtitleGroup: "喵萌奶茶屋",
+			resolution:    "1080p",
+		},
+		{
+			name:          "season word",
+			title:         "[Nekomoe kissaten&LoliHouse] Shoushimin Series 2nd Season - 03 [WebRip 1080p HEVC-10bit AAC][CHS]",
+			animeTitle:    "Shoushimin Series 2nd Season",
+			season:        "S02",
+			episode:       "03",
+			subtitleGroup: "Nekomoe kissaten&LoliHouse",
+			resolution:    "1080p",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseRSSAnimeTitle(tt.title)
+			if got.AnimeTitle != tt.animeTitle || got.Season != tt.season || got.Episode != tt.episode || got.SubtitleGroup != tt.subtitleGroup || got.Resolution != tt.resolution {
+				t.Fatalf("parseRSSAnimeTitle() = %#v", got)
+			}
+		})
+	}
+}
+
+func TestRSSDirectoryTemplateRenderingIsSafe(t *testing.T) {
+	item := &entity.RSSItem{Title: "[SubsPlease] Example/Show S01E05 [1080p]"}
+	item.Parsed = parseRSSAnimeTitle(item.Title)
+	got, err := renderRSSTargetVirtualParentPath(&entity.RSSSubscription{
+		TargetVirtualParentPath: "/anime",
+		DirectoryTemplate:       "{anime_title}/{season}/{episode}",
+	}, item)
+	if err != nil {
+		t.Fatalf("renderRSSTargetVirtualParentPath() error = %v", err)
+	}
+	if got != "/anime/Example Show/S01/05" {
+		t.Fatalf("target path = %q", got)
+	}
+
+	sanitized, err := renderRSSDirectoryTemplate("{title}", &entity.RSSItem{Title: "A/../B\\C"})
+	if err != nil {
+		t.Fatalf("renderRSSDirectoryTemplate() should sanitize placeholder values: %v", err)
+	}
+	if strings.Contains(sanitized, "..") || strings.ContainsAny(sanitized, `/\`) {
+		t.Fatalf("sanitized path is unsafe: %q", sanitized)
+	}
+
+	for _, template := range []string{
+		"../{anime_title}",
+		"/abs/{anime_title}",
+		"bad\\{title}",
+		"{bad1}",
+		"{anime-title}",
+		"{AnimeTitle}",
+		"{unknown_placeholder}",
+		"C:/anime",
+		"D:/anime",
+	} {
+		t.Run(template, func(t *testing.T) {
+			if err := validateRSSDirectoryTemplate(template); !errors.Is(err, ErrPathInvalid) {
+				t.Fatalf("expected ErrPathInvalid for %q, got %v", template, err)
+			}
+		})
+	}
+
+	for _, template := range []string{
+		"{anime_title}-{bad}",
+		"{bad1}",
+		"{anime-title}",
+		"{AnimeTitle}",
+		"C:/anime",
+		"D:/anime",
+		"C:anime",
+	} {
+		t.Run("filename_"+template, func(t *testing.T) {
+			if err := validateRSSFilenameTemplate(template); !errors.Is(err, ErrPathInvalid) {
+				t.Fatalf("expected ErrPathInvalid for %q, got %v", template, err)
+			}
+		})
+	}
+}
+
+func TestRSSSubscriptionTemplateFieldsPersistInResponses(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 9, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	svc := NewRSSService(repo, nil, nil, WithRSSVFSResolver(fakeRSSVFSResolver{}), WithRSSNow(func() time.Time { return now }))
+	ctx := rssTestAuthContext()
+
+	created, err := svc.CreateSubscription(ctx, appdto.RSSSubscriptionUpsertRequest{
+		SourceID:                source.ID,
+		Name:                    "anime",
+		IsEnabled:               boolPtr(true),
+		MustContain:             []string{"Example"},
+		TargetVirtualParentPath: "/anime",
+		DirectoryTemplate:       "{anime_title}/{season}",
+		FilenameTemplate:        "{anime_title} - {episode} [{resolution}]",
+	})
+	if err != nil {
+		t.Fatalf("CreateSubscription failed: %v", err)
+	}
+	if created.DirectoryTemplate != "{anime_title}/{season}" || created.FilenameTemplate != "{anime_title} - {episode} [{resolution}]" {
+		t.Fatalf("created templates = %#v", created)
+	}
+
+	detail, err := svc.GetSubscription(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetSubscription failed: %v", err)
+	}
+	list, err := svc.ListSubscriptions(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("ListSubscriptions failed: %v", err)
+	}
+	if detail.DirectoryTemplate != created.DirectoryTemplate || len(list.Items) != 1 || list.Items[0].FilenameTemplate != created.FilenameTemplate {
+		t.Fatalf("templates not returned in detail/list: detail=%#v list=%#v", detail, list.Items)
+	}
+
+	updated, err := svc.UpdateSubscription(ctx, created.ID, appdto.RSSSubscriptionUpsertRequest{
+		SourceID:                source.ID,
+		Name:                    "anime updated",
+		IsEnabled:               boolPtr(true),
+		TargetVirtualParentPath: "/anime",
+		DirectoryTemplate:       "{subtitle_group}/{anime_title}",
+		FilenameTemplate:        "{title}",
+	})
+	if err != nil {
+		t.Fatalf("UpdateSubscription failed: %v", err)
+	}
+	if updated.DirectoryTemplate != "{subtitle_group}/{anime_title}" || updated.FilenameTemplate != "{title}" {
+		t.Fatalf("updated templates = %#v", updated)
+	}
+}
+
+func TestRSSExportConfigExcludesRuntimeFields(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	lastRefreshed := now.Add(-time.Hour)
+	lastError := "temporary error"
+	source := repo.mustCreateSource(&entity.RSSSource{
+		UserID:                 1,
+		Name:                   "mikan",
+		URL:                    "https://mikan.example/rss.xml",
+		IsEnabled:              true,
+		RefreshIntervalSeconds: 600,
+		LastRefreshedAt:        &lastRefreshed,
+		LastError:              &lastError,
+		HealthStatus:           RSSSourceHealthDegraded,
+		ConsecutiveFailures:    2,
+		LastRefreshStatus:      RSSRefreshStatusFailed,
+		LastRefreshStatsJSON:   `{"failed":1}`,
+		CreatedAt:              now.Add(-2 * time.Hour),
+		UpdatedAt:              now.Add(-time.Hour),
+	})
+	repo.mustCreateSubscription(&entity.RSSSubscription{
+		UserID:                  1,
+		SourceID:                source.ID,
+		Name:                    "Frieren",
+		IsEnabled:               true,
+		MustContain:             []string{"Frieren", "1080p"},
+		MustNotContain:          []string{"CHT"},
+		TargetVirtualParentPath: "/anime",
+		DirectoryTemplate:       "{anime_title}/{season}",
+		FilenameTemplate:        "{anime_title} - {episode}",
+		ResolvedSourceID:        7,
+		ResolvedInnerParentPath: "/anime",
+		CreatedAt:               now.Add(-2 * time.Hour),
+		UpdatedAt:               now.Add(-time.Hour),
+	})
+	svc := NewRSSService(repo, nil, nil, WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.ExportConfig(rssTestAuthContext())
+	if err != nil {
+		t.Fatalf("ExportConfig failed: %v", err)
+	}
+	if resp.Version != rssExportVersion || resp.ExportedAt != now.Format(time.RFC3339) {
+		t.Fatalf("export metadata = %#v", resp)
+	}
+	if len(resp.Sources) != 1 || len(resp.Subscriptions) != 1 {
+		t.Fatalf("export counts = sources %d subscriptions %d", len(resp.Sources), len(resp.Subscriptions))
+	}
+	if resp.Sources[0].Name != "mikan" || resp.Subscriptions[0].SourceURL != source.URL {
+		t.Fatalf("exported config = %#v", resp)
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("Marshal export failed: %v", err)
+	}
+	for _, forbidden := range []string{"last_error", "health_status", "next_refresh_at", "last_refresh_stats", "task", "retry", "resolved_source_id"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("export contains runtime field %q: %s", forbidden, raw)
+		}
+	}
+}
+
+func TestRSSImportConfigDryRunDoesNotPersist(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 12, 30, 0, 0, time.UTC)
+	svc := NewRSSService(repo, nil, nil, WithRSSVFSResolver(fakeRSSVFSResolver{}), WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.ImportConfig(rssTestAuthContext(), appdto.RSSImportRequest{
+		DryRun: true,
+		Sources: []appdto.RSSImportSource{{
+			Name:                   "mikan",
+			URL:                    "https://mikan.example/rss.xml",
+			IsEnabled:              boolPtr(true),
+			RefreshIntervalSeconds: 600,
+		}},
+		Subscriptions: []appdto.RSSImportSubscription{{
+			SourceURL:               "https://mikan.example/rss.xml",
+			Name:                    "Frieren",
+			IsEnabled:               boolPtr(true),
+			MustContain:             []string{"Frieren"},
+			TargetVirtualParentPath: "/anime",
+			DirectoryTemplate:       "{anime_title}",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ImportConfig dry-run failed: %v", err)
+	}
+	if !resp.DryRun || resp.Sources.Created != 1 || resp.Subscriptions.Created != 1 || resp.Sources.Failed != 0 || resp.Subscriptions.Failed != 0 {
+		t.Fatalf("dry-run response = %#v", resp)
+	}
+	if len(repo.sources) != 0 || len(repo.subscriptions) != 0 {
+		t.Fatalf("dry-run persisted data: sources=%d subscriptions=%d", len(repo.sources), len(repo.subscriptions))
+	}
+}
+
+func TestRSSImportConfigReusesSameURLSourceAndCreatesSubscription(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 13, 0, 0, 0, time.UTC)
+	existing := repo.mustCreateSource(&entity.RSSSource{
+		UserID:                 1,
+		Name:                   "existing",
+		URL:                    "https://mikan.example/rss.xml",
+		IsEnabled:              true,
+		RefreshIntervalSeconds: 300,
+		CreatedAt:              now.Add(-time.Hour),
+		UpdatedAt:              now.Add(-time.Hour),
+	})
+	svc := NewRSSService(repo, nil, nil, WithRSSVFSResolver(fakeRSSVFSResolver{}), WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.ImportConfig(rssTestAuthContext(), appdto.RSSImportRequest{
+		Sources: []appdto.RSSImportSource{{
+			Name:                   "incoming",
+			URL:                    existing.URL,
+			IsEnabled:              boolPtr(false),
+			RefreshIntervalSeconds: 900,
+		}},
+		Subscriptions: []appdto.RSSImportSubscription{{
+			SourceURL:               existing.URL,
+			Name:                    "Frieren",
+			IsEnabled:               boolPtr(false),
+			MustContain:             []string{"Frieren", "1080p"},
+			MustNotContain:          []string{"CHT"},
+			TargetVirtualParentPath: "/anime",
+			DirectoryTemplate:       "{anime_title}/{season}",
+			FilenameTemplate:        "{anime_title} - {episode}",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ImportConfig failed: %v", err)
+	}
+	if resp.Sources.Reused != 1 || resp.Sources.Created != 0 || resp.Subscriptions.Created != 1 || resp.Subscriptions.Failed != 0 {
+		t.Fatalf("import response = %#v", resp)
+	}
+	storedSource, _ := repo.FindSourceByID(context.Background(), existing.ID)
+	if storedSource.Name != "existing" || !storedSource.IsEnabled || storedSource.RefreshIntervalSeconds != 300 {
+		t.Fatalf("existing source was overwritten: %#v", storedSource)
+	}
+	if len(repo.subscriptions) != 1 {
+		t.Fatalf("subscription count = %d", len(repo.subscriptions))
+	}
+	var storedSub *entity.RSSSubscription
+	for _, subscription := range repo.subscriptions {
+		storedSub = subscription
+	}
+	if storedSub.SourceID != existing.ID || storedSub.UserID != 1 || storedSub.Name != "Frieren" || storedSub.IsEnabled {
+		t.Fatalf("created subscription = %#v", storedSub)
+	}
+	if storedSub.TargetVirtualParentPath != "/anime" || storedSub.ResolvedSourceID != 7 || storedSub.DirectoryTemplate != "{anime_title}/{season}" {
+		t.Fatalf("created subscription target/template = %#v", storedSub)
+	}
+}
+
+func TestRSSImportConfigInvalidTargetFailsSubscriptionItem(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 13, 30, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{
+		UserID:                 1,
+		Name:                   "mikan",
+		URL:                    "https://mikan.example/rss.xml",
+		IsEnabled:              true,
+		RefreshIntervalSeconds: 300,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	})
+	svc := NewRSSService(repo, nil, nil, WithRSSVFSResolver(fakeRSSFailingVFSResolver{err: ErrPathInvalid}), WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.ImportConfig(rssTestAuthContext(), appdto.RSSImportRequest{
+		DryRun: true,
+		Subscriptions: []appdto.RSSImportSubscription{{
+			SourceURL:               source.URL,
+			Name:                    "bad target",
+			IsEnabled:               boolPtr(true),
+			TargetVirtualParentPath: "../escape",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ImportConfig should return partial response, got error: %v", err)
+	}
+	if resp.Subscriptions.Failed != 1 || len(resp.Subscriptions.Items) != 1 {
+		t.Fatalf("invalid target response = %#v", resp)
+	}
+	item := resp.Subscriptions.Items[0]
+	if item.Success || item.ErrorCode == nil || *item.ErrorCode != "PATH_INVALID" {
+		t.Fatalf("invalid target item = %#v", item)
+	}
+	if len(repo.subscriptions) != 0 {
+		t.Fatalf("invalid subscription persisted: %d", len(repo.subscriptions))
+	}
+}
+
+func TestRSSCloneSubscriptionCopiesFieldsAndSupportsOverrides(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 10, 30, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	original := repo.mustCreateSubscription(&entity.RSSSubscription{
+		UserID:                  1,
+		SourceID:                source.ID,
+		Name:                    "Original",
+		IsEnabled:               true,
+		MustContain:             []string{"Show", "1080p"},
+		MustNotContain:          []string{"CHT"},
+		UseRegex:                true,
+		CaseSensitive:           true,
+		TargetVirtualParentPath: "/anime",
+		DirectoryTemplate:       "{anime_title}/{season}",
+		FilenameTemplate:        "{anime_title} - {episode}",
+		ResolvedSourceID:        7,
+		ResolvedInnerParentPath: "/anime",
+		CreatedAt:               now.Add(-time.Hour),
+		UpdatedAt:               now.Add(-time.Hour),
+	})
+	svc := NewRSSService(repo, nil, nil, WithRSSNow(func() time.Time { return now }))
+
+	clone, err := svc.CloneSubscription(rssTestAuthContext(), original.ID, appdto.RSSSubscriptionCloneRequest{})
+	if err != nil {
+		t.Fatalf("CloneSubscription default failed: %v", err)
+	}
+	if clone.ID == original.ID || clone.Name != "Original Copy" || !clone.IsEnabled {
+		t.Fatalf("default clone identity/state = %#v", clone)
+	}
+	if clone.SourceID != original.SourceID ||
+		strings.Join(clone.MustContain, ",") != "Show,1080p" ||
+		strings.Join(clone.MustNotContain, ",") != "CHT" ||
+		!clone.UseRegex || !clone.CaseSensitive ||
+		clone.TargetVirtualParentPath != original.TargetVirtualParentPath ||
+		clone.DirectoryTemplate != original.DirectoryTemplate ||
+		clone.FilenameTemplate != original.FilenameTemplate ||
+		clone.ResolvedSourceID != original.ResolvedSourceID ||
+		clone.ResolvedInnerParentPath != original.ResolvedInnerParentPath {
+		t.Fatalf("clone did not preserve fields: %#v", clone)
+	}
+	if clone.CreatedAt != now.Format(time.RFC3339) || clone.UpdatedAt != now.Format(time.RFC3339) {
+		t.Fatalf("clone timestamps = created %q updated %q", clone.CreatedAt, clone.UpdatedAt)
+	}
+	storedOriginal, err := repo.FindSubscriptionByID(context.Background(), original.ID)
+	if err != nil {
+		t.Fatalf("FindSubscriptionByID original failed: %v", err)
+	}
+	if storedOriginal.Name != "Original" || !storedOriginal.IsEnabled || !storedOriginal.CreatedAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("original subscription mutated: %#v", storedOriginal)
+	}
+
+	override, err := svc.CloneSubscription(rssTestAuthContext(), original.ID, appdto.RSSSubscriptionCloneRequest{
+		Name:      "Paused Copy",
+		IsEnabled: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("CloneSubscription override failed: %v", err)
+	}
+	if override.Name != "Paused Copy" || override.IsEnabled {
+		t.Fatalf("override clone state = %#v", override)
+	}
+	if len(repo.subscriptions) != 3 {
+		t.Fatalf("subscription count = %d, want 3", len(repo.subscriptions))
+	}
+}
+
+func TestRSSCloneSubscriptionPersistsExplicitDisabledWithGORM(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	repo := gormrepo.NewRSSRepository(db)
+	now := time.Date(2026, 5, 3, 10, 30, 0, 0, time.UTC)
+	source := &entity.RSSSource{
+		UserID:    1,
+		Name:      "s",
+		URL:       "https://example/rss.xml",
+		IsEnabled: true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := repo.CreateSource(context.Background(), source); err != nil {
+		t.Fatalf("CreateSource() error = %v", err)
+	}
+	original := &entity.RSSSubscription{
+		UserID:                  1,
+		SourceID:                source.ID,
+		Name:                    "Original",
+		IsEnabled:               true,
+		TargetVirtualParentPath: "/anime",
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := repo.CreateSubscription(context.Background(), original); err != nil {
+		t.Fatalf("CreateSubscription() original error = %v", err)
+	}
+	svc := NewRSSService(repo, nil, nil, WithRSSNow(func() time.Time { return now }))
+
+	clone, err := svc.CloneSubscription(rssTestAuthContext(), original.ID, appdto.RSSSubscriptionCloneRequest{
+		Name:      "Paused Copy",
+		IsEnabled: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("CloneSubscription() error = %v", err)
+	}
+	if clone.IsEnabled {
+		t.Fatalf("clone response enabled despite explicit false: %#v", clone)
+	}
+	stored, err := repo.FindSubscriptionByID(context.Background(), clone.ID)
+	if err != nil {
+		t.Fatalf("FindSubscriptionByID() clone error = %v", err)
+	}
+	if stored.IsEnabled {
+		t.Fatalf("stored clone enabled despite explicit false: %#v", stored)
+	}
+}
+
+func TestRSSBatchUpdateSubscriptionStateReturnsPartialResults(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "own", URL: "https://own/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	otherSource := repo.mustCreateSource(&entity.RSSSource{UserID: 2, Name: "other", URL: "https://other/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	own := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "own", IsEnabled: true, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)})
+	other := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 2, SourceID: otherSource.ID, Name: "other", IsEnabled: true, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)})
+	svc := NewRSSService(repo, nil, nil, WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.BatchUpdateSubscriptionState(rssUserContext(1, "rss.read"), appdto.RSSSubscriptionBatchStateRequest{
+		SubscriptionIDs: []uint{own.ID, other.ID, 999},
+		IsEnabled:       boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("BatchUpdateSubscriptionState failed: %v", err)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 2 || len(resp.Items) != 3 {
+		t.Fatalf("batch response = %#v", resp)
+	}
+	if !resp.Items[0].Success || resp.Items[0].Subscription == nil || resp.Items[0].Subscription.IsEnabled {
+		t.Fatalf("success result = %#v", resp.Items[0])
+	}
+	if resp.Items[1].Success || resp.Items[1].ErrorCode == nil || *resp.Items[1].ErrorCode != "PERMISSION_DENIED" {
+		t.Fatalf("permission failure result = %#v", resp.Items[1])
+	}
+	if resp.Items[2].Success || resp.Items[2].ErrorCode == nil || *resp.Items[2].ErrorCode != "RSS_SUBSCRIPTION_NOT_FOUND" {
+		t.Fatalf("not found result = %#v", resp.Items[2])
+	}
+	storedOwn, _ := repo.FindSubscriptionByID(context.Background(), own.ID)
+	if storedOwn.IsEnabled || !storedOwn.UpdatedAt.Equal(now) {
+		t.Fatalf("own subscription state = %#v", storedOwn)
+	}
+	storedOther, _ := repo.FindSubscriptionByID(context.Background(), other.ID)
+	if !storedOther.IsEnabled || !storedOther.UpdatedAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("other subscription should be unchanged: %#v", storedOther)
+	}
+}
+
 func TestValidateRSSRulePatternsRejectsInvalidRegex(t *testing.T) {
 	if err := validateRSSRulePatterns([]string{"["}, nil, true); err == nil {
 		t.Fatalf("expected invalid regex error")
@@ -324,6 +833,123 @@ func TestRSSSubscriptionPreviewExplainsMatchedMissingExcluded(t *testing.T) {
 	}
 }
 
+func TestRSSTemporarySubscriptionPreviewDoesNotPersist(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 9, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "Show - 05 [1080p] [CHS]", DownloadURL: "magnet:?xt=urn:btih:tmp1", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusNew, CreatedAt: now, UpdatedAt: now})
+	repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "Show - 04 [1080p] [CHS]", DownloadURL: "magnet:?xt=urn:btih:tmp2", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusNew, CreatedAt: now, UpdatedAt: now})
+	repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "Show - 05 [1080p] [CHT]", DownloadURL: "magnet:?xt=urn:btih:tmp3", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusNew, CreatedAt: now, UpdatedAt: now})
+	svc := NewRSSService(repo, nil, nil)
+
+	resp, err := svc.PreviewSubscriptionRules(rssTestAuthContext(), appdto.RSSSubscriptionPreviewRequest{
+		SourceID:       source.ID,
+		MustContain:    []string{"1080p", "05"},
+		MustNotContain: []string{"CHT"},
+	})
+	if err != nil {
+		t.Fatalf("PreviewSubscriptionRules failed: %v", err)
+	}
+	if resp.SubscriptionID != 0 || resp.SourceID != source.ID {
+		t.Fatalf("temporary preview identity = subscription %d source %d", resp.SubscriptionID, resp.SourceID)
+	}
+	if resp.Matched != 1 || resp.Missing != 1 || resp.Excluded != 1 {
+		t.Fatalf("preview counts = matched %d missing %d excluded %d", resp.Matched, resp.Missing, resp.Excluded)
+	}
+	if len(repo.subscriptions) != 0 {
+		t.Fatalf("temporary preview persisted subscriptions: %d", len(repo.subscriptions))
+	}
+	_, err = svc.PreviewSubscriptionRules(rssTestAuthContext(), appdto.RSSSubscriptionPreviewRequest{
+		SourceID:    source.ID,
+		MustContain: []string{"["},
+		UseRegex:    true,
+	})
+	if !errors.Is(err, ErrRSSRegexInvalid) {
+		t.Fatalf("invalid regex error = %v", err)
+	}
+}
+
+func TestRSSBatchIgnoreReturnsPartialResults(t *testing.T) {
+	repo := newFakeRSSRepo()
+	tasks := newFakeRSSTasks()
+	now := time.Date(2026, 5, 2, 9, 30, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	oldError := "old error"
+	oldReason := RSSRetryReasonDownloaderUnavailable
+	nextRetryAt := now.Add(time.Hour)
+	ok := repo.mustCreateItem(&entity.RSSItem{
+		UserID:       1,
+		SourceID:     source.ID,
+		Title:        "ok",
+		Status:       RSSItemStatusNeedsAttention,
+		ErrorMessage: &oldError,
+		RetryReason:  &oldReason,
+		NextRetryAt:  &nextRetryAt,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	})
+	completed := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "done", Status: RSSItemStatusCompleted, CreatedAt: now, UpdatedAt: now})
+	activeTaskID := tasks.addTask("running", nil)
+	active := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "active", Status: RSSItemStatusEnqueued, TaskID: &activeTaskID, CreatedAt: now, UpdatedAt: now})
+	svc := NewRSSService(repo, nil, nil, WithRSSTaskRepository(tasks), WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.BatchIgnoreItems(rssTestAuthContext(), appdto.RSSItemBatchIgnoreRequest{ItemIDs: []uint{ok.ID, completed.ID, active.ID}})
+	if err != nil {
+		t.Fatalf("BatchIgnoreItems failed: %v", err)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 2 || len(resp.Items) != 3 {
+		t.Fatalf("batch ignore response = %#v", resp)
+	}
+	stored, err := repo.FindItemByID(context.Background(), ok.ID)
+	if err != nil {
+		t.Fatalf("FindItemByID ok failed: %v", err)
+	}
+	if stored.Status != RSSItemStatusIgnored || stored.ErrorMessage != nil || stored.RetryReason != nil || stored.NextRetryAt != nil || !stored.UpdatedAt.Equal(now) {
+		t.Fatalf("ignored item state = %#v", stored)
+	}
+	for _, result := range resp.Items[1:] {
+		if result.Success || result.ErrorCode == nil || *result.ErrorCode != "TASK_INVALID_STATE" {
+			t.Fatalf("expected task invalid failure, got %#v", result)
+		}
+	}
+}
+
+func TestRSSBatchRetryReturnsPartialResults(t *testing.T) {
+	repo := newFakeRSSRepo()
+	tasks := newFakeRSSTasks()
+	now := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	sub := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "sub", IsEnabled: true, MustContain: []string{"Show"}, TargetVirtualParentPath: "/anime", CreatedAt: now, UpdatedAt: now})
+	retryable := repo.mustCreateItem(&entity.RSSItem{
+		UserID:                1,
+		SourceID:              source.ID,
+		Title:                 "Show - 01",
+		DownloadURL:           "magnet:?xt=urn:btih:batchretry",
+		LinkType:              RSSLinkTypeMagnet,
+		Status:                RSSItemStatusFailed,
+		MatchedSubscriptionID: &sub.ID,
+		MaxRetryCount:         3,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	})
+	unsupported := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "Show - 02", DownloadURL: "https://example.invalid/file.zip", LinkType: RSSLinkTypeUnsupported, Status: RSSItemStatusNeedsAttention, CreatedAt: now, UpdatedAt: now})
+	svc := NewRSSService(repo, nil, tasks, WithRSSTaskRepository(tasks), WithRSSNow(func() time.Time { return now }))
+
+	resp, err := svc.BatchRetryItems(rssTestAuthContext(), appdto.RSSItemBatchRetryRequest{ItemIDs: []uint{retryable.ID, unsupported.ID}})
+	if err != nil {
+		t.Fatalf("BatchRetryItems failed: %v", err)
+	}
+	if resp.Succeeded != 1 || resp.Failed != 1 || len(resp.Items) != 2 {
+		t.Fatalf("batch retry response = %#v", resp)
+	}
+	if !resp.Items[0].Success || resp.Items[0].Item == nil || resp.Items[0].Item.Status != RSSItemStatusEnqueued || resp.Items[0].Item.RetryCount != 1 {
+		t.Fatalf("retry success result = %#v", resp.Items[0])
+	}
+	if resp.Items[1].Success || resp.Items[1].ErrorCode == nil || *resp.Items[1].ErrorCode != "DOWNLOAD_LINK_UNSUPPORTED" {
+		t.Fatalf("retry failure result = %#v", resp.Items[1])
+	}
+}
+
 func TestRSSManualRetryAndReprocess(t *testing.T) {
 	repo := newFakeRSSRepo()
 	tasks := newFakeRSSTasks()
@@ -382,6 +1008,117 @@ func TestRSSAdminTriggeredEnqueueUsesSubscriptionOwnerContext(t *testing.T) {
 	}
 	if tasks.lastCreateUserID != source.UserID {
 		t.Fatalf("task create user_id = %d, want source owner %d", tasks.lastCreateUserID, source.UserID)
+	}
+}
+
+func TestRSSRefreshPersistsParsedMetadataAndDTO(t *testing.T) {
+	repo := newFakeRSSRepo()
+	now := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, NextRefreshAt: &now, CreatedAt: now, UpdatedAt: now})
+	fetcher := &fakeRSSFetcher{itemsByURL: map[string][]RSSFetchedItem{source.URL: {
+		{Title: "[SubsPlease] Example Show S01E05 [1080p]", Link: "magnet:?xt=urn:btih:parsed", GUID: "parsed"},
+	}}}
+	svc := NewRSSService(repo, nil, nil, WithRSSFetcher(fetcher), WithRSSNow(func() time.Time { return now }))
+
+	if _, err := svc.RefreshSource(rssTestAuthContext(), source.ID); err != nil {
+		t.Fatalf("RefreshSource failed: %v", err)
+	}
+	list, err := svc.ListItems(rssTestAuthContext(), domainrepo.RSSItemFilter{SourceID: source.ID})
+	if err != nil {
+		t.Fatalf("ListItems failed: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("items len = %d", len(list.Items))
+	}
+	parsed := list.Items[0].Parsed
+	if parsed.AnimeTitle != "Example Show" || parsed.Season != "S01" || parsed.Episode != "05" || parsed.SubtitleGroup != "SubsPlease" || parsed.Resolution != "1080p" {
+		t.Fatalf("parsed DTO = %#v", parsed)
+	}
+	stored, err := repo.FindItemByID(context.Background(), list.Items[0].ID)
+	if err != nil {
+		t.Fatalf("FindItemByID failed: %v", err)
+	}
+	if stored.Parsed.AnimeTitle != "Example Show" || stored.Parsed.Episode != "05" {
+		t.Fatalf("stored parsed = %#v", stored.Parsed)
+	}
+}
+
+func TestRSSEnqueueDirectoryTemplateTargetPath(t *testing.T) {
+	repo := newFakeRSSRepo()
+	tasks := newFakeRSSTasks()
+	now := time.Date(2026, 5, 2, 11, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	baseSub := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "base", IsEnabled: true, TargetVirtualParentPath: "/anime", CreatedAt: now, UpdatedAt: now})
+	baseItem := repo.mustCreateItem(&entity.RSSItem{
+		UserID:      1,
+		SourceID:    source.ID,
+		Title:       "[SubsPlease] Base Show - 01 [1080p]",
+		DownloadURL: "magnet:?xt=urn:btih:base",
+		LinkType:    RSSLinkTypeMagnet,
+		Status:      RSSItemStatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	templateSub := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "template", IsEnabled: true, TargetVirtualParentPath: "/anime", DirectoryTemplate: "{anime_title}/{season}", CreatedAt: now, UpdatedAt: now})
+	templateItem := repo.mustCreateItem(&entity.RSSItem{
+		UserID:      1,
+		SourceID:    source.ID,
+		Title:       "[SubsPlease] Example/Show S01E05 [1080p]",
+		DownloadURL: "magnet:?xt=urn:btih:template",
+		LinkType:    RSSLinkTypeMagnet,
+		Status:      RSSItemStatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	svc := NewRSSService(repo, nil, tasks, WithRSSNow(func() time.Time { return now }))
+	ctx := rssTestAuthContext()
+
+	if _, err := svc.DownloadItem(ctx, baseItem.ID, appdto.RSSManualDownloadRequest{SubscriptionID: baseSub.ID}); err != nil {
+		t.Fatalf("DownloadItem base failed: %v", err)
+	}
+	if tasks.lastCreateRequest.TargetVirtualParentPath != "/anime" {
+		t.Fatalf("base target path = %q", tasks.lastCreateRequest.TargetVirtualParentPath)
+	}
+	if _, err := svc.DownloadItem(ctx, templateItem.ID, appdto.RSSManualDownloadRequest{SubscriptionID: templateSub.ID}); err != nil {
+		t.Fatalf("DownloadItem template failed: %v", err)
+	}
+	if tasks.lastCreateRequest.TargetVirtualParentPath != "/anime/Example Show/S01" {
+		t.Fatalf("template target path = %q", tasks.lastCreateRequest.TargetVirtualParentPath)
+	}
+}
+
+func TestRSSEnqueueFilenameTemplateTargetFilename(t *testing.T) {
+	repo := newFakeRSSRepo()
+	tasks := newFakeRSSTasks()
+	now := time.Date(2026, 5, 2, 11, 30, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	sub := repo.mustCreateSubscription(&entity.RSSSubscription{
+		UserID:                  1,
+		SourceID:                source.ID,
+		Name:                    "template",
+		IsEnabled:               true,
+		TargetVirtualParentPath: "/anime",
+		FilenameTemplate:        "{anime_title} - {season}E{episode} [{resolution}]",
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	})
+	item := repo.mustCreateItem(&entity.RSSItem{
+		UserID:      1,
+		SourceID:    source.ID,
+		Title:       "[SubsPlease] Example/Show S01E05 [1080p]",
+		DownloadURL: "magnet:?xt=urn:btih:filename",
+		LinkType:    RSSLinkTypeMagnet,
+		Status:      RSSItemStatusNew,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	svc := NewRSSService(repo, nil, tasks, WithRSSNow(func() time.Time { return now }))
+
+	if _, err := svc.DownloadItem(rssTestAuthContext(), item.ID, appdto.RSSManualDownloadRequest{SubscriptionID: sub.ID}); err != nil {
+		t.Fatalf("DownloadItem failed: %v", err)
+	}
+	if tasks.lastCreateRequest.TargetFilename != "Example Show - S01E05 [1080p]" {
+		t.Fatalf("target filename = %q", tasks.lastCreateRequest.TargetFilename)
 	}
 }
 
@@ -582,11 +1319,12 @@ func (f *fakeRSSFetcher) Fetch(ctx context.Context, rawURL string) ([]RSSFetched
 }
 
 type fakeRSSTasks struct {
-	nextID           uint
-	createErr        error
-	createCalls      int
-	lastCreateUserID uint
-	tasks            map[uint]*entity.DownloadTask
+	nextID            uint
+	createErr         error
+	createCalls       int
+	lastCreateUserID  uint
+	lastCreateRequest appdto.CreateTaskRequest
+	tasks             map[uint]*entity.DownloadTask
 }
 
 func newFakeRSSTasks() *fakeRSSTasks {
@@ -595,6 +1333,7 @@ func newFakeRSSTasks() *fakeRSSTasks {
 
 func (f *fakeRSSTasks) Create(ctx context.Context, req appdto.CreateTaskRequest) (*appdto.DownloadTaskView, error) {
 	f.createCalls++
+	f.lastCreateRequest = req
 	if auth, ok := security.RequestAuthFromContext(ctx); ok {
 		f.lastCreateUserID = auth.UserID
 	}
@@ -603,8 +1342,8 @@ func (f *fakeRSSTasks) Create(ctx context.Context, req appdto.CreateTaskRequest)
 	}
 	id := f.nextID
 	f.nextID++
-	f.tasks[id] = &entity.DownloadTask{ID: id, Status: "pending", SourceURL: req.URL}
-	return &appdto.DownloadTaskView{ID: id, Status: "pending", SourceURL: req.URL}, nil
+	f.tasks[id] = &entity.DownloadTask{ID: id, Status: "pending", SourceURL: req.URL, TargetFilename: req.TargetFilename}
+	return &appdto.DownloadTaskView{ID: id, Status: "pending", SourceURL: req.URL, TargetFilename: req.TargetFilename}, nil
 }
 
 func (f *fakeRSSTasks) FindByID(ctx context.Context, id uint) (*entity.DownloadTask, error) {
@@ -828,6 +1567,9 @@ func (r *fakeRSSRepo) ListItems(ctx context.Context, filter domainrepo.RSSItemFi
 		if filter.SubscriptionID != 0 && (item.MatchedSubscriptionID == nil || *item.MatchedSubscriptionID != filter.SubscriptionID) {
 			continue
 		}
+		if filter.TaskID != 0 && (item.TaskID == nil || *item.TaskID != filter.TaskID) {
+			continue
+		}
 		if filter.Status != "" && filter.Status != item.Status {
 			continue
 		}
@@ -843,6 +1585,28 @@ func (r *fakeRSSRepo) ListItems(ctx context.Context, filter domainrepo.RSSItemFi
 	return out, nil
 }
 
+type fakeRSSVFSResolver struct{}
+
+func (fakeRSSVFSResolver) ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error) {
+	return ResolvedPath{
+		VirtualPath: virtualPath,
+		InnerPath:   virtualPath,
+		Source:      &entity.StorageSource{ID: 7, DriverType: "s3"},
+		IsRealMount: true,
+	}, nil
+}
+
+type fakeRSSFailingVFSResolver struct {
+	err error
+}
+
+func (f fakeRSSFailingVFSResolver) ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error) {
+	if f.err != nil {
+		return ResolvedPath{}, f.err
+	}
+	return ResolvedPath{}, ErrPathInvalid
+}
+
 func rssTestAuthContext() context.Context {
 	return security.WithRequestAuth(context.Background(), security.RequestAuth{
 		UserID:       1,
@@ -850,6 +1614,18 @@ func rssTestAuthContext() context.Context {
 		RoleKey:      "super_admin",
 		Capabilities: []string{"rss.read", "rss.manage"},
 	})
+}
+
+func rssUserContext(userID uint, capabilities ...string) context.Context {
+	return security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       userID,
+		Username:     fmt.Sprintf("user-%d", userID),
+		Capabilities: capabilities,
+	})
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func containsString(values []string, needle string) bool {

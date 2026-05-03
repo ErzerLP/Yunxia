@@ -91,12 +91,19 @@ func (r *RSSRepository) ListSources(ctx context.Context, filter domainrepo.RSSSo
 }
 
 func (r *RSSRepository) CreateSubscription(ctx context.Context, subscription *entity.RSSSubscription) error {
+	requestedEnabled := subscription.IsEnabled
 	model, err := rssSubscriptionModelFromEntity(subscription)
 	if err != nil {
 		return err
 	}
 	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
 		return err
+	}
+	if !requestedEnabled {
+		if err := r.db.WithContext(ctx).Model(&RSSSubscriptionModel{}).Where("id = ?", model.ID).UpdateColumn("is_enabled", false).Error; err != nil {
+			return err
+		}
+		model.IsEnabled = false
 	}
 	*subscription = *rssSubscriptionEntityFromModel(model)
 	return nil
@@ -216,6 +223,9 @@ func (r *RSSRepository) ListItems(ctx context.Context, filter domainrepo.RSSItem
 	if filter.SubscriptionID != 0 {
 		query = query.Where("matched_subscription_id = ?", filter.SubscriptionID)
 	}
+	if filter.TaskID != 0 {
+		query = query.Where("task_id = ?", filter.TaskID)
+	}
 	if filter.Status != "" {
 		query = query.Where("status = ?", filter.Status)
 	}
@@ -295,6 +305,8 @@ func rssSubscriptionModelFromEntity(subscription *entity.RSSSubscription) (*RSSS
 		UseRegex:                subscription.UseRegex,
 		CaseSensitive:           subscription.CaseSensitive,
 		TargetVirtualParentPath: subscription.TargetVirtualParentPath,
+		DirectoryTemplate:       subscription.DirectoryTemplate,
+		FilenameTemplate:        subscription.FilenameTemplate,
 		ResolvedSourceID:        subscription.ResolvedSourceID,
 		ResolvedInnerParentPath: subscription.ResolvedInnerParentPath,
 		CreatedAt:               subscription.CreatedAt,
@@ -314,6 +326,8 @@ func rssSubscriptionEntityFromModel(model *RSSSubscriptionModel) *entity.RSSSubs
 		UseRegex:                model.UseRegex,
 		CaseSensitive:           model.CaseSensitive,
 		TargetVirtualParentPath: model.TargetVirtualParentPath,
+		DirectoryTemplate:       model.DirectoryTemplate,
+		FilenameTemplate:        model.FilenameTemplate,
 		ResolvedSourceID:        model.ResolvedSourceID,
 		ResolvedInnerParentPath: model.ResolvedInnerParentPath,
 		CreatedAt:               model.CreatedAt,
@@ -322,6 +336,7 @@ func rssSubscriptionEntityFromModel(model *RSSSubscriptionModel) *entity.RSSSubs
 }
 
 func rssItemModelFromEntity(item *entity.RSSItem) *RSSItemModel {
+	parsedJSON := marshalRSSAnimeParsed(item.Parsed)
 	return &RSSItemModel{
 		ID:                    item.ID,
 		UserID:                item.UserID,
@@ -333,6 +348,7 @@ func rssItemModelFromEntity(item *entity.RSSItem) *RSSItemModel {
 		DedupKey:              item.DedupKey,
 		DownloadURL:           item.DownloadURL,
 		LinkType:              item.LinkType,
+		ParsedJSON:            parsedJSON,
 		Status:                item.Status,
 		MatchedSubscriptionID: item.MatchedSubscriptionID,
 		TaskID:                item.TaskID,
@@ -359,6 +375,7 @@ func rssItemEntityFromModel(model *RSSItemModel) *entity.RSSItem {
 		DedupKey:              model.DedupKey,
 		DownloadURL:           model.DownloadURL,
 		LinkType:              model.LinkType,
+		Parsed:                unmarshalRSSAnimeParsed(model.ParsedJSON),
 		Status:                model.Status,
 		MatchedSubscriptionID: model.MatchedSubscriptionID,
 		TaskID:                model.TaskID,
@@ -371,6 +388,25 @@ func rssItemEntityFromModel(model *RSSItemModel) *entity.RSSItem {
 		CreatedAt:             model.CreatedAt,
 		UpdatedAt:             model.UpdatedAt,
 	}
+}
+
+func marshalRSSAnimeParsed(parsed entity.RSSAnimeParsed) string {
+	data, err := json.Marshal(parsed)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func unmarshalRSSAnimeParsed(raw string) entity.RSSAnimeParsed {
+	if raw == "" {
+		return entity.RSSAnimeParsed{}
+	}
+	var parsed entity.RSSAnimeParsed
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return entity.RSSAnimeParsed{}
+	}
+	return parsed
 }
 
 func marshalRSSStringList(values []string) (string, error) {

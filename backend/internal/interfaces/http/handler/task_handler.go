@@ -130,6 +130,8 @@ func (h *TaskHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusNotFound, "TASK_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrPathInvalid):
 		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrFileNameInvalid):
+		httpresp.Error(c, http.StatusUnprocessableEntity, "FILE_NAME_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrNoBackingStorage):
 		httpresp.Error(c, http.StatusConflict, "NO_BACKING_STORAGE", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrTaskInvalidState):

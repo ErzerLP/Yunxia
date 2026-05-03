@@ -13,7 +13,7 @@ import { AclPage } from '@/pages/acl/AclPage'
 import { AuditPage } from '@/pages/audit/AuditPage'
 import { RssPage } from '@/pages/rss/RssPage'
 import { ShareAccessPage } from '@/pages/shares/ShareAccessPage'
-import { CapabilityRoute } from './CapabilityRoute'
+import { CapabilityAnyRoute, CapabilityRoute } from './CapabilityRoute'
 import App from '@/App'
 
 export const router = createBrowserRouter([
@@ -51,7 +51,7 @@ export const router = createBrowserRouter([
           { path: 'rss', element: <CapabilityRoute cap="rss.read"><RssPage /></CapabilityRoute> },
           { path: 'trash', element: <TrashPage /> },
           { path: 'shares', element: <CapabilityRoute cap="share.read_all"><SharesPage /></CapabilityRoute> },
-          { path: 'settings', element: <CapabilityRoute cap="system.config.read"><SettingsPage /></CapabilityRoute> },
+          { path: 'settings', element: <CapabilityAnyRoute caps={['system.config.read', 'notification.read']}><SettingsPage /></CapabilityAnyRoute> },
           { path: 'users', element: <CapabilityRoute cap="user.read"><UsersPage /></CapabilityRoute> },
           { path: 'acl', element: <CapabilityRoute cap="acl.read"><AclPage /></CapabilityRoute> },
           { path: 'audit', element: <CapabilityRoute cap="audit.read"><AuditPage /></CapabilityRoute> },

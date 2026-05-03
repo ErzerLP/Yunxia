@@ -6,7 +6,7 @@
 
 - 后端根目录：`backend/`
 - 技术栈：Go 1.25、Gin、GORM、SQLite、JWT、bcrypt、Aria2、qBittorrent、AWS SDK for Go v2
-- 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、RSS/qBittorrent、分享/ACL/上传链路已全部接入新权限模型
+- 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、RSS/qBittorrent、通知告警、分享/ACL/上传链路已全部接入新权限模型
 - 当前验证：`cd backend && go test ./...` 已通过
 - 前端联调：2026-05-01 测试负责人确认 RSS MVP、RSS 无人值守端到端联调与前序待回归项已完成，`backend/FRONTEND_HANDOFF.md` 前端适配状态关闭
 
@@ -1039,6 +1039,48 @@
   - `TestFileMkdirReadOnlyLocalSourceReturnsSourceReadOnly`
   - `TestTaskCompletedClearsStaleDownloaderErrorMessage`
   - `TestTaskGetSanitizesPersistedCompletedErrorMessage`
+
+---
+
+## 2026-05-02
+
+### RSS 管理易用性、番剧模板与通知告警
+
+- RSS 番剧识别与模板能力增强：
+  - RSS item 新增并持久化 `parsed` 元数据：番剧名、季度、集数、字幕组、分辨率。
+  - RSS subscription 新增 `directory_template` 与 `filename_template`。
+  - `directory_template` 会把 RSS 下载目标渲染为 `target_virtual_parent_path` 下的安全相对子目录。
+  - `filename_template` 会在 RSS 入队时渲染为离线任务 `target_filename` 快照。
+  - 单文件任务完成后在后端 staging 导入点按 `target_filename` 重命名；模板未写扩展名时保留原文件扩展名，多文件任务仍保留原相对路径。
+- RSS 管理易用性增强：
+  - 新增 RSS 导入 / 导出：`GET /api/v1/rss/export`、`POST /api/v1/rss/import`。
+  - 新增临时规则 preview：`POST /api/v1/rss/subscriptions/preview`。
+  - 新增订阅复制、批量启停、条目批量忽略、条目批量重试接口。
+  - 导入支持 `dry_run`、同 owner+URL source 复用、订阅目标 VFS 写权限重校验与逐项部分失败结果。
+- 新增通知告警模块：
+  - 新增 Webhook 通道管理：`/api/v1/notifications/channels`。
+  - 新增通知事件列表与手动重试：`/api/v1/notifications/events`。
+  - 新增通知 capability：`notification.read`、`notification.manage`。
+  - RSS source 进入 `degraded` / `circuit_open`、RSS item 进入 `needs_attention`、RSS 下载完成时会持久化通知事件并尝试 Webhook 投递。
+  - Webhook 投递失败会进入 `retry_pending` / `failed`，并保留 `attempts`、`next_attempt_at`、`last_error`。
+- 文档同步：
+  - 更新 `backend/API_CONTRACT.md`。
+  - 更新 `backend/FRONTEND_HANDOFF.md`。
+  - 更新 `docs/PROJECT-TODO.md`。
+  - 新增 `.trellis/spec/backend/notification-guidelines.md` 并更新 spec index。
+- 新增 / 更新回归验证：
+  - `TestRSSExportConfigExcludesRuntimeFields`
+  - `TestRSSImportConfigDryRunDoesNotPersist`
+  - `TestRSSImportConfigReusesSameURLSourceAndCreatesSubscription`
+  - `TestRSSImportConfigInvalidTargetFailsSubscriptionItem`
+  - `TestRSSEnqueueFilenameTemplateTargetFilename`
+  - `TestTaskTargetFilenameRenamesSingleStagedFile`
+  - `TestTaskTargetFilenameIgnoredForMultiFileStaging`
+  - `TestNotificationChannelConfigHidesSecret`
+  - `TestNotificationDispatchFailureCanRetry`
+  - `TestNotificationEventTypeFilterSkipsUnmatchedChannels`
+  - `TestNotificationRepositoryPersistsChannelAndEvent`
+  - `go test ./...`
 
 ---
 

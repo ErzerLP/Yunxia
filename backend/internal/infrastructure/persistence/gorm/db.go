@@ -26,6 +26,8 @@ func OpenSQLite(dsn string) (*gorm.DB, error) {
 		&ACLRuleModel{},
 		&ShareLinkModel{},
 		&AuditLogModel{},
+		&NotificationChannelModel{},
+		&NotificationEventModel{},
 	); err != nil {
 		return nil, err
 	}

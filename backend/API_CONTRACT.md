@@ -1,7 +1,7 @@
 # Yunxia Backend API Contract
 
-> 更新时间：2026-04-30
-> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询 + RSS/qBittorrent MVP）
+> 更新时间：2026-05-02
+> 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询 + RSS/qBittorrent MVP + 通知告警）
 > 真相源：`backend/internal/interfaces/http/router.go`、`backend/internal/interfaces/http/handler/*.go`、`backend/internal/application/dto/*.go`、`backend/internal/application/service/*_service.go`
 
 本文档只描述**当前后端实际实现**，用于前后端联调、API client 封装与页面功能核对。
@@ -24,6 +24,7 @@
 | 回收站 | `/api/v1/trash*` | 列表、恢复、永久删除、清空 | 回收站页 |
 | 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消；HTTP 走 Aria2，BT/magnet 走 qBittorrent | 离线任务页 |
 | RSS 订阅 | `/api/v1/rss*` | RSS 源、订阅规则、条目、手动刷新、BT/magnet 入队、qBittorrent 健康检查 | RSS 追番页 |
+| 通知告警 | `/api/v1/notifications*` | Webhook 通道、通知事件、失败重试 | 设置/通知页、RSS 待处理入口 |
 | 分享 | `/api/v1/shares*`、`/s/:token` | 分享管理、公开分享访问 | 分享管理页、公开分享页 |
 | 审计 | `/api/v1/audit/logs*` | 审计列表、审计详情 | 审计日志页 |
 | 统一虚拟目录 V2 | `/api/v2/fs*` | 基于虚拟路径的文件列表、搜索、写操作、下载 | **新文件管理页推荐优先使用** |
@@ -255,6 +256,9 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - audit
   - `audit.read`
   - `audit.read_sensitive`
+- notification
+  - `notification.read`
+  - `notification.manage`
 - rss
   - `rss.read`
   - `rss.manage`
@@ -270,7 +274,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 |---|---|
 | `super_admin` | 拥有全部 capability；初始化首用户固定为该角色；保留 runtime ACL bypass |
 | `admin` | 具备治理 capability，但没有 `source.secret.read`；只能管理 `operator/user` |
-| `operator` | 只读统计、源读取/测试、跨用户任务治理、RSS 只读；**当前没有**跨用户分享治理 capability |
+| `operator` | 只读统计、源读取/测试、跨用户任务治理、RSS 只读、通知事件只读；**当前没有**跨用户分享治理 capability |
 | `user` | 无治理 capability；主要依赖 ACL 访问数据面 |
 
 ### 2.4 当前关键规则
@@ -558,7 +562,7 @@ S3 finish Body 示例：
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
 | GET | `/tasks` | Bearer | - | 200，`{items[]}` |
-| POST | `/tasks` | Bearer | `type,url,target_virtual_parent_path`；兼容 `type,url,source_id,save_path` | 202，`{task}` |
+| POST | `/tasks` | Bearer | `type,url,target_virtual_parent_path,target_filename?`；兼容 `type,url,source_id,save_path` | 202，`{task}` |
 | GET | `/tasks/:id` | Bearer | path: `id` | 200，**直接返回 `DownloadTaskView`** |
 | POST | `/tasks/:id/pause` | Bearer | path: `id` | 200，`{id,status}` |
 | POST | `/tasks/:id/resume` | Bearer | path: `id` | 200，`{id,status}` |
@@ -570,12 +574,15 @@ S3 finish Body 示例：
 - 兼容旧模式：不传 `target_virtual_parent_path` 时，继续使用 `source_id + save_path`
 - 旧模式下 `save_path` 是 **source 内部目标父目录**，不是统一虚拟目录路径
 - 下载器按链接类型分发：普通 HTTP/HTTPS 走 Aria2；`magnet:?` 与 `.torrent` URL 走 qBittorrent（未启用 qBittorrent 时返回 `503 DOWNLOADER_UNAVAILABLE`）
+- `target_filename` 为可选任务级目标文件名快照，主要由 RSS `filename_template` 自动生成；直接创建任务也可传入。它只能是文件名，不能包含路径分隔符、`..` 或 Windows drive-style 前缀；非法时返回 `422 FILE_NAME_INVALID`。
 - 下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
   - local 目标：从 staging move/copy 到真实物理路径
   - S3 目标：从 staging 上传到对应对象 key
   - staging 本地物理路径不会返回给前端
+  - 当 `target_filename` 非空且 staging 中只有一个有效文件时，导入阶段会把该文件落到目标父目录下的 `target_filename`；若 `target_filename` 没有明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名），会保留原下载文件扩展名；多文件任务保持原相对路径，不应用重命名
 - 返回体当前会补充 VFS 快照字段：
   - `target_virtual_parent_path`
+  - `target_filename`
   - `save_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_save_path`
@@ -595,6 +602,8 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 
 | 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
+| GET | `/rss/export` | `rss.manage` | - | 200，`RSSExportResponse` |
+| POST | `/rss/import` | `rss.manage` | `dry_run,sources[],subscriptions[]` | 200，`RSSImportResponse` |
 | GET | `/rss/sources` | `rss.read` | - | 200，`{items[]}` |
 | POST | `/rss/sources` | `rss.manage` | `name,url,is_enabled,refresh_interval_seconds` | 201，`{source}` |
 | GET | `/rss/sources/:id` | `rss.read` | path: `id` | 200，直接返回 `RSSSourceView` |
@@ -604,12 +613,17 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 | POST | `/rss/sources/:id/refresh` | `rss.manage` | path: `id` | 200，`RSSRefreshResponse` |
 | GET | `/rss/subscriptions` | `rss.read` | query: `source_id` | 200，`{items[]}` |
 | POST | `/rss/subscriptions` | `rss.manage` | 见下方请求体 | 201，`{subscription}` |
+| POST | `/rss/subscriptions/preview` | `rss.manage` | `source_id,must_contain,must_not_contain,use_regex,case_sensitive` | 200，`RSSSubscriptionPreviewResponse`，`subscription_id=0` |
+| POST | `/rss/subscriptions/batch-state` | `rss.manage` | `subscription_ids[],is_enabled` | 200，`RSSSubscriptionBatchStateResponse` |
 | GET | `/rss/subscriptions/:id` | `rss.read` | path: `id` | 200，直接返回 `RSSSubscriptionView` |
 | PATCH | `/rss/subscriptions/:id` | `rss.manage` | 同创建 | 200，`{subscription}` |
 | DELETE | `/rss/subscriptions/:id` | `rss.manage` | path: `id` | 200，`{deleted,id}` |
+| POST | `/rss/subscriptions/:id/clone` | `rss.manage` | path: `id`，可选 `name,is_enabled` | 201，`{subscription}` |
 | POST | `/rss/subscriptions/:id/run` | `rss.manage` | path: `id` | 200，`RSSRefreshResponse` |
 | POST | `/rss/subscriptions/:id/preview` | `rss.manage` | path: `id` | 200，`RSSSubscriptionPreviewResponse` |
 | GET | `/rss/items` | `rss.read` | query: `source_id,subscription_id,status` | 200，`{items[]}` |
+| POST | `/rss/items/batch-ignore` | `rss.manage` | `item_ids[]` | 200，`RSSItemBatchActionResponse` |
+| POST | `/rss/items/batch-retry` | `rss.manage` | `item_ids[]`，`subscription_id` 可选 | 202，`RSSItemBatchActionResponse` |
 | POST | `/rss/items/:id/download` | `rss.manage` | `subscription_id` 可选 | 202，`{item}` |
 | POST | `/rss/items/:id/reprocess` | `rss.manage` | path: `id` | 202，`{item}` |
 | POST | `/rss/items/:id/retry` | `rss.manage` | `subscription_id` 可选 | 202，`{item}` |
@@ -626,20 +640,212 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
   "must_not_contain": ["CHT"],
   "use_regex": false,
   "case_sensitive": false,
-  "target_virtual_parent_path": "/anime/frieren"
+  "target_virtual_parent_path": "/anime",
+  "directory_template": "{anime_title}/{season}",
+  "filename_template": "{anime_title} - {episode} [{resolution}]"
+}
+```
+
+订阅复制请求体可为空；传入字段时只覆盖新订阅的名称和启用状态：
+
+```json
+{
+  "name": "Frieren 1080p Copy",
+  "is_enabled": false
+}
+```
+
+批量启用/禁用订阅请求体：
+
+```json
+{
+  "subscription_ids": [1, 2, 3],
+  "is_enabled": false
+}
+```
+
+临时规则 preview 请求体（不落库，不要求 `target_virtual_parent_path`）：
+
+```json
+{
+  "source_id": 1,
+  "must_contain": ["Frieren", "1080p"],
+  "must_not_contain": ["CHT"],
+  "use_regex": false,
+  "case_sensitive": false
+}
+```
+
+RSS 导出响应 `data` 为 `RSSExportResponse`，只包含可迁移配置，不包含 items、tasks、刷新健康/重试等运行时状态：
+
+```json
+{
+  "version": 1,
+  "exported_at": "2026-05-02T13:00:00+08:00",
+  "sources": [
+    {
+      "name": "Mikan",
+      "url": "https://mikan.example/rss.xml",
+      "is_enabled": true,
+      "refresh_interval_seconds": 1800
+    }
+  ],
+  "subscriptions": [
+    {
+      "source_url": "https://mikan.example/rss.xml",
+      "name": "Frieren 1080p",
+      "is_enabled": true,
+      "must_contain": ["Frieren", "1080p"],
+      "must_not_contain": ["CHT"],
+      "use_regex": false,
+      "case_sensitive": false,
+      "target_virtual_parent_path": "/anime",
+      "directory_template": "{anime_title}/{season}",
+      "filename_template": "{anime_title} - {episode} [{resolution}]"
+    }
+  ]
+}
+```
+
+RSS 导入请求可直接使用导出结构追加 `dry_run`；`subscriptions[].source_ref` 兼容 `source_url` 别名，推荐新前端只写 `source_url`：
+
+```json
+{
+  "dry_run": true,
+  "sources": [
+    {
+      "name": "Mikan",
+      "url": "https://mikan.example/rss.xml",
+      "is_enabled": true,
+      "refresh_interval_seconds": 1800
+    }
+  ],
+  "subscriptions": [
+    {
+      "source_url": "https://mikan.example/rss.xml",
+      "name": "Frieren 1080p",
+      "is_enabled": true,
+      "must_contain": ["Frieren", "1080p"],
+      "must_not_contain": ["CHT"],
+      "use_regex": false,
+      "case_sensitive": false,
+      "target_virtual_parent_path": "/anime",
+      "directory_template": "{anime_title}/{season}",
+      "filename_template": "{anime_title} - {episode} [{resolution}]"
+    }
+  ]
+}
+```
+
+RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败，只有 JSON 格式/绑定错误才返回 4xx：
+
+```json
+{
+  "dry_run": true,
+  "sources": {
+    "items": [
+      {
+        "index": 0,
+        "action": "reuse",
+        "success": true,
+        "id": 1,
+        "source_url": "https://mikan.example/rss.xml",
+        "name": "Mikan"
+      }
+    ],
+    "created": 0,
+    "reused": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "subscriptions": {
+    "items": [
+      {
+        "index": 0,
+        "action": "failed",
+        "success": false,
+        "source_url": "https://mikan.example/rss.xml",
+        "name": "Frieren 1080p",
+        "error_code": "PATH_INVALID",
+        "error_message": "path invalid"
+      }
+    ],
+    "created": 0,
+    "reused": 0,
+    "skipped": 0,
+    "failed": 1
+  }
+}
+```
+
+批量订阅启停响应形状：
+
+```json
+{
+  "items": [
+    {
+      "subscription_id": 1,
+      "success": true,
+      "subscription": { "...": "RSSSubscriptionView" }
+    },
+    {
+      "subscription_id": 2,
+      "success": false,
+      "error_code": "PERMISSION_DENIED",
+      "error_message": "permission denied"
+    }
+  ],
+  "succeeded": 1,
+  "failed": 1
+}
+```
+
+批量条目动作响应统一形状：
+
+```json
+{
+  "items": [
+    {
+      "item_id": 10,
+      "success": true,
+      "item": { "...": "RSSItemView" }
+    },
+    {
+      "item_id": 11,
+      "success": false,
+      "error_code": "TASK_INVALID_STATE",
+      "error_message": "task invalid state"
+    }
+  ],
+  "succeeded": 1,
+  "failed": 1
 }
 ```
 
 约束：
 
+- RSS 导出只导出配置字段：source 的 `name/url/is_enabled/refresh_interval_seconds`，subscription 的 `source_url/name/is_enabled/must_contain/must_not_contain/use_regex/case_sensitive/target_virtual_parent_path/directory_template/filename_template`；不会导出 item、task、refresh health、retry 等运行时状态。
+- RSS 导出范围沿用 service 授权语义：普通身份只能看到自己的 RSS 数据；具备 `rss.manage` 的身份会按现有 `IncludeAll` 语义导出可管理范围内的全部 RSS 源/订阅。
+- RSS 导入中 source 按“当前导入 owner + URL 精确匹配”复用；已存在的 source 不会被覆盖。不存在时创建；`dry_run=true` 只返回将要执行的 `create/reuse/failed` 结果，不落库。
+- RSS 导入创建 subscription 时使用 `source_url` 映射导入/已有 source，并重新校验 `target_virtual_parent_path` 可写；目标路径、正则或模板非法只让该 subscription 单项失败。
 - 第一版只自动入队 `magnet:?` 和 `.torrent` URL；普通 HTTP/直链条目标记为 `unsupported`，不创建 RSS 下载任务。
 - 下载链接解析会检查 RSS item `link`、`enclosure.url` 和 Mikan 扩展 `torrent/link`；只要其中存在 `magnet:?` 或 `.torrent` URL 即可入队。
 - RSS 时间解析顺序：RSS 顶层 `pubDate`、Mikan torrent 扩展 `torrent/pubDate`、`date`、Atom `published/updated`；仍无法识别时 `published_at=null`。
+- RSS 条目会持久化轻量番剧标题解析结果，并在 `RSSItemView.parsed` 返回：
+  - `anime_title`
+  - `season`
+  - `episode`
+  - `subtitle_group`
+  - `resolution`
 - 非正则关键词匹配：
   - 普通文本关键词会匹配标题与链接元数据。
   - 1~2 位纯数字关键词按“集数”语义处理，只匹配标题中的集数 token / `SxxEyy` / `EPyy` / `第 yy 集`，不会匹配 URL、hash、发布时间或 `1080p` 等元信息。
 - `.torrent` URL 入队时后端会先下载 torrent 文件，再以 multipart 文件方式提交给 qBittorrent；避免 qBittorrent 异步拉 URL 失败后任务被误判为取消。
-- 每个订阅固定一个 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
+- 每个订阅固定一个基础 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
+- `RSSSubscriptionView` / 创建更新请求新增：
+  - `directory_template`：空值保持旧行为，RSS 入队仍使用 `target_virtual_parent_path`；非空时按条目 `parsed` 字段渲染为相对子目录，再拼到 `target_virtual_parent_path` 下。
+  - `filename_template`：RSS 入队时会基于 item `parsed` / `title` 渲染为任务级 `target_filename` 快照；下载器仍写入 staging，后端仅在完成导入阶段对“单文件任务”重命名。模板结果不含明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名）时会自动保留原文件扩展名；多文件 torrent 保持原相对路径，不批量改名。
+- 模板占位符支持 `{anime_title}`、`{season}`、`{episode}`、`{subtitle_group}`、`{resolution}`、`{title}`。目录模板会做路径安全清洗，禁止 `..`、绝对路径、Windows drive-style 前缀（如 `C:/anime` / `C:anime`）和反斜杠逃逸；未知占位符或非法模板返回 `400 PATH_INVALID`；条目解析字段缺失时对应占位渲染为空或安全 fallback，最终不会生成越界路径。
 - 创建/更新订阅会校验目标 VFS 目录可解析、有 backing storage、当前用户具备写权限且底层源可写。
 - RSS 条目去重优先使用 GUID；无 GUID 时使用 source + link + title 哈希。
 - RSS 源会暴露无人值守调度字段：`health_status`（`ok` / `degraded` / `circuit_open`）、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`。
@@ -648,9 +854,129 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 - 条目重试字段：`retry_count`、`max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。自动重试默认最多 3 次，退避为 5m / 30m / 2h；手动 retry 可绕过 `next_retry_at`。
 - 已有关联非终态 task 的 RSS item 不会重复入队；普通自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `completed` 会回写 item `completed`，task `failed` 会按错误类型进入 `retry_pending` 或 `needs_attention`，task `canceled` 会进入 `needs_attention` 等待人工处理。
 - 规则 preview 返回每个已有 item 的 `result`（`matched` / `missing` / `excluded`）以及 `matched`、`missing`、`excluded` 关键词列表，用于解释命中/未命中原因。
-- qBittorrent 下载目录必须与 backend 共享；下载完成后仍由 Yunxia 从 staging 导入目标 VFS 目录。
+- 复制订阅会授权原订阅 owner，复制 `source_id`、规则、regex/case、目标路径、目录/文件名模板与 VFS 解析快照；新订阅使用新 `id/created_at/updated_at`。未传 `name` 时默认生成 `原名 Copy`（必要时简单追加序号），未传 `is_enabled` 时保持原订阅状态。
+- 批量启用/禁用订阅对每个 `subscription_id` 独立 `FindSubscriptionByID` 与授权；成功项更新 `is_enabled` 与 `updated_at`，失败项写入 `error_code/error_message`，不会导致整个响应失败。
+- 临时规则 preview 使用 `POST /rss/subscriptions/preview`，会校验 source 存在、当前身份可管理该 source，并校验正则；只基于该 source 现有 items 计算解释结果，返回 `subscription_id=0`，不会创建或更新订阅。
+- 批量忽略对每个 `item_id` 独立 `FindItemByID` 与授权；已完成 item 或有关联非终态 task 的 item 返回单项失败 `TASK_INVALID_STATE`，其他可忽略项会设置 `status=ignored` 并清空 `error_message`、`retry_reason`、`next_retry_at`。
+- 批量 retry 逐项复用单条 `POST /rss/items/:id/retry` 语义；`subscription_id` 若提供会应用到每个 item，单项失败写入该项 `error_code/error_message`，不会导致整个响应失败。
+- qBittorrent 下载目录必须与 backend 共享；下载完成后仍由 Yunxia 从 staging 导入目标 VFS 目录；RSS 文件名模板只在这个导入阶段生效，不修改 qBittorrent 内部 torrent 内容。
 
-### 3.11 shares（`/api/v1`）
+
+### 3.11 notifications（`/api/v1/notifications`）
+
+通知模块用于配置 Webhook 通道，并记录 RSS 无人值守运行过程中需要外部提醒或前端待处理展示的事件。当前真实通道只有 `webhook`；Telegram / 企业微信后续扩展时会复用 channel/event 模型。
+
+| 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
+|---|---|---|---|---|
+| GET | `/notifications/channels` | `notification.read` | - | 200，`{items[]}` |
+| POST | `/notifications/channels` | `notification.manage` | `name,type,is_enabled,event_types,config` | 201，`{channel}` |
+| PUT | `/notifications/channels/:id` | `notification.manage` | 同创建 | 200，`{channel}` |
+| DELETE | `/notifications/channels/:id` | `notification.manage` | path: `id` | 200，`{deleted,id}` |
+| POST | `/notifications/channels/:id/test` | `notification.manage` | path: `id` | 200，`{ok:true}` |
+| GET | `/notifications/events` | `notification.read` | query: `status,event_type,limit` | 200，`{items[]}` |
+| POST | `/notifications/events/:id/retry` | `notification.manage` | path: `id` | 202，`{event}` |
+
+通道创建 / 更新请求体：
+
+```json
+{
+  "name": "Ops Webhook",
+  "type": "webhook",
+  "is_enabled": true,
+  "event_types": ["rss.source_failure", "rss.item_needs_attention", "rss.download_completed"],
+  "config": {
+    "url": "https://example.com/yunxia-webhook",
+    "secret": "optional-signing-secret"
+  }
+}
+```
+
+字段说明：
+
+- `type` 当前只支持 `webhook`。
+- `is_enabled` 创建时省略默认为 `true`；更新时省略会保留原启用状态。
+- `event_types=[]` 或省略表示接收全部支持事件。
+- `config.secret` 只在创建/更新时提交；列表/详情不返回明文，只返回 `secret_configured`。更新时 `secret` 省略会保留旧值，传空字符串会清空。
+- Webhook 请求为 `POST application/json`；配置 secret 时后端会追加：
+  - `X-Yunxia-Timestamp`
+  - `X-Yunxia-Signature: sha256=<hmac_sha256(timestamp + "." + body)>`
+
+通道视图：
+
+```json
+{
+  "id": 1,
+  "name": "Ops Webhook",
+  "type": "webhook",
+  "is_enabled": true,
+  "event_types": ["rss.source_failure"],
+  "config": {
+    "url": "https://example.com/yunxia-webhook",
+    "secret_configured": true
+  },
+  "created_at": "2026-05-02T16:00:00+08:00",
+  "updated_at": "2026-05-02T16:00:00+08:00"
+}
+```
+
+当前支持事件类型：
+
+| event_type | severity | 触发时机 |
+|---|---|---|
+| `rss.source_failure` | `warning` | RSS source 连续失败导致健康状态进入 `degraded` / `circuit_open` 时触发 |
+| `rss.item_needs_attention` | `error` | RSS item 因确定性失败或重试耗尽进入 `needs_attention` 时触发 |
+| `rss.download_completed` | `info` | RSS item 关联下载任务完成并回写为 `completed` 时触发 |
+
+事件状态：
+
+| status | 含义 |
+|---|---|
+| `pending` | 事件已入库，尚未投递 |
+| `delivered` | 已成功投递到匹配通道 |
+| `retry_pending` | 投递失败，等待自动/手动重试 |
+| `failed` | 已达到自动重试上限 |
+| `skipped` | 当前没有匹配的启用通道，事件只保留为记录 |
+
+事件视图：
+
+```json
+{
+  "id": 12,
+  "user_id": 1,
+  "event_type": "rss.item_needs_attention",
+  "severity": "error",
+  "title": "RSS item needs attention",
+  "message": "file already exists",
+  "payload": {
+    "item_id": 7,
+    "source_id": 2,
+    "title": "Example S01E05",
+    "retry_count": 3,
+    "max_retry_count": 3
+  },
+  "status": "retry_pending",
+  "attempts": 1,
+  "max_attempts": 3,
+  "last_attempt_at": "2026-05-02T16:00:00+08:00",
+  "next_attempt_at": "2026-05-02T16:05:00+08:00",
+  "delivered_at": null,
+  "last_error": "webhook status 500",
+  "created_at": "2026-05-02T16:00:00+08:00",
+  "updated_at": "2026-05-02T16:00:00+08:00"
+}
+```
+
+错误码：
+
+| code | HTTP | 场景 |
+|---|---:|---|
+| `CONFIG_INVALID` | 422 | URL 非 http/https、未知 event_type、缺少 name 等配置错误 |
+| `NOTIFICATION_CHANNEL_UNSUPPORTED` | 422 | 通道类型不是当前支持的 `webhook` |
+| `NOTIFICATION_NOT_FOUND` | 404 | channel/event 不存在 |
+| `NOTIFICATION_DELIVERY_FAILED` | 502 | 测试发送或手动重试时 webhook 返回非 2xx / 网络失败 |
+| `TASK_INVALID_STATE` | 409 | 对 `delivered` / `skipped` 事件执行 retry |
+
+### 3.12 shares（`/api/v1`）
 
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -674,7 +1000,7 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 - 密码错误返回 `401 SHARE_PASSWORD_INVALID`
 - 过期返回 `410 SHARE_EXPIRED`
 
-### 3.12 audit（`/api/v1`）
+### 3.13 audit（`/api/v1`）
 
 | 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -689,7 +1015,7 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 - 详情中的 `before` / `after` / `detail` 为可选对象，空值时会省略
 - 当前即使拥有 `audit.read_sensitive`，也不会比 `audit.read` 看到更多明文字段
 
-### 3.13 统一虚拟目录树 V2（`/api/v2`）
+### 3.14 统一虚拟目录树 V2（`/api/v2`）
 
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
@@ -719,7 +1045,7 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
 - `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`
 
-### 3.14 WebDAV
+### 3.15 WebDAV
 
 支持方法：
 
@@ -831,6 +1157,7 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
   "source_id": 1,
   "save_path": "/downloads",
   "target_virtual_parent_path": "/local/downloads",
+  "target_filename": "Example Show - S01E05 [1080p]",
   "save_virtual_path": "/local/downloads",
   "resolved_source_id": 1,
   "resolved_inner_save_path": "/downloads",
@@ -996,14 +1323,20 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 - `TASK_INVALID_STATE`
 - `DOWNLOADER_UNAVAILABLE`
 - `DOWNLOAD_LINK_UNSUPPORTED`
+- `FILE_NAME_INVALID`（任务创建传入非法 `target_filename`）
 
 ### 5.6 rss
 
-- `RSS_SOURCE_NOT_FOUND`
-- `RSS_SUBSCRIPTION_NOT_FOUND`
+- `RSS_SOURCE_NOT_FOUND`（源不存在；导入订阅的 `source_url` 无法映射到当前 owner 的已有/本次导入 source 时作为单项 `error_code` 返回）
+- `RSS_SUBSCRIPTION_NOT_FOUND`（订阅不存在；批量启停中作为单项 `error_code` 返回）
 - `RSS_ITEM_NOT_FOUND`
 - `RSS_QBITTORRENT_UNAVAILABLE`
 - `RSS_REGEX_INVALID`
+- `CONFIG_INVALID`（导入 source / subscription 字段不合法时作为单项 `error_code` 返回）
+- `PATH_INVALID`（订阅目标目录或模板非法；导入时作为单项 `error_code` 返回）
+- `NO_BACKING_STORAGE` / `SOURCE_READ_ONLY` / `PERMISSION_DENIED`（导入订阅目标不可写时作为单项 `error_code` 返回）
+- `DOWNLOAD_LINK_UNSUPPORTED`
+- `TASK_INVALID_STATE`（批量忽略中 item 已完成或存在活跃任务等不可变更状态）
 
 ### 5.7 audit
 
@@ -1032,6 +1365,10 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 14. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
 15. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
 16. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+17. RSS 条目批量动作返回 `RSSItemBatchActionResponse.items[]`，每项都有 `success` 与可选 `item/error_code/error_message`；不要按单条接口的 `{item}` 包装解析，也不要因为 HTTP 200/202 就假设全部成功。
+18. RSS 订阅批量启停返回 `RSSSubscriptionBatchStateResponse.items[]`，每项都有 `subscription_id/success` 与可选 `subscription/error_code/error_message`；复制订阅返回 201 `{subscription}`，不会修改原订阅。
+19. RSS 导入返回 `RSSImportResponse`，HTTP 200 只代表请求已处理；前端必须检查 `sources.items[]`、`subscriptions.items[]` 和 `failed` 计数。`dry_run=true` 的 `created` 是“将创建”数量，不代表已落库。
+20. 通知事件 HTTP 200/202 只代表请求处理成功；Webhook 投递结果要看 `NotificationEventView.status`。`event_types=[]` 表示通道接收全部支持事件。
 
 ## 7. 前端常见页面调用流程
 
