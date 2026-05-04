@@ -42,11 +42,6 @@ type DownloadStatus struct {
 	ErrorMessage   *string
 }
 
-// TaskImportDriver 定义下载完成后导入非 local 存储源的最小能力。
-type TaskImportDriver interface {
-	ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error
-}
-
 // TaskTerminalStatusObserver 接收任务终态变更通知，用于同步跨模块反向引用。
 type TaskTerminalStatusObserver interface {
 	OnTaskTerminalStatus(ctx context.Context, task *entity.DownloadTask) error
@@ -152,11 +147,14 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 	source := target.source
 	if source.DriverType != "local" {
 		if _, err := s.getTaskImportDriver(source.DriverType); err != nil {
+			if errors.Is(err, ErrSourceDriverUnsupported) {
+				err = ErrSourceOperationUnsupported
+			}
 			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 				ResourceType: "task",
 				Action:       "create",
 				Result:       appaudit.ResultFailed,
-				ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+				ErrorCode:    taskCreateErrorCode(err),
 				SourceID:     &source.ID,
 				VirtualPath:  target.saveVirtualPath,
 			})
@@ -994,6 +992,9 @@ func (s *TaskService) importStagedFile(ctx context.Context, source *entity.Stora
 
 	driver, err := s.getTaskImportDriver(source.DriverType)
 	if err != nil {
+		if errors.Is(err, ErrSourceDriverUnsupported) {
+			return ErrSourceOperationUnsupported
+		}
 		return err
 	}
 	return driver.ImportFile(ctx, source, targetPath, localPath)

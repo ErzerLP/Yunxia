@@ -14,6 +14,7 @@ import (
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
+	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/persistence/gorm"
 	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
@@ -1492,6 +1493,352 @@ func TestSourceDetailShowsSecretsForSuperAdmin(t *testing.T) {
 	}
 }
 
+func TestSourceServiceS3CodecCreateTestDetailAndSecretRetention(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	configRepo := gorm.NewSystemConfigRepository(db)
+	probe := &recordingSourceProbe{}
+	svc := NewSourceService(sourceRepo, configRepo, WithSourceDriverProbe("s3", probe))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       1,
+		RoleKey:      permission.RoleSuperAdmin,
+		Status:       permission.StatusActive,
+		Capabilities: permission.AllCapabilities(),
+	})
+
+	req := appdto.SourceUpsertRequest{
+		Name:       "s3 media",
+		DriverType: "s3",
+		IsEnabled:  true,
+		RootPath:   "/",
+		Config: map[string]any{
+			"endpoint":         " https://s3.example.com ",
+			"region":           "us-east-1",
+			"bucket":           "media",
+			"base_prefix":      "/library/",
+			"force_path_style": true,
+		},
+		SecretPatch: map[string]any{
+			"access_key": "AKIA-TEST-1234",
+			"secret_key": "secret-value",
+		},
+	}
+	testResp, err := svc.Test(ctx, req)
+	if err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+	if !testResp.Reachable || len(probe.sources) != 1 {
+		t.Fatalf("unexpected test response/probe calls: resp=%+v calls=%d", testResp, len(probe.sources))
+	}
+
+	created, err := svc.Create(ctx, req)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.DriverType != "s3" || created.MountPath != "/s3-media" {
+		t.Fatalf("unexpected created source view = %+v", created)
+	}
+
+	stored, err := sourceRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	cfg, err := infraStorage.ParseS3ConfigJSON(stored.ConfigJSON)
+	if err != nil {
+		t.Fatalf("ParseS3ConfigJSON() error = %v", err)
+	}
+	if cfg.Endpoint != "https://s3.example.com" || cfg.BasePrefix != "library" || cfg.AccessKey != "AKIA-TEST-1234" || cfg.SecretKey != "secret-value" {
+		t.Fatalf("unexpected stored s3 config = %+v", cfg)
+	}
+
+	limitedCtx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       2,
+		RoleKey:      permission.RoleAdmin,
+		Status:       permission.StatusActive,
+		Capabilities: []string{permission.CapabilitySourceRead},
+	})
+	detail, err := svc.Get(limitedCtx, created.ID)
+	if err != nil {
+		t.Fatalf("Get(limited) error = %v", err)
+	}
+	if _, exists := detail.Config["secret_key"]; exists {
+		t.Fatalf("expected secret_key to be hidden, config=%+v", detail.Config)
+	}
+	if !detail.SecretFields["access_key"].Configured || detail.SecretFields["access_key"].Masked != "AKIA****" {
+		t.Fatalf("unexpected access key mask = %+v", detail.SecretFields["access_key"])
+	}
+
+	updated, err := svc.Update(ctx, created.ID, appdto.SourceUpsertRequest{
+		Name:      "s3 media",
+		IsEnabled: true,
+		RootPath:  "/",
+		Config: map[string]any{
+			"endpoint":         "https://s3.example.com",
+			"region":           "us-east-1",
+			"bucket":           "media",
+			"base_prefix":      "archive",
+			"force_path_style": false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	updatedSource, err := sourceRepo.FindByID(context.Background(), updated.ID)
+	if err != nil {
+		t.Fatalf("FindByID(updated) error = %v", err)
+	}
+	updatedCfg, err := infraStorage.ParseS3ConfigJSON(updatedSource.ConfigJSON)
+	if err != nil {
+		t.Fatalf("ParseS3ConfigJSON(updated) error = %v", err)
+	}
+	if updatedCfg.BasePrefix != "archive" || updatedCfg.AccessKey != "AKIA-TEST-1234" || updatedCfg.SecretKey != "secret-value" {
+		t.Fatalf("expected update to retain secrets while changing public config, got %+v", updatedCfg)
+	}
+}
+
+func TestStorageDriverRegistryOptionsWireS3AndKeepStatsFallbackExplicit(t *testing.T) {
+	importer := &recordingTaskImportDriver{}
+	fileDriver := &storageFileDriverStub{}
+	pikpakProbe := &recordingSourceProbe{}
+	pikpakCapabilities := capabilityProviderStub{capabilities: StorageCapabilities{CanList: true, CanDownload: true}}
+	registry := NewStorageDriverRegistry(
+		DriverBundle{
+			Type:         "pikpak",
+			DisplayName:  "PikPak",
+			Config:       fakeSourceConfigCodec{driverType: "pikpak", slug: "source-pikpak"},
+			Probe:        pikpakProbe,
+			File:         fileDriver,
+			Import:       importer,
+			Capabilities: pikpakCapabilities,
+		},
+		DriverBundle{
+			Type:                   "s3",
+			DisplayName:            "S3",
+			File:                   fileDriver,
+			Upload:                 &uploadDriverStub{},
+			Import:                 importer,
+			RecursiveStatsFallback: true,
+		},
+	)
+
+	sourceSvc := NewSourceService(nil, nil, registry.SourceServiceOptions()...)
+	if _, exists := sourceSvc.configCodecs["pikpak"]; !exists {
+		t.Fatalf("expected pikpak config codec to be registered for source service")
+	}
+	if _, exists := sourceSvc.driverProbes["pikpak"]; !exists {
+		t.Fatalf("expected pikpak source probe to be registered for source service")
+	}
+
+	fileSvc := NewFileService(nil, nil, nil, nil, registry.FileServiceOptions()...)
+	if _, exists := fileSvc.fileDrivers["s3"]; !exists {
+		t.Fatalf("expected s3 file driver to be registered")
+	}
+	if _, exists := fileSvc.fileDrivers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak file driver to be registered for file/vfs services")
+	}
+	if _, exists := fileSvc.capabilityProviders["pikpak"]; !exists {
+		t.Fatalf("expected pikpak capabilities to be registered for file service")
+	}
+
+	vfsSvc := NewVFSService(nil, registry.VFSServiceOptions()...)
+	if _, exists := vfsSvc.fileDrivers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak file driver to be registered for vfs service")
+	}
+	if _, exists := vfsSvc.capabilityProviders["pikpak"]; !exists {
+		t.Fatalf("expected pikpak capabilities to be registered for vfs service")
+	}
+
+	trashSvc := NewTrashService(nil, nil, registry.TrashServiceOptions()...)
+	if _, exists := trashSvc.fileDrivers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak file driver to be registered for trash service")
+	}
+
+	uploadSvc := NewUploadService(nil, nil, DefaultSystemOptions(), registry.UploadServiceOptions()...)
+	if _, exists := uploadSvc.uploadDrivers["s3"]; !exists {
+		t.Fatalf("expected s3 direct upload driver to be registered")
+	}
+	if _, exists := uploadSvc.importDrivers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak import driver to be registered for server_chunk")
+	}
+
+	taskSvc := NewTaskService(nil, nil, nil, registry.TaskServiceOptions()...)
+	if _, exists := taskSvc.importDrivers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak import driver to be registered for task import")
+	}
+
+	shareSvc := NewShareService(nil, nil, nil, nil, registry.ShareServiceOptions()...)
+	if _, exists := shareSvc.fileDrivers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak file driver to be registered for share service")
+	}
+
+	systemSvc := NewSystemService(nil, DefaultSystemOptions(), registry.SystemServiceOptions()...)
+	if _, exists := systemSvc.fileDrivers["s3"]; !exists {
+		t.Fatalf("expected s3 recursive stats fallback to stay registered")
+	}
+	if _, exists := systemSvc.fileDrivers["pikpak"]; exists {
+		t.Fatalf("did not expect pikpak file driver to be used for recursive system stats by default")
+	}
+}
+
+func TestUploadServiceUsesImportDriverForServerChunkNonLocalDriver(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	source := &entity.StorageSource{
+		Name:       "第三方导入源",
+		DriverType: "cloud-import",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/cloud",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	importer := &recordingTaskImportDriver{}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(sourceRepo, uploadRepo, options, WithUploadImportDriver("cloud-import", importer))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/uploads",
+		Filename: "movie.mkv",
+		FileSize: int64(len("hello-world")),
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if initResp.Transport == nil || initResp.Transport.Mode != "server_chunk" || initResp.Transport.DriverType != "cloud-import" {
+		t.Fatalf("unexpected transport = %+v", initResp.Transport)
+	}
+	if len(initResp.PartInstructions) != 0 {
+		t.Fatalf("server_chunk import should not return direct part instructions")
+	}
+
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 0, []byte("hello")); err != nil {
+		t.Fatalf("UploadChunk(0) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 1, []byte("-worl")); err != nil {
+		t.Fatalf("UploadChunk(1) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 2, []byte("d")); err != nil {
+		t.Fatalf("UploadChunk(2) error = %v", err)
+	}
+
+	finishResp, err := svc.Finish(ctx, appdto.UploadFinishRequest{UploadID: initResp.Upload.UploadID})
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if finishResp.File.Path != "/uploads/movie.mkv" || finishResp.File.Size != int64(len("hello-world")) {
+		t.Fatalf("unexpected finish file = %+v", finishResp.File)
+	}
+	if len(importer.calls) != 1 {
+		t.Fatalf("expected one import call, got %+v", importer.calls)
+	}
+	call := importer.calls[0]
+	if call.sourceID != source.ID || call.targetPath != "/uploads/movie.mkv" || string(call.content) != "hello-world" {
+		t.Fatalf("unexpected import call = %+v", call)
+	}
+	if _, err := uploadRepo.FindByID(context.Background(), initResp.Upload.UploadID); !errors.Is(err, domainrepo.ErrNotFound) {
+		t.Fatalf("expected upload session to be deleted, err=%v", err)
+	}
+}
+
+func TestSystemStatsUsesCapacityDriverBeforeRecursiveFileStats(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	source := &entity.StorageSource{
+		Name:       "容量源",
+		DriverType: "quota",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/quota",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	used := int64(12345)
+	fileDriver := &storageFileDriverStub{listErr: errors.New("recursive stats should not be called")}
+	svc := NewSystemService(
+		gorm.NewSystemConfigRepository(db),
+		DefaultSystemOptions(),
+		WithSystemStatsDependencies(nil, sourceRepo, nil),
+		WithSystemStatsCapacityDriver("quota", capacityDriverStub{used: &used}),
+		WithSystemStatsFileDriver("quota", fileDriver),
+	)
+	stats, err := svc.GetStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetStats() error = %v", err)
+	}
+	if stats.StorageUsedBytes != used {
+		t.Fatalf("expected capacity used bytes %d, got %+v", used, stats)
+	}
+	if fileDriver.listCalls != 0 {
+		t.Fatalf("expected capacity driver to bypass recursive List, calls=%d", fileDriver.listCalls)
+	}
+}
+
+func TestSystemStatsFallsBackToRecursiveFileStatsWhenCapacityUsageUnavailable(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	source := &entity.StorageSource{
+		Name:       "容量缺失源",
+		DriverType: "quota-missing",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/quota-missing",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	fileDriver := &storageFileDriverStub{entriesByPath: map[string][]StorageEntry{
+		"/": {
+			{Name: "movie.mkv", Path: "/movie.mkv", Size: 11},
+			{Name: "nested", Path: "/nested", IsDir: true},
+		},
+		"/nested": {
+			{Name: "episode.mkv", Path: "/nested/episode.mkv", Size: 22},
+		},
+	}}
+	svc := NewSystemService(
+		gorm.NewSystemConfigRepository(db),
+		DefaultSystemOptions(),
+		WithSystemStatsDependencies(nil, sourceRepo, nil),
+		WithSystemStatsCapacityDriver("quota-missing", capacityDriverStub{}),
+		WithSystemStatsFileDriver("quota-missing", fileDriver),
+	)
+	stats, err := svc.GetStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetStats() error = %v", err)
+	}
+	if stats.FilesTotal != 2 || stats.StorageUsedBytes != 33 {
+		t.Fatalf("expected recursive fallback stats files=2 bytes=33, got %+v", stats)
+	}
+	if fileDriver.listCalls != 2 {
+		t.Fatalf("expected recursive List fallback for root and child, calls=%d", fileDriver.listCalls)
+	}
+}
+
 func TestACLServiceManagementLifecycle(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1865,6 +2212,44 @@ type recordingTaskImportDriver struct {
 	calls []recordingTaskImportCall
 }
 
+type fakeSourceConfigCodec struct {
+	driverType string
+	slug       string
+}
+
+func (c fakeSourceConfigCodec) DriverType() string {
+	return c.driverType
+}
+
+func (c fakeSourceConfigCodec) DefaultMountSlug() string {
+	return c.slug
+}
+
+func (fakeSourceConfigCodec) Build(_ map[string]any, _ map[string]any, _ string) (string, error) {
+	return "{}", nil
+}
+
+func (fakeSourceConfigCodec) Public(string, bool) (map[string]any, map[string]appdto.SecretFieldMask, error) {
+	return map[string]any{}, map[string]appdto.SecretFieldMask{}, nil
+}
+
+func (fakeSourceConfigCodec) AuditView(string) map[string]any {
+	return map[string]any{}
+}
+
+type recordingSourceProbe struct {
+	sources []*entity.StorageSource
+	err     error
+}
+
+func (p *recordingSourceProbe) Test(_ context.Context, source *entity.StorageSource) error {
+	if source != nil {
+		copied := *source
+		p.sources = append(p.sources, &copied)
+	}
+	return p.err
+}
+
 type recordingTaskImportCall struct {
 	sourceID   uint
 	targetPath string
@@ -1884,6 +2269,87 @@ func (d *recordingTaskImportDriver) ImportFile(_ context.Context, source *entity
 		content:    content,
 	})
 	return nil
+}
+
+type uploadDriverStub struct{}
+
+func (*uploadDriverStub) InitMultipartUpload(context.Context, *entity.StorageSource, MultipartUploadRequest) (*MultipartUploadPlan, error) {
+	return &MultipartUploadPlan{}, nil
+}
+
+func (*uploadDriverStub) CompleteMultipartUpload(context.Context, *entity.StorageSource, MultipartUploadState, []CompletedUploadPart) (*StorageEntry, error) {
+	return &StorageEntry{Name: "uploaded.bin", Path: "/uploaded.bin", ModifiedAt: time.Now()}, nil
+}
+
+type capacityDriverStub struct {
+	used  *int64
+	total *int64
+	err   error
+}
+
+func (d capacityDriverStub) Capacity(context.Context, *entity.StorageSource) (*CapacityInfo, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
+	return &CapacityInfo{UsedBytes: d.used, TotalBytes: d.total}, nil
+}
+
+type capabilityProviderStub struct {
+	capabilities StorageCapabilities
+	err          error
+}
+
+func (p capabilityProviderStub) Capabilities(context.Context, *entity.StorageSource) (StorageCapabilities, error) {
+	if p.err != nil {
+		return StorageCapabilities{}, p.err
+	}
+	return p.capabilities, nil
+}
+
+type storageFileDriverStub struct {
+	listCalls     int
+	listErr       error
+	entriesByPath map[string][]StorageEntry
+}
+
+func (d *storageFileDriverStub) List(_ context.Context, _ *entity.StorageSource, virtualPath string) ([]StorageEntry, error) {
+	d.listCalls++
+	if d.listErr != nil {
+		return nil, d.listErr
+	}
+	return d.entriesByPath[virtualPath], nil
+}
+
+func (*storageFileDriverStub) SearchByName(context.Context, *entity.StorageSource, string, string) ([]StorageEntry, error) {
+	return nil, nil
+}
+
+func (*storageFileDriverStub) Stat(context.Context, *entity.StorageSource, string) (*StorageEntry, error) {
+	return &StorageEntry{}, nil
+}
+
+func (*storageFileDriverStub) Mkdir(context.Context, *entity.StorageSource, string, string) (*StorageEntry, error) {
+	return &StorageEntry{}, nil
+}
+
+func (*storageFileDriverStub) Rename(context.Context, *entity.StorageSource, string, string) (*StorageEntry, error) {
+	return &StorageEntry{}, nil
+}
+
+func (*storageFileDriverStub) Move(context.Context, *entity.StorageSource, string, string) error {
+	return nil
+}
+
+func (*storageFileDriverStub) Copy(context.Context, *entity.StorageSource, string, string) error {
+	return nil
+}
+
+func (*storageFileDriverStub) Delete(context.Context, *entity.StorageSource, string) error {
+	return nil
+}
+
+func (*storageFileDriverStub) PresignDownload(context.Context, *entity.StorageSource, string, string, time.Duration) (string, time.Time, error) {
+	return "", time.Time{}, nil
 }
 
 type mountRegistryTestRepo struct {

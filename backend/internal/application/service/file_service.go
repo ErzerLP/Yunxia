@@ -34,12 +34,13 @@ type FileService struct {
 	authTokens interface {
 		ValidateAccessToken(token string) (*security.Claims, error)
 	}
-	userRepo         domainrepo.UserRepository
-	fileDrivers      map[string]FileDriver
-	trashItemRepo    domainrepo.TrashItemRepository
-	localDirWritable func(string) bool
-	logger           *slog.Logger
-	auditRecorder    *appaudit.Recorder
+	userRepo            domainrepo.UserRepository
+	fileDrivers         map[string]FileDriver
+	capabilityProviders map[string]CapabilityProvider
+	trashItemRepo       domainrepo.TrashItemRepository
+	localDirWritable    func(string) bool
+	logger              *slog.Logger
+	auditRecorder       *appaudit.Recorder
 }
 
 // NewFileService 创建文件服务。
@@ -56,13 +57,14 @@ func NewFileService(
 	options ...FileServiceOption,
 ) *FileService {
 	service := &FileService{
-		sourceRepo:       sourceRepo,
-		fileAccessTokens: fileAccessTokens,
-		authTokens:       authTokens,
-		userRepo:         userRepo,
-		fileDrivers:      make(map[string]FileDriver),
-		localDirWritable: probeLocalDirectoryWritable,
-		logger:           newServiceLogger("service.file"),
+		sourceRepo:          sourceRepo,
+		fileAccessTokens:    fileAccessTokens,
+		authTokens:          authTokens,
+		userRepo:            userRepo,
+		fileDrivers:         make(map[string]FileDriver),
+		capabilityProviders: make(map[string]CapabilityProvider),
+		localDirWritable:    probeLocalDirectoryWritable,
+		logger:              newServiceLogger("service.file"),
 	}
 	for _, option := range options {
 		option(service)
@@ -1140,8 +1142,11 @@ func (s *FileService) ResolveDownloadRedirect(ctx context.Context, sourceID uint
 
 	redirectURL, _, err := driver.PresignDownload(ctx, source, virtualPath, disposition, 5*time.Minute)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
 			return "", ErrFileNotFound
+		case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+			return "", ErrFileIsDirectory
 		}
 		return "", err
 	}
@@ -1230,18 +1235,27 @@ func (s *FileService) listWithDriver(ctx context.Context, source *entity.Storage
 	}
 	entries, err := driver.List(ctx, source, virtualPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
 			return nil, 0, 0, 0, 0, ErrFileNotFound
+		case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+			return nil, 0, 0, 0, 0, ErrFileIsDirectory
 		}
 		return nil, 0, 0, 0, 0, err
 	}
 
+	capabilities, err := s.driverCapabilities(ctx, source)
+	if err != nil {
+		return nil, 0, 0, 0, 0, err
+	}
 	items := make([]appdto.FileItem, 0, len(entries))
 	for _, entry := range entries {
 		if isHiddenStorageEntry(entry) {
 			continue
 		}
-		items = append(items, buildStorageEntryItem(source.ID, entry))
+		item := buildStorageEntryItem(source.ID, entry)
+		applyFileItemCapabilities(&item, capabilities)
+		items = append(items, item)
 	}
 	sortFileItems(items, query.SortBy, query.SortOrder)
 	items, err = s.filterReadableFileItems(ctx, source.ID, items)
@@ -1273,15 +1287,27 @@ func (s *FileService) searchWithDriver(ctx context.Context, source *entity.Stora
 
 	entries, err := driver.SearchByName(ctx, source, pathPrefix, query.Keyword)
 	if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return nil, 0, 0, 0, 0, ErrFileNotFound
+		case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+			return nil, 0, 0, 0, 0, ErrFileIsDirectory
+		}
 		return nil, 0, 0, 0, 0, err
 	}
 
+	capabilities, err := s.driverCapabilities(ctx, source)
+	if err != nil {
+		return nil, 0, 0, 0, 0, err
+	}
 	items := make([]appdto.FileItem, 0, len(entries))
 	for _, entry := range entries {
 		if isHiddenStorageEntry(entry) {
 			continue
 		}
-		items = append(items, buildStorageEntryItem(source.ID, entry))
+		item := buildStorageEntryItem(source.ID, entry)
+		applyFileItemCapabilities(&item, capabilities)
+		items = append(items, item)
 	}
 	sortFileItems(items, "name", "asc")
 	items, err = s.filterReadableFileItems(ctx, source.ID, items)
@@ -1318,8 +1344,11 @@ func (s *FileService) accessURLWithDriver(ctx context.Context, source *entity.St
 
 	_, _, err = driver.PresignDownload(ctx, source, virtualPath, req.Disposition, time.Duration(req.ExpiresIn)*time.Second)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
 			return nil, ErrFileNotFound
+		case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+			return nil, ErrFileIsDirectory
 		}
 		return nil, err
 	}
@@ -1347,6 +1376,21 @@ func (s *FileService) getFileDriver(driverType string) (FileDriver, error) {
 		return nil, ErrSourceDriverUnsupported
 	}
 	return driver, nil
+}
+
+func (s *FileService) driverCapabilities(ctx context.Context, source *entity.StorageSource) (*StorageCapabilities, error) {
+	if s == nil || source == nil || s.capabilityProviders == nil {
+		return nil, nil
+	}
+	provider, exists := s.capabilityProviders[source.DriverType]
+	if !exists || provider == nil {
+		return nil, nil
+	}
+	capabilities, err := provider.Capabilities(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	return &capabilities, nil
 }
 
 func (s *FileService) authorizePath(ctx context.Context, sourceID uint, pathValue string, action ACLAction) error {

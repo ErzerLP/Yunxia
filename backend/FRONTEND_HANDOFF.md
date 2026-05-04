@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待适配 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
 | 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
 | 待联调 | 2026-05-02 | RSS 导入导出 | RSS/追番页、设置/备份页 | P1 | `/api/v1/rss/export`、`/api/v1/rss/import` | [详情](#handoff-2026-05-02-rss-import-export) |
 | 待联调 | 2026-05-02 | RSS 订阅批量控制 | RSS/追番页、订阅列表 | P1 | `/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/subscriptions/batch-state` | [详情](#handoff-2026-05-02-rss-subscription-bulk-controls) |
@@ -841,3 +842,52 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
   - `cd web && npm run lint` # pass
   - `cd web && npm run build` # pass
   - `cd web && node scripts/check-vfs-integration.mjs` # pass
+
+<a id="handoff-2026-05-04-pikpak-source-readonly"></a>
+
+### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak 只读 source 与 VFS 浏览
+
+#### 前端适配 checklist
+
+- [ ] 存储源创建/编辑表单新增 `driver_type="pikpak"` 选项。
+- [ ] 表单支持 PikPak public config：`root_folder_id`、`platform`、`disable_media_link`、`cache_ttl_seconds`、`download_strategy`。
+- [ ] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
+- [ ] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
+- [ ] 文件/VFS 页面把 PikPak 阶段 B 当作只读源：隐藏或禁用 mkdir/rename/move/copy/delete/upload/离线下载目标写入入口。
+- [ ] 错误提示新增 `SOURCE_OPERATION_UNSUPPORTED`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
+- [ ] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
+
+#### 背景 / 变更摘要
+
+后端新增 `driver_type="pikpak"` 的基础 source 管理与只读 FileDriver。阶段 B 支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download；写操作、上传导入、离线下载导入暂不支持。
+
+#### 接口与字段
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.5 sources`、`3.6 files`、`3.7 upload`、`3.9 tasks`、`4. vfs` 和错误码列表。
+
+创建请求核心形态：
+
+```ts
+type PikPakSourceConfig = {
+  root_folder_id?: string
+  platform?: "web" | "android" | "pc"
+  disable_media_link?: boolean
+  cache_ttl_seconds?: number
+  download_strategy?: "redirect"
+}
+
+type PikPakSecretPatch = {
+  username?: string | null
+  password?: string | null
+  refresh_token?: string | null
+  captcha_token?: string | null
+  device_id?: string | null
+}
+```
+
+#### 注意事项
+
+- `root_path` 必须传 `/`；远端子目录挂载用 `config.root_folder_id`。
+- 阶段 B 的 PikPak 源是只读源；写入口如果仍调用，会返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
+- `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
+- 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。

@@ -213,6 +213,14 @@ func buildStorageEntryItem(sourceID uint, entry StorageEntry) appdto.FileItem {
 	return item
 }
 
+func applyFileItemCapabilities(item *appdto.FileItem, capabilities *StorageCapabilities) {
+	if item == nil || capabilities == nil {
+		return
+	}
+	item.CanDownload = item.CanDownload && capabilities.CanDownload
+	item.CanDelete = item.CanDelete && capabilities.CanDelete
+}
+
 func buildVFSItemFromLocal(sourceID uint, virtualPath string, entry fs.FileInfo) appdto.VFSItem {
 	fileItem := buildFileItem(sourceID, virtualPath, entry)
 	return buildVFSItemFromFileItem(fileItem, false, false)

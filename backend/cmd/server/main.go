@@ -93,6 +93,33 @@ func main() {
 		)
 	}
 	s3Driver := infraStorage.NewS3Driver(infraStorage.NewS3ClientFactory())
+	pikPakDriver := infraStorage.NewPikPakDriver()
+	storageDrivers := appsvc.NewStorageDriverRegistry(
+		appsvc.DriverBundle{
+			Type:        "local",
+			DisplayName: "Local",
+			Config:      appsvc.NewLocalSourceConfigCodec(),
+		},
+		appsvc.DriverBundle{
+			Type:                   "s3",
+			DisplayName:            "S3",
+			Config:                 appsvc.NewS3SourceConfigCodec(),
+			Probe:                  s3Driver,
+			File:                   s3Driver,
+			Upload:                 s3Driver,
+			Import:                 s3Driver,
+			RecursiveStatsFallback: true,
+		},
+		appsvc.DriverBundle{
+			Type:         infraStorage.PikPakDriverType,
+			DisplayName:  "PikPak",
+			Config:       appsvc.NewPikPakSourceConfigCodec(),
+			Probe:        pikPakDriver,
+			File:         pikPakDriver,
+			Capacity:     pikPakDriver,
+			Capabilities: pikPakDriver,
+		},
+	)
 
 	options := appsvc.DefaultSystemOptions()
 	options.StorageDataDir = cfg.Storage.DataDir
@@ -113,68 +140,58 @@ func main() {
 		appsvc.WithSetupAuditRecorder(auditRecorder),
 	)
 	authSvc := appsvc.NewAuthService(userRepo, refreshRepo, hasher, tokenSvc)
-	systemSvc := appsvc.NewSystemService(
-		systemConfigRepo,
-		options,
+	systemServiceOptions := []appsvc.SystemServiceOption{
 		appsvc.WithSystemAuditRecorder(auditRecorder),
 		appsvc.WithSystemStatsDependencies(userRepo, sourceRepo, taskRepo),
-		appsvc.WithSystemStatsFileDriver("s3", s3Driver),
-	)
+	}
+	systemServiceOptions = append(systemServiceOptions, storageDrivers.SystemServiceOptions()...)
+	systemSvc := appsvc.NewSystemService(systemConfigRepo, options, systemServiceOptions...)
 	aclAuthorizer := appsvc.NewACLAuthorizer(systemConfigRepo, aclRepo, sourceRepo)
-	sourceSvc := appsvc.NewSourceService(
-		sourceRepo,
-		systemConfigRepo,
+	sourceServiceOptions := []appsvc.SourceServiceOption{
 		appsvc.WithSourceAuditRecorder(auditRecorder),
 		appsvc.WithSourceACLAuthorizer(aclAuthorizer),
-		appsvc.WithSourceDriverProbe("s3", s3Driver),
-	)
+	}
+	sourceServiceOptions = append(sourceServiceOptions, storageDrivers.SourceServiceOptions()...)
+	sourceSvc := appsvc.NewSourceService(sourceRepo, systemConfigRepo, sourceServiceOptions...)
 	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
 	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
-	fileSvc := appsvc.NewFileService(
-		sourceRepo,
-		fileAccessSvc,
-		tokenSvc,
-		userRepo,
+	fileServiceOptions := []appsvc.FileServiceOption{
 		appsvc.WithFileAuditRecorder(auditRecorder),
 		appsvc.WithFileACLAuthorizer(aclAuthorizer),
-		appsvc.WithFileDriver("s3", s3Driver),
 		appsvc.WithTrashItemRepository(trashRepo),
-	)
-	trashSvc := appsvc.NewTrashService(
-		sourceRepo,
-		trashRepo,
+	}
+	fileServiceOptions = append(fileServiceOptions, storageDrivers.FileServiceOptions()...)
+	fileSvc := appsvc.NewFileService(sourceRepo, fileAccessSvc, tokenSvc, userRepo, fileServiceOptions...)
+	trashServiceOptions := []appsvc.TrashServiceOption{
 		appsvc.WithTrashAuditRecorder(auditRecorder),
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
-		appsvc.WithTrashFileDriver("s3", s3Driver),
-	)
-	vfsSvc := appsvc.NewVFSService(
-		sourceRepo,
-		appsvc.WithVFSFileDriver("s3", s3Driver),
+	}
+	trashServiceOptions = append(trashServiceOptions, storageDrivers.TrashServiceOptions()...)
+	trashSvc := appsvc.NewTrashService(sourceRepo, trashRepo, trashServiceOptions...)
+	vfsServiceOptions := []appsvc.VFSServiceOption{
 		appsvc.WithVFSFileOperator(fileSvc),
 		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
-	)
-	uploadSvc := appsvc.NewUploadService(
-		sourceRepo,
-		uploadRepo,
-		options,
+	}
+	vfsServiceOptions = append(vfsServiceOptions, storageDrivers.VFSServiceOptions()...)
+	vfsSvc := appsvc.NewVFSService(sourceRepo, vfsServiceOptions...)
+	uploadServiceOptions := []appsvc.UploadServiceOption{
 		appsvc.WithUploadAuditRecorder(auditRecorder),
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
-		appsvc.WithUploadDriver("s3", s3Driver),
 		appsvc.WithUploadVFSResolver(vfsSvc),
-	)
-	taskSvc := appsvc.NewTaskService(
-		taskRepo,
-		sourceRepo,
-		downloadSvc,
+	}
+	uploadServiceOptions = append(uploadServiceOptions, storageDrivers.UploadServiceOptions()...)
+	uploadSvc := appsvc.NewUploadService(sourceRepo, uploadRepo, options, uploadServiceOptions...)
+	taskServiceOptions := []appsvc.TaskServiceOption{
 		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
 		appsvc.WithTaskStagingDir(taskStagingRoot(cfg)),
 		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeAria2, downloadStagingRoot(cfg.Aria2.DownloadDir)),
 		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeQBittorrent, downloadStagingRoot(cfg.QBittorrent.DownloadDir)),
-		appsvc.WithTaskImportDriver("s3", s3Driver),
 		appsvc.WithTaskVFSResolver(vfsSvc),
 		appsvc.WithTaskDownloadRouter(downloadRouter),
-	)
+	}
+	taskServiceOptions = append(taskServiceOptions, storageDrivers.TaskServiceOptions()...)
+	taskSvc := appsvc.NewTaskService(taskRepo, sourceRepo, downloadSvc, taskServiceOptions...)
 	notificationSvc := appsvc.NewNotificationService(
 		notificationRepo,
 		appsvc.WithNotificationWebhookSender(infraNotification.NewWebhookSender(10*time.Second)),
@@ -202,15 +219,12 @@ func main() {
 	go taskSvc.StartSyncWorker(context.Background(), 5*time.Second)
 	go rssSvc.StartRefreshWorker(context.Background(), time.Minute)
 	go rssSvc.StartRetryWorker(context.Background(), time.Minute)
-	shareSvc := appsvc.NewShareService(
-		shareRepo,
-		sourceRepo,
-		hasher,
-		fileAccessSvc,
+	shareServiceOptions := []appsvc.ShareServiceOption{
 		appsvc.WithShareAuditRecorder(auditRecorder),
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
-		appsvc.WithShareFileDriver("s3", s3Driver),
-	)
+	}
+	shareServiceOptions = append(shareServiceOptions, storageDrivers.ShareServiceOptions()...)
+	shareSvc := appsvc.NewShareService(shareRepo, sourceRepo, hasher, fileAccessSvc, shareServiceOptions...)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
 	authHandler := httphandler.NewAuthHandler(authSvc)

@@ -82,6 +82,163 @@ vfsSvc := appsvc.NewVFSService(
 
 Do not instantiate GORM, S3, JWT, or repositories from inside application services.
 
+## Scenario: Storage Driver Registry and Third-Party Source Drivers
+
+### 1. Scope / Trigger
+
+- Trigger: adding or changing a non-local storage backend such as S3, PikPak,
+  WebDAV source, OneDrive, or another third-party cloud drive.
+- Goal: register provider capabilities once, then let source/file/VFS/upload/
+  task/share/trash/system services consume the same capability bundle.
+- Avoid: provider-specific switches spread across multiple services or
+  `cmd/server/main.go` manual registrations that can drift.
+
+### 2. Signatures
+
+Storage driver contracts live in `backend/internal/domain/storage/driver.go`:
+
+```go
+type SourceDriverProbe interface {
+    Test(ctx context.Context, source *entity.StorageSource) error
+}
+
+type FileDriver interface {
+    List(ctx context.Context, source *entity.StorageSource, virtualPath string) ([]StorageEntry, error)
+    SearchByName(ctx context.Context, source *entity.StorageSource, pathPrefix, keyword string) ([]StorageEntry, error)
+    Stat(ctx context.Context, source *entity.StorageSource, virtualPath string) (*StorageEntry, error)
+    Mkdir(ctx context.Context, source *entity.StorageSource, parentPath, name string) (*StorageEntry, error)
+    Rename(ctx context.Context, source *entity.StorageSource, virtualPath, newName string) (*StorageEntry, error)
+    Move(ctx context.Context, source *entity.StorageSource, virtualPath, targetPath string) error
+    Copy(ctx context.Context, source *entity.StorageSource, virtualPath, targetPath string) error
+    Delete(ctx context.Context, source *entity.StorageSource, virtualPath string) error
+    PresignDownload(ctx context.Context, source *entity.StorageSource, virtualPath, disposition string, ttl time.Duration) (string, time.Time, error)
+}
+
+type UploadDriver interface { /* direct upload / multipart */ }
+type ImportDriver interface {
+    ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error
+}
+type CapacityDriver interface {
+    Capacity(ctx context.Context, source *entity.StorageSource) (*CapacityInfo, error)
+}
+```
+
+Application registration lives in `backend/internal/application/service/`:
+
+```go
+type DriverBundle struct {
+    Type        string
+    DisplayName string
+    Config      SourceConfigCodec
+    Probe       SourceDriverProbe
+    File        FileDriver
+    Upload      UploadDriver
+    Import      ImportDriver
+    Capacity    CapacityDriver
+    Capabilities CapabilityProvider
+
+    // Enable only for drivers that are safe to recursively list on request.
+    RecursiveStatsFallback bool
+}
+```
+
+### 3. Contracts
+
+- `DriverBundle.Type` is the stable `storage_sources.driver_type`, e.g. `s3`
+  or `pikpak`; it must match the frontend/API `driver_type` value.
+- `SourceConfigCodec` is responsible for build/update/detail/audit views for
+  one driver type. It must preserve existing secret values on update when a
+  `secret_patch` field is omitted.
+- `config` contains public/non-sensitive source settings. `secret_patch`
+  contains passwords, access keys, refresh tokens, captcha tokens, and similar
+  values.
+- `FileDriver` paths are always source-internal virtual paths beginning with
+  `/`; VFS is responsible for mapping mount path `/mount/...` to inner path
+  `/...`.
+- `ImportDriver` imports a backend-visible local staging file into the target
+  source path. It is used by offline downloads and by upload flows for drivers
+  that cannot safely expose direct browser-upload instructions.
+- `CapacityDriver` is preferred for source capacity/used bytes. If it returns
+  `nil` or `UsedBytes == nil`, system stats may fall back to recursive
+  `FileDriver` only when `RecursiveStatsFallback` is explicitly true.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| `driver_type` has no registered `SourceConfigCodec` | Return `ErrSourceDriverUnsupported` / API `SOURCE_DRIVER_UNSUPPORTED` |
+| Config field has wrong type or required public/secret field missing | Return `ErrConfigInvalid` or a stable validation sentinel; handler maps to 4xx |
+| Source update omits a secret field | Keep the previous stored secret value |
+| Source update sets a secret field to `null` | Clear that stored secret value when the codec supports clearing |
+| Driver lacks an operation capability | Return a stable unsupported error, not 500 |
+| Third-party driver has quota but not recursive-safe listing | Register `CapacityDriver`; do not set `RecursiveStatsFallback` |
+| `CapacityDriver` cannot provide `UsedBytes` | Continue to explicit recursive fallback if configured; otherwise count as unknown/0 |
+
+### 5. Good/Base/Bad Cases
+
+- Good: a read-only third-party phase registers only the capabilities it
+  actually supports, e.g. PikPak phase B registers `Config`, `Probe`, `File`,
+  `Capacity`, and `Capabilities`, but omits `Upload` / `Import`; write and
+  import entry points return `SOURCE_OPERATION_UNSUPPORTED`.
+- Good: a later writable/import-capable PikPak phase can add `Import`; upload
+  then uses `server_chunk -> ImportFile`; system stats still use quota instead
+  of recursive listing.
+- Base: S3 registers `Config`, `Probe`, `File`, `Upload`, `Import`, and sets
+  `RecursiveStatsFallback=true` to preserve existing recursive stats behavior.
+- Bad: adding `if driverType == "pikpak"` branches in `SourceService`,
+  `UploadService`, `TaskService`, and `cmd/server/main.go` instead of adding a
+  single driver bundle and codec.
+
+### 6. Tests Required
+
+When adding or changing a storage driver bundle, add/update focused backend
+tests that assert:
+
+- Source create/test/detail uses the codec, masks secrets by default, and shows
+  secrets only with `source.secret.read`.
+- The registry wires every intended capability into Source/File/VFS/Trash/
+  Upload/Task/Share/System services and omits unsupported capabilities (for
+  example read-only PikPak must not be registered as Upload/Task Import).
+- Existing S3 direct-upload behavior still returns `transport.mode=direct_parts`.
+- Import-only non-local drivers return `transport.mode=server_chunk` and call
+  `ImportFile` on finish.
+- System stats use `CapacityDriver` before recursive `FileDriver`, and only use
+  recursive fallback when explicitly enabled.
+
+Run from `backend/`:
+
+```bash
+go test ./...
+```
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```go
+// Scattered provider registration: easy to forget one service.
+sourceSvc := NewSourceService(..., WithSourceDriverProbe("pikpak", pikpak))
+fileSvc := NewFileService(..., WithFileDriver("pikpak", pikpak))
+// Missing VFS/Share/Task/Upload registration becomes a runtime bug.
+```
+
+#### Correct
+
+```go
+drivers := NewStorageDriverRegistry(DriverBundle{
+    Type:         "pikpak",
+    Config:       NewPikPakSourceConfigCodec(),
+    Probe:        pikpak,
+    File:         pikpak,
+    Capacity:     pikpak,
+    Capabilities: pikpak, // read-only phase: no Upload/Import registration.
+})
+
+sourceOpts := append(baseSourceOpts, drivers.SourceServiceOptions()...)
+uploadOpts := append(baseUploadOpts, drivers.UploadServiceOptions()...)
+taskOpts := append(baseTaskOpts, drivers.TaskServiceOptions()...)
+```
+
 ## Current Layering Exceptions
 
 Document and preserve these existing seams when reviewing future changes:

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,7 +15,6 @@ import (
 	"yunxia/internal/domain/permission"
 	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/security"
-	infraStorage "yunxia/internal/infrastructure/storage"
 )
 
 // SourceService 负责存储源管理。
@@ -24,6 +22,7 @@ type SourceService struct {
 	sourceRepo       domainrepo.SourceRepository
 	systemConfigRepo domainrepo.SystemConfigRepository
 	aclAuthorizer    *ACLAuthorizer
+	configCodecs     map[string]SourceConfigCodec
 	driverProbes     map[string]SourceDriverProbe
 	logger           *slog.Logger
 	auditRecorder    *appaudit.Recorder
@@ -34,9 +33,11 @@ func NewSourceService(sourceRepo domainrepo.SourceRepository, systemConfigRepo d
 	service := &SourceService{
 		sourceRepo:       sourceRepo,
 		systemConfigRepo: systemConfigRepo,
+		configCodecs:     make(map[string]SourceConfigCodec),
 		driverProbes:     make(map[string]SourceDriverProbe),
 		logger:           newServiceLogger("service.source"),
 	}
+	service.registerDefaultConfigCodecs()
 	for _, option := range options {
 		option(service)
 	}
@@ -89,19 +90,9 @@ func (s *SourceService) Get(ctx context.Context, id uint) (*appdto.SourceDetailR
 		return nil, err
 	}
 
-	config, secretFields, err := s.sourceDetailConfig(source)
+	config, secretFields, err := s.sourceDetailConfig(ctx, source)
 	if err != nil {
 		return nil, err
-	}
-	if auth, ok := security.RequestAuthFromContext(ctx); ok &&
-		permission.HasCapability(auth.Capabilities, permission.CapabilitySourceSecretRead) &&
-		source.DriverType == "s3" {
-		s3cfg, err := infraStorage.ParseS3ConfigJSON(source.ConfigJSON)
-		if err != nil {
-			return nil, err
-		}
-		config["access_key"] = s3cfg.AccessKey
-		config["secret_key"] = s3cfg.SecretKey
 	}
 
 	var lastCheckedAt *string
@@ -277,7 +268,7 @@ func (s *SourceService) Create(ctx context.Context, req appdto.SourceUpsertReque
 		ResourceID:   encodeUintID(source.ID),
 		SourceID:     &source.ID,
 		VirtualPath:  source.MountPath,
-		After:        sourceAuditView(source),
+		After:        s.sourceAuditView(source),
 	})
 	return &view, nil
 }
@@ -295,7 +286,7 @@ func (s *SourceService) Update(ctx context.Context, id uint, req appdto.SourceUp
 		})
 		return nil, err
 	}
-	before := sourceAuditView(existing)
+	before := s.sourceAuditView(existing)
 	req.DriverType = existing.DriverType
 
 	source, err := s.buildSourceEntity(req, existing)
@@ -357,7 +348,7 @@ func (s *SourceService) Update(ctx context.Context, id uint, req appdto.SourceUp
 		SourceID:     &source.ID,
 		VirtualPath:  source.MountPath,
 		Before:       before,
-		After:        sourceAuditView(source),
+		After:        s.sourceAuditView(source),
 	})
 	return &view, nil
 }
@@ -375,7 +366,7 @@ func (s *SourceService) Delete(ctx context.Context, id uint) error {
 		})
 		return err
 	}
-	before := sourceAuditView(source)
+	before := s.sourceAuditView(source)
 
 	cfg, err := s.systemConfigRepo.Get(ctx)
 	if err == nil && cfg.DefaultSourceID != nil && *cfg.DefaultSourceID == id {
@@ -430,7 +421,11 @@ func (s *SourceService) buildSourceEntity(req appdto.SourceUpsertRequest, existi
 	if err != nil {
 		return nil, err
 	}
-	mountPath, err := resolveSourceMountPath(req, existing)
+	codec, err := s.sourceConfigCodec(req.DriverType)
+	if err != nil {
+		return nil, err
+	}
+	mountPath, err := s.resolveSourceMountPath(req, existing)
 	if err != nil {
 		return nil, err
 	}
@@ -453,73 +448,34 @@ func (s *SourceService) buildSourceEntity(req appdto.SourceUpsertRequest, existi
 		source.CreatedAt = existing.CreatedAt
 	}
 
-	switch req.DriverType {
-	case "local":
-		cfg, err := parseLocalConfigMap(req.Config)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateLocalBasePath(cfg.BasePath); err != nil {
-			return nil, err
-		}
-		configJSON, err := marshalLocalSourceConfig(cfg.BasePath)
-		if err != nil {
-			return nil, err
-		}
-		source.ConfigJSON = configJSON
-		if existing != nil {
-			source.WebDAVSlug = existing.WebDAVSlug
-		} else {
-			source.WebDAVSlug = generateSlug(req.Name, "source-local")
-		}
-	case "s3":
-		var existingCfg *infraStorage.S3Config
-		if existing != nil && existing.ConfigJSON != "" {
-			parsed, parseErr := infraStorage.ParseS3ConfigJSON(existing.ConfigJSON)
-			if parseErr != nil {
-				return nil, fmt.Errorf("%w: %v", ErrConfigInvalid, parseErr)
-			}
-			existingCfg = &parsed
-		}
-
-		cfg, err := infraStorage.BuildS3Config(req.Config, req.SecretPatch, existingCfg)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrConfigInvalid, err)
-		}
-		configJSON, err := cfg.Marshal()
-		if err != nil {
-			return nil, err
-		}
-		source.ConfigJSON = configJSON
-		if existing != nil {
-			source.WebDAVSlug = existing.WebDAVSlug
-		} else {
-			source.WebDAVSlug = generateSlug(req.Name, "source-s3")
-		}
-	default:
-		return nil, ErrSourceDriverUnsupported
+	existingRaw := ""
+	if existing != nil {
+		existingRaw = existing.ConfigJSON
+	}
+	configJSON, err := codec.Build(req.Config, req.SecretPatch, existingRaw)
+	if err != nil {
+		return nil, err
+	}
+	source.ConfigJSON = configJSON
+	if existing != nil {
+		source.WebDAVSlug = existing.WebDAVSlug
+	} else {
+		source.WebDAVSlug = generateSlug(req.Name, codec.DefaultMountSlug())
 	}
 
 	return source, nil
 }
 
-func (s *SourceService) sourceDetailConfig(source *entity.StorageSource) (map[string]any, map[string]appdto.SecretFieldMask, error) {
-	switch source.DriverType {
-	case "local":
-		config := map[string]any{}
-		if err := json.Unmarshal([]byte(source.ConfigJSON), &config); err != nil {
-			return nil, nil, err
-		}
-		return config, map[string]appdto.SecretFieldMask{}, nil
-	case "s3":
-		cfg, err := infraStorage.ParseS3ConfigJSON(source.ConfigJSON)
-		if err != nil {
-			return nil, nil, err
-		}
-		return cfg.PublicMap(), buildS3SecretMasks(cfg), nil
-	default:
+func (s *SourceService) sourceDetailConfig(ctx context.Context, source *entity.StorageSource) (map[string]any, map[string]appdto.SecretFieldMask, error) {
+	codec, err := s.sourceConfigCodec(source.DriverType)
+	if err != nil {
 		return nil, nil, ErrSourceDriverUnsupported
 	}
+	canReadSecret := false
+	if auth, ok := security.RequestAuthFromContext(ctx); ok {
+		canReadSecret = permission.HasCapability(auth.Capabilities, permission.CapabilitySourceSecretRead)
+	}
+	return codec.Public(source.ConfigJSON, canReadSecret)
 }
 
 func (s *SourceService) toSourceView(source *entity.StorageSource) appdto.StorageSourceView {
@@ -573,6 +529,35 @@ func validateLocalBasePath(basePath string) error {
 	return nil
 }
 
+func (s *SourceService) registerDefaultConfigCodecs() {
+	for _, codec := range []SourceConfigCodec{
+		NewLocalSourceConfigCodec(),
+		NewS3SourceConfigCodec(),
+		NewPikPakSourceConfigCodec(),
+	} {
+		s.configCodecs[codec.DriverType()] = codec
+	}
+}
+
+func (s *SourceService) sourceConfigCodec(driverType string) (SourceConfigCodec, error) {
+	codec, exists := s.configCodecs[driverType]
+	if !exists || codec == nil {
+		return nil, ErrSourceDriverUnsupported
+	}
+	return codec, nil
+}
+
+func (s *SourceService) sourceAuditView(source *entity.StorageSource) map[string]any {
+	view := sourceAuditView(source)
+	if source == nil {
+		return view
+	}
+	if codec, err := s.sourceConfigCodec(source.DriverType); err == nil {
+		view["config"] = codec.AuditView(source.ConfigJSON)
+	}
+	return view
+}
+
 func ensureDefaultLocalSource(ctx context.Context, repo domainrepo.SourceRepository, options SystemOptions) (*entity.StorageSource, error) {
 	enabled, err := repo.ListEnabled(ctx)
 	if err != nil {
@@ -616,7 +601,7 @@ func timePointer(value time.Time) *time.Time {
 	return &value
 }
 
-func resolveSourceMountPath(req appdto.SourceUpsertRequest, existing *entity.StorageSource) (string, error) {
+func (s *SourceService) resolveSourceMountPath(req appdto.SourceUpsertRequest, existing *entity.StorageSource) (string, error) {
 	mountPath := req.MountPath
 	switch {
 	case mountPath != "":
@@ -625,20 +610,19 @@ func resolveSourceMountPath(req appdto.SourceUpsertRequest, existing *entity.Sto
 	case existing != nil && existing.WebDAVSlug != "":
 		mountPath = "/" + existing.WebDAVSlug
 	default:
-		fallback := generateSlug(req.Name, defaultSourceMountSlug(req.DriverType))
+		fallback := generateSlug(req.Name, s.defaultSourceMountSlug(req.DriverType))
 		mountPath = "/" + fallback
 	}
 
 	return normalizeVirtualPath(mountPath)
 }
 
-func defaultSourceMountSlug(driverType string) string {
-	switch driverType {
-	case "s3":
-		return "source-s3"
-	default:
+func (s *SourceService) defaultSourceMountSlug(driverType string) string {
+	codec, err := s.sourceConfigCodec(driverType)
+	if err != nil {
 		return "source-local"
 	}
+	return codec.DefaultMountSlug()
 }
 
 func (s *SourceService) ensureMountPathAvailable(ctx context.Context, mountPath string, excludeID uint) error {
@@ -670,7 +654,7 @@ func (s *SourceService) assignUniqueWebDAVSlug(ctx context.Context, source *enti
 
 	base := source.WebDAVSlug
 	if base == "" {
-		base = defaultSourceMountSlug(source.DriverType)
+		base = s.defaultSourceMountSlug(source.DriverType)
 	}
 	if _, exists := used[base]; !exists {
 		source.WebDAVSlug = base
@@ -695,39 +679,7 @@ func (s *SourceService) validateSource(ctx context.Context, source *entity.Stora
 		return ErrSourceDriverUnsupported
 	}
 	if err := probe.Test(ctx, source); err != nil {
-		return fmt.Errorf("%w: %v", ErrSourceConnectionFailed, err)
+		return fmt.Errorf("%w: %w", ErrSourceConnectionFailed, err)
 	}
 	return nil
-}
-
-func buildS3SecretMasks(cfg infraStorage.S3Config) map[string]appdto.SecretFieldMask {
-	return map[string]appdto.SecretFieldMask{
-		"access_key": {
-			Configured: cfg.AccessKey != "",
-			Masked:     maskAccessKey(cfg.AccessKey),
-		},
-		"secret_key": {
-			Configured: cfg.SecretKey != "",
-			Masked:     maskSecretValue(cfg.SecretKey),
-		},
-	}
-}
-
-func maskAccessKey(value string) string {
-	if value == "" {
-		return ""
-	}
-	runes := []rune(value)
-	keep := 4
-	if len(runes) < keep {
-		keep = len(runes)
-	}
-	return string(runes[:keep]) + "****"
-}
-
-func maskSecretValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	return "******"
 }

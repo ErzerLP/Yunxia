@@ -19,6 +19,24 @@ type StorageEntry = domainstorage.StorageEntry
 // UploadDriver 是 domain 层上传驱动接口的别名。
 type UploadDriver = domainstorage.UploadDriver
 
+// ImportDriver 是 domain 层本地暂存文件导入接口的别名。
+type ImportDriver = domainstorage.ImportDriver
+
+// TaskImportDriver 保留旧任务导入命名兼容，底层复用通用 ImportDriver。
+type TaskImportDriver = domainstorage.ImportDriver
+
+// CapacityInfo 是 domain 层容量信息的别名。
+type CapacityInfo = domainstorage.CapacityInfo
+
+// CapacityDriver 是 domain 层容量查询接口的别名。
+type CapacityDriver = domainstorage.CapacityDriver
+
+// StorageCapabilities 是 domain 层 driver 能力描述的别名。
+type StorageCapabilities = domainstorage.StorageCapabilities
+
+// CapabilityProvider 是 domain 层 driver 能力查询接口的别名。
+type CapabilityProvider = domainstorage.CapabilityProvider
+
 // MultipartUploadRequest 是 domain 层直传请求的别名。
 type MultipartUploadRequest = domainstorage.MultipartUploadRequest
 
@@ -50,6 +68,19 @@ func WithSourceDriverProbe(driverType string, probe SourceDriverProbe) SourceSer
 	}
 }
 
+// WithSourceConfigCodec 注册指定 driver 的配置编解码器。
+func WithSourceConfigCodec(codec SourceConfigCodec) SourceServiceOption {
+	return func(s *SourceService) {
+		if codec == nil || codec.DriverType() == "" {
+			return
+		}
+		if s.configCodecs == nil {
+			s.configCodecs = make(map[string]SourceConfigCodec)
+		}
+		s.configCodecs[codec.DriverType()] = codec
+	}
+}
+
 // WithSourceACLAuthorizer 注册 SourceService 使用的 ACL 判定器。
 func WithSourceACLAuthorizer(authorizer *ACLAuthorizer) SourceServiceOption {
 	return func(s *SourceService) {
@@ -70,6 +101,19 @@ func WithFileDriver(driverType string, driver FileDriver) FileServiceOption {
 			s.fileDrivers = make(map[string]FileDriver)
 		}
 		s.fileDrivers[driverType] = driver
+	}
+}
+
+// WithFileCapabilityProvider 注册指定 driver 的能力描述器。
+func WithFileCapabilityProvider(driverType string, provider CapabilityProvider) FileServiceOption {
+	return func(s *FileService) {
+		if driverType == "" || provider == nil {
+			return
+		}
+		if s.capabilityProviders == nil {
+			s.capabilityProviders = make(map[string]CapabilityProvider)
+		}
+		s.capabilityProviders[driverType] = provider
 	}
 }
 
@@ -132,6 +176,19 @@ func WithUploadDriver(driverType string, driver UploadDriver) UploadServiceOptio
 			s.uploadDrivers = make(map[string]UploadDriver)
 		}
 		s.uploadDrivers[driverType] = driver
+	}
+}
+
+// WithUploadImportDriver 注册后端 server_chunk 上传完成后的导入驱动。
+func WithUploadImportDriver(driverType string, driver ImportDriver) UploadServiceOption {
+	return func(s *UploadService) {
+		if driverType == "" || driver == nil {
+			return
+		}
+		if s.importDrivers == nil {
+			s.importDrivers = make(map[string]ImportDriver)
+		}
+		s.importDrivers[driverType] = driver
 	}
 }
 

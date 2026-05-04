@@ -312,6 +312,7 @@ type SystemService struct {
 	statsSourceRepo  systemStatsSourceRepository
 	statsTaskRepo    systemStatsTaskRepository
 	fileDrivers      map[string]FileDriver
+	capacityDrivers  map[string]CapacityDriver
 	logger           *slog.Logger
 	auditRecorder    *appaudit.Recorder
 }

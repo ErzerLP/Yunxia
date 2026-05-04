@@ -9,7 +9,6 @@ import (
 	appaudit "yunxia/internal/application/audit"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/infrastructure/observability/logging"
-	infraStorage "yunxia/internal/infrastructure/storage"
 )
 
 // SetupServiceOption 定义 SetupService 的可选配置。
@@ -200,24 +199,6 @@ func sourceAuditView(source *entity.StorageSource) map[string]any {
 		"sort_order":        source.SortOrder,
 		"config":            map[string]any{},
 	}
-	switch source.DriverType {
-	case "local":
-		cfg, err := parseLocalSourceConfig(source)
-		if err == nil {
-			view["config"] = map[string]any{"base_path": cfg.BasePath}
-		}
-	case "s3":
-		cfg, err := infraStorage.ParseS3ConfigJSON(source.ConfigJSON)
-		if err == nil {
-			view["config"] = map[string]any{
-				"endpoint":         cfg.Endpoint,
-				"region":           cfg.Region,
-				"bucket":           cfg.Bucket,
-				"base_prefix":      cfg.BasePrefix,
-				"force_path_style": cfg.ForcePathStyle,
-			}
-		}
-	}
 	return view
 }
 
@@ -237,8 +218,20 @@ func sourceErrorCode(err error) string {
 	switch {
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrSourceOperationUnsupported):
+		return "SOURCE_OPERATION_UNSUPPORTED"
 	case errors.Is(err, ErrConfigInvalid):
 		return "CONFIG_INVALID"
+	case errors.Is(err, ErrCloudAuthFailed):
+		return "CLOUD_AUTH_FAILED"
+	case errors.Is(err, ErrCloudTokenInvalid):
+		return "CLOUD_TOKEN_INVALID"
+	case errors.Is(err, ErrCloudCaptchaRequired), errors.Is(err, ErrCloudCaptchaExpired):
+		return "CLOUD_CAPTCHA_REQUIRED"
+	case errors.Is(err, ErrCloudRateLimited):
+		return "CLOUD_RATE_LIMITED"
+	case errors.Is(err, ErrCloudProviderUnavailable):
+		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrSourceConnectionFailed):
 		return "SOURCE_CONNECTION_FAILED"
 	case errors.Is(err, ErrSourceNameConflict):
@@ -320,6 +313,20 @@ func mapFileErrorCode(err error) string {
 		return "UPLOAD_TOO_LARGE"
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrSourceOperationUnsupported):
+		return "SOURCE_OPERATION_UNSUPPORTED"
+	case errors.Is(err, ErrConfigInvalid):
+		return "CONFIG_INVALID"
+	case errors.Is(err, ErrCloudAuthFailed):
+		return "CLOUD_AUTH_FAILED"
+	case errors.Is(err, ErrCloudTokenInvalid):
+		return "CLOUD_TOKEN_INVALID"
+	case errors.Is(err, ErrCloudCaptchaRequired), errors.Is(err, ErrCloudCaptchaExpired):
+		return "CLOUD_CAPTCHA_REQUIRED"
+	case errors.Is(err, ErrCloudRateLimited):
+		return "CLOUD_RATE_LIMITED"
+	case errors.Is(err, ErrCloudProviderUnavailable):
+		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrSourceReadOnly):
 		return "SOURCE_READ_ONLY"
 	case errors.Is(err, ErrPathInvalid):
@@ -335,8 +342,20 @@ func taskErrorCode(err error) string {
 		return "PERMISSION_DENIED"
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrSourceOperationUnsupported):
+		return "SOURCE_OPERATION_UNSUPPORTED"
 	case errors.Is(err, ErrDownloadLinkUnsupported):
 		return "DOWNLOAD_LINK_UNSUPPORTED"
+	case errors.Is(err, ErrCloudAuthFailed):
+		return "CLOUD_AUTH_FAILED"
+	case errors.Is(err, ErrCloudTokenInvalid):
+		return "CLOUD_TOKEN_INVALID"
+	case errors.Is(err, ErrCloudCaptchaRequired), errors.Is(err, ErrCloudCaptchaExpired):
+		return "CLOUD_CAPTCHA_REQUIRED"
+	case errors.Is(err, ErrCloudRateLimited):
+		return "CLOUD_RATE_LIMITED"
+	case errors.Is(err, ErrCloudProviderUnavailable):
+		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrTaskInvalidState):
 		return "TASK_INVALID_STATE"
 	case errors.Is(err, ErrNoBackingStorage):
@@ -362,6 +381,8 @@ func shareErrorCode(err error) string {
 		return "SHARE_PASSWORD_INVALID"
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrSourceOperationUnsupported):
+		return "SOURCE_OPERATION_UNSUPPORTED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:

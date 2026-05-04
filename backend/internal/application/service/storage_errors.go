@@ -1,12 +1,30 @@
 package service
 
-import "errors"
+import (
+	"errors"
+
+	domainstorage "yunxia/internal/domain/storage"
+)
 
 var (
 	// ErrSourceDriverUnsupported 表示当前驱动暂不支持。
 	ErrSourceDriverUnsupported = errors.New("source driver unsupported")
 	// ErrConfigInvalid 表示存储源配置不合法。
-	ErrConfigInvalid = errors.New("config invalid")
+	ErrConfigInvalid = domainstorage.ErrConfigInvalid
+	// ErrSourceOperationUnsupported 表示当前存储源暂不支持该操作。
+	ErrSourceOperationUnsupported = domainstorage.ErrOperationUnsupported
+	// ErrCloudAuthFailed 表示第三方账号密码或授权失败。
+	ErrCloudAuthFailed = domainstorage.ErrCloudAuthFailed
+	// ErrCloudTokenInvalid 表示第三方 refresh/access token 失效。
+	ErrCloudTokenInvalid = domainstorage.ErrCloudTokenInvalid
+	// ErrCloudCaptchaRequired 表示第三方需要人工验证。
+	ErrCloudCaptchaRequired = domainstorage.ErrCloudCaptchaRequired
+	// ErrCloudCaptchaExpired 表示第三方 captcha token 过期。
+	ErrCloudCaptchaExpired = domainstorage.ErrCloudCaptchaExpired
+	// ErrCloudRateLimited 表示第三方限流。
+	ErrCloudRateLimited = domainstorage.ErrCloudRateLimited
+	// ErrCloudProviderUnavailable 表示第三方服务临时不可用。
+	ErrCloudProviderUnavailable = domainstorage.ErrCloudProviderUnavailable
 	// ErrSourceNameConflict 表示存储源名称冲突。
 	ErrSourceNameConflict = errors.New("source name conflict")
 	// ErrSourceMountPathConflict 表示存储源挂载路径冲突。

@@ -41,6 +41,43 @@ type UploadDriver interface {
 	CompleteMultipartUpload(ctx context.Context, source *entity.StorageSource, state MultipartUploadState, parts []CompletedUploadPart) (*StorageEntry, error)
 }
 
+// ImportDriver 定义将后端本地暂存文件导入存储源的能力。
+type ImportDriver interface {
+	ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error
+}
+
+// CapacityInfo 表示存储源容量信息。nil 字段表示 provider 暂不提供该值。
+type CapacityInfo struct {
+	UsedBytes  *int64
+	TotalBytes *int64
+}
+
+// CapacityDriver 定义查询存储源容量/用量的能力。
+type CapacityDriver interface {
+	Capacity(ctx context.Context, source *entity.StorageSource) (*CapacityInfo, error)
+}
+
+// StorageCapabilities 描述 driver 支持的存储操作。
+type StorageCapabilities struct {
+	CanList         bool
+	CanSearch       bool
+	CanDownload     bool
+	CanMkdir        bool
+	CanRename       bool
+	CanMove         bool
+	CanCopy         bool
+	CanDelete       bool
+	CanImportFile   bool
+	CanDirectUpload bool
+	CanServerUpload bool
+	CanCapacity     bool
+}
+
+// CapabilityProvider 定义 driver 运行时能力查询接口。
+type CapabilityProvider interface {
+	Capabilities(ctx context.Context, source *entity.StorageSource) (StorageCapabilities, error)
+}
+
 // MultipartUploadRequest 表示直传上传初始化参数。
 type MultipartUploadRequest struct {
 	VirtualPath string

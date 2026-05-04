@@ -55,6 +55,19 @@ func WithSystemStatsFileDriver(driverType string, driver FileDriver) SystemServi
 	}
 }
 
+// WithSystemStatsCapacityDriver 注册系统统计优先使用的容量驱动。
+func WithSystemStatsCapacityDriver(driverType string, driver CapacityDriver) SystemServiceOption {
+	return func(s *SystemService) {
+		if driverType == "" || driver == nil {
+			return
+		}
+		if s.capacityDrivers == nil {
+			s.capacityDrivers = make(map[string]CapacityDriver)
+		}
+		s.capacityDrivers[driverType] = driver
+	}
+}
+
 // GetStats 返回系统统计信息。
 func (s *SystemService) GetStats(ctx context.Context) (*appdto.SystemStatsResponse, error) {
 	resp := &appdto.SystemStatsResponse{}
@@ -131,6 +144,16 @@ func (s *SystemService) collectSourceStorageStats(ctx context.Context, source *e
 
 	if source.DriverType == "local" {
 		return collectLocalSourceStats(source)
+	}
+
+	if driver, exists := s.capacityDrivers[source.DriverType]; exists {
+		info, err := driver.Capacity(ctx, source)
+		if err != nil {
+			return 0, 0, err
+		}
+		if info != nil && info.UsedBytes != nil {
+			return 0, *info.UsedBytes, nil
+		}
 	}
 
 	driver, exists := s.fileDrivers[source.DriverType]

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	appdto "yunxia/internal/application/dto"
+	"yunxia/internal/domain/entity"
 )
 
 type vfsFileOperator interface {
@@ -44,11 +46,12 @@ func (unsupportedVFSFileOperator) Delete(context.Context, appdto.DeleteFileReque
 
 // VFSService 提供统一虚拟目录树的路径解析能力。
 type VFSService struct {
-	registry         *MountRegistry
-	fileDrivers      map[string]FileDriver
-	fileOp           vfsFileOperator
-	aclAuthorizer    *ACLAuthorizer
-	localDirWritable func(string) bool
+	registry            *MountRegistry
+	fileDrivers         map[string]FileDriver
+	capabilityProviders map[string]CapabilityProvider
+	fileOp              vfsFileOperator
+	aclAuthorizer       *ACLAuthorizer
+	localDirWritable    func(string) bool
 }
 
 // VFSServiceOption 定义 VFSService 的可选配置。
@@ -64,6 +67,19 @@ func WithVFSFileDriver(driverType string, driver FileDriver) VFSServiceOption {
 			s.fileDrivers = make(map[string]FileDriver)
 		}
 		s.fileDrivers[driverType] = driver
+	}
+}
+
+// WithVFSCapabilityProvider 注册 VFSService 使用的 driver 能力描述器。
+func WithVFSCapabilityProvider(driverType string, provider CapabilityProvider) VFSServiceOption {
+	return func(s *VFSService) {
+		if driverType == "" || provider == nil {
+			return
+		}
+		if s.capabilityProviders == nil {
+			s.capabilityProviders = make(map[string]CapabilityProvider)
+		}
+		s.capabilityProviders[driverType] = provider
 	}
 }
 
@@ -93,9 +109,10 @@ func WithVFSLocalDirWritable(checker func(string) bool) VFSServiceOption {
 // NewVFSService 创建 VFS 服务。
 func NewVFSService(sourceRepo mountRegistrySourceRepository, options ...VFSServiceOption) *VFSService {
 	service := &VFSService{
-		registry:         NewMountRegistry(sourceRepo),
-		fileDrivers:      make(map[string]FileDriver),
-		localDirWritable: probeLocalDirectoryWritable,
+		registry:            NewMountRegistry(sourceRepo),
+		fileDrivers:         make(map[string]FileDriver),
+		capabilityProviders: make(map[string]CapabilityProvider),
+		localDirWritable:    probeLocalDirectoryWritable,
 	}
 	for _, option := range options {
 		option(service)
@@ -465,22 +482,46 @@ func (s *VFSService) listMountedDirectory(ctx context.Context, currentPath strin
 		}
 		entries, err := driver.List(ctx, resolved.Source, resolved.InnerPath)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			switch {
+			case errors.Is(err, os.ErrNotExist):
 				return nil, ErrFileNotFound
+			case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+				return nil, ErrFileIsDirectory
 			}
 			return nil, err
 		}
 
+		capabilities, err := s.driverCapabilities(ctx, resolved.Source)
+		if err != nil {
+			return nil, err
+		}
 		items := make([]appdto.VFSItem, 0, len(entries))
 		for _, entry := range entries {
 			entry.Path = joinVirtualPath(currentPath, entry.Name)
 			if isHiddenVirtualPath(entry.Path) {
 				continue
 			}
-			items = append(items, buildVFSItemFromStorageEntry(resolved.Source.ID, entry))
+			item := buildStorageEntryItem(resolved.Source.ID, entry)
+			applyFileItemCapabilities(&item, capabilities)
+			items = append(items, buildVFSItemFromFileItem(item, false, false))
 		}
 		return items, nil
 	}
+}
+
+func (s *VFSService) driverCapabilities(ctx context.Context, source *entity.StorageSource) (*StorageCapabilities, error) {
+	if s == nil || source == nil || s.capabilityProviders == nil {
+		return nil, nil
+	}
+	provider, exists := s.capabilityProviders[source.DriverType]
+	if !exists || provider == nil {
+		return nil, nil
+	}
+	capabilities, err := provider.Capabilities(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	return &capabilities, nil
 }
 
 func (s *VFSService) requireFileOperator() vfsFileOperator {

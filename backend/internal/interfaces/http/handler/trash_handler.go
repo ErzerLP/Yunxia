@@ -110,8 +110,20 @@ func (h *TrashHandler) writeError(c *gin.Context, err error, notFoundCode string
 		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_DRIVER_UNSUPPORTED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrSourceOperationUnsupported):
+		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_OPERATION_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrACLDenied):
 		httpresp.Error(c, http.StatusForbidden, "ACL_DENIED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrCloudAuthFailed):
+		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_AUTH_FAILED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrCloudTokenInvalid):
+		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_TOKEN_INVALID", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrCloudCaptchaRequired), errors.Is(err, appsvc.ErrCloudCaptchaExpired):
+		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_CAPTCHA_REQUIRED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrCloudRateLimited):
+		httpresp.Error(c, http.StatusTooManyRequests, "CLOUD_RATE_LIMITED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrCloudProviderUnavailable):
+		httpresp.Error(c, http.StatusBadGateway, "CLOUD_PROVIDER_UNAVAILABLE", err.Error(), nil)
 	default:
 		httpresp.Error(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

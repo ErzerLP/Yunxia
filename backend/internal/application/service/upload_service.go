@@ -23,6 +23,12 @@ import (
 	"yunxia/internal/infrastructure/security"
 )
 
+const uploadTransportModeServerChunkImport = "server_chunk_import"
+
+type uploadImportState struct {
+	TransportMode string `json:"transport_mode"`
+}
+
 // UploadService 负责上传初始化、分片和完成逻辑。
 type UploadService struct {
 	sourceRepo    domainrepo.SourceRepository
@@ -30,6 +36,7 @@ type UploadService struct {
 	aclAuthorizer *ACLAuthorizer
 	options       SystemOptions
 	uploadDrivers map[string]UploadDriver
+	importDrivers map[string]ImportDriver
 	vfsResolver   interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
@@ -52,6 +59,7 @@ func NewUploadService(sourceRepo domainrepo.SourceRepository, uploadRepo domainr
 		uploadRepo:    uploadRepo,
 		options:       options,
 		uploadDrivers: make(map[string]UploadDriver),
+		importDrivers: make(map[string]ImportDriver),
 		logger:        newServiceLogger("service.upload"),
 	}
 	for _, option := range serviceOptions {
@@ -77,7 +85,12 @@ func (s *UploadService) Init(ctx context.Context, userID uint, req appdto.Upload
 		return nil, err
 	}
 	if target.source.DriverType != "local" {
-		return s.initWithUploadDriver(ctx, userID, target, req)
+		if _, err := s.getUploadDriver(target.source.DriverType); err == nil {
+			return s.initWithUploadDriver(ctx, userID, target, req)
+		} else if !errors.Is(err, ErrSourceDriverUnsupported) {
+			return nil, err
+		}
+		return s.initWithImportDriver(ctx, userID, target, req)
 	}
 	return s.initLocal(ctx, userID, target, req)
 }
@@ -248,6 +261,67 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 	}, nil
 }
 
+func (s *UploadService) initWithImportDriver(ctx context.Context, userID uint, target resolvedUploadInitTarget, req appdto.UploadInitRequest) (*appdto.UploadInitResponse, error) {
+	if _, err := s.getImportDriver(target.source.DriverType); err != nil {
+		if errors.Is(err, ErrSourceDriverUnsupported) {
+			return nil, ErrSourceOperationUnsupported
+		}
+		return nil, err
+	}
+	if req.FileSize > s.options.MaxUploadSize {
+		return nil, ErrUploadTooLarge
+	}
+
+	targetDir := target.path
+	totalChunks := int((req.FileSize + s.options.DefaultChunkSize - 1) / s.options.DefaultChunkSize)
+	if totalChunks <= 0 {
+		totalChunks = 1
+	}
+	stateJSON, err := json.Marshal(uploadImportState{TransportMode: uploadTransportModeServerChunkImport})
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	session := &entity.UploadSession{
+		UploadID:                "upl_" + stringsNoDash(uuid.NewString()),
+		UserID:                  userID,
+		SourceID:                req.SourceID,
+		Path:                    targetDir,
+		TargetVirtualParentPath: target.targetVirtualParentPath,
+		ResolvedSourceID:        target.resolvedSourceID,
+		ResolvedInnerParentPath: target.resolvedInnerParentPath,
+		Filename:                req.Filename,
+		FileSize:                req.FileSize,
+		FileHash:                req.FileHash,
+		ChunkSize:               s.options.DefaultChunkSize,
+		TotalChunks:             totalChunks,
+		UploadedChunks:          []int{},
+		StorageDataJSON:         string(stateJSON),
+		Status:                  "uploading",
+		IsFastUpload:            false,
+		ExpiresAt:               now.Add(7 * 24 * time.Hour),
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := s.uploadRepo.Create(ctx, session); err != nil {
+		return nil, err
+	}
+
+	view := toUploadSessionView(session)
+	return &appdto.UploadInitResponse{
+		IsFastUpload: false,
+		Upload:       &view,
+		Transport: &appdto.UploadTransport{
+			Mode:        "server_chunk",
+			DriverType:  target.source.DriverType,
+			Concurrency: 3,
+			RetryLimit:  3,
+		},
+		PartInstructions: []appdto.UploadPartInstruction{},
+	}, nil
+}
+
 // UploadChunk 接收单个 chunk。
 func (s *UploadService) UploadChunk(ctx context.Context, uploadID string, index int, data []byte) (*appdto.UploadChunkResponse, error) {
 	session, err := s.uploadRepo.FindByID(ctx, uploadID)
@@ -349,7 +423,13 @@ func (s *UploadService) Finish(ctx context.Context, req appdto.UploadFinishReque
 		return nil, err
 	}
 	if source.DriverType != "local" {
-		resp, err := s.finishWithUploadDriver(ctx, source, session, req)
+		var resp *appdto.UploadFinishResponse
+		var err error
+		if isUploadImportSession(session) {
+			resp, err = s.finishWithImportDriver(ctx, source, session)
+		} else {
+			resp, err = s.finishWithUploadDriver(ctx, source, session, req)
+		}
 		if err != nil {
 			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 				ResourceType: "file",
@@ -495,6 +575,69 @@ func (s *UploadService) finishWithUploadDriver(ctx context.Context, source *enti
 	item := buildStorageEntryItem(source.ID, *entry)
 
 	_ = s.uploadRepo.Delete(ctx, session.UploadID)
+	return &appdto.UploadFinishResponse{
+		Completed: true,
+		UploadID:  session.UploadID,
+		File:      item,
+	}, nil
+}
+
+func (s *UploadService) finishWithImportDriver(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession) (*appdto.UploadFinishResponse, error) {
+	if len(session.UploadedChunks) < session.TotalChunks {
+		return nil, ErrUploadFinishIncomplete
+	}
+	driver, err := s.getImportDriver(source.DriverType)
+	if err != nil {
+		if errors.Is(err, ErrSourceDriverUnsupported) {
+			return nil, ErrSourceOperationUnsupported
+		}
+		return nil, err
+	}
+
+	stagedPath := filepath.Join(s.sessionTempDir(session.UploadID), "assembled-upload")
+	output, err := os.Create(stagedPath)
+	if err != nil {
+		return nil, err
+	}
+	for index := 0; index < session.TotalChunks; index++ {
+		chunkPath := s.chunkFilePath(session.UploadID, index)
+		data, readErr := os.ReadFile(chunkPath)
+		if readErr != nil {
+			_ = output.Close()
+			return nil, ErrUploadFinishIncomplete
+		}
+		if _, writeErr := output.Write(data); writeErr != nil {
+			_ = output.Close()
+			return nil, writeErr
+		}
+	}
+	if err := output.Close(); err != nil {
+		return nil, err
+	}
+
+	hash, err := hashFileMD5(stagedPath)
+	if err != nil {
+		return nil, err
+	}
+	if session.FileHash != "" && hash != session.FileHash {
+		return nil, ErrUploadHashMismatch
+	}
+
+	targetPath := joinVirtualPath(session.Path, session.Filename)
+	if err := driver.ImportFile(ctx, source, targetPath, stagedPath); err != nil {
+		return nil, err
+	}
+
+	_ = os.RemoveAll(s.sessionTempDir(session.UploadID))
+	_ = s.uploadRepo.Delete(ctx, session.UploadID)
+
+	item := buildStorageEntryItem(source.ID, StorageEntry{
+		Name:       session.Filename,
+		Path:       targetPath,
+		IsDir:      false,
+		Size:       session.FileSize,
+		ModifiedAt: time.Now(),
+	})
 	return &appdto.UploadFinishResponse{
 		Completed: true,
 		UploadID:  session.UploadID,
@@ -653,6 +796,25 @@ func (s *UploadService) getUploadDriver(driverType string) (UploadDriver, error)
 		return nil, ErrSourceDriverUnsupported
 	}
 	return driver, nil
+}
+
+func (s *UploadService) getImportDriver(driverType string) (ImportDriver, error) {
+	driver, exists := s.importDrivers[driverType]
+	if !exists {
+		return nil, ErrSourceDriverUnsupported
+	}
+	return driver, nil
+}
+
+func isUploadImportSession(session *entity.UploadSession) bool {
+	if session == nil || session.StorageDataJSON == "" {
+		return false
+	}
+	var state uploadImportState
+	if err := json.Unmarshal([]byte(session.StorageDataJSON), &state); err != nil {
+		return false
+	}
+	return state.TransportMode == uploadTransportModeServerChunkImport
 }
 
 func toUploadPartInstructions(items []MultipartUploadPartInstruction) []appdto.UploadPartInstruction {

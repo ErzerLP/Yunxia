@@ -18,7 +18,7 @@
 | 系统 | `/api/v1/system/*` | version、stats、config 读写 | 管理后台首页、系统设置页 |
 | 用户管理 | `/api/v1/users*` | 用户列表、创建、更新、重置密码、撤销令牌 | 用户管理页 |
 | ACL | `/api/v1/acl/rules*` | 对用户授予/拒绝 source 内路径权限 | 权限配置页 |
-| 存储源 | `/api/v1/sources*` | local/S3 源列表、详情、创建、更新、删除、测试 | 存储源管理、侧边栏导航 |
+| 存储源 | `/api/v1/sources*` | local/S3/PikPak 源列表、详情、创建、更新、删除、测试 | 存储源管理、侧边栏导航 |
 | 传统文件 | `/api/v1/files*` | 按 `source_id + path` 管理文件 | 兼容旧文件页 |
 | 上传 | `/api/v1/upload*` | 初始化、分片、完成、会话、取消 | 文件上传 |
 | 回收站 | `/api/v1/trash*` | 列表、恢复、永久删除、清空 | 回收站页 |
@@ -91,7 +91,7 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 ```
 
-下载接口不要用上面的 JSON 封装；local 会返回文件流，S3 会返回 302。最简单的调用方式：
+下载接口不要用上面的 JSON 封装；local 会返回文件流，S3/PikPak 会返回 302。最简单的调用方式：
 
 ```ts
 window.location.href = downloadUrl
@@ -198,8 +198,8 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 
 | 接口 | 实际行为 |
 |---|---|
-| `GET /api/v1/files/download` | local：200 文件流；S3：302 到 presigned URL |
-| `GET /api/v2/fs/download` | local：200 文件流；S3：302 到 presigned URL |
+| `GET /api/v1/files/download` | local：200 文件流；S3/PikPak：302 到 provider 临时 URL |
+| `GET /api/v2/fs/download` | local：200 文件流；S3/PikPak：302 到 provider 临时 URL |
 | `GET /s/:token` | 文件：302 到下载地址；目录：200 JSON |
 | `WebDAV` | 标准 WebDAV / XML / 文件流响应，不走 JSON 包络 |
 
@@ -286,7 +286,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - `view=admin` / source 详情 / source 增删改测：按 capability 控制
 - `task` / `share`：owner 默认可管理自己的数据；具备跨用户 capability 的角色可跨用户治理
 - `rss`：`rss.read` 可查看授权范围内 RSS 数据；`rss.manage` 可创建/更新/刷新/删除 RSS 源、订阅和手动入队
-- S3 明文 secret 仅 `source.secret.read` 可见；当前仅 `super_admin` 可见
+- S3/PikPak 明文 secret 仅 `source.secret.read` 可见；当前仅 `super_admin` 可见
 - 审计查询接口要求 `audit.read`
 - `audit.read_sensitive` 当前仅为能力位预留；**现阶段没有额外敏感字段解锁差异**
 
@@ -375,6 +375,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - 通用：`name,driver_type,is_enabled,is_webdav_exposed,webdav_read_only,mount_path,root_path,sort_order`
 - local：`config.base_path`
 - s3：`config.endpoint,region,bucket,base_prefix,force_path_style` + `secret_patch.access_key/secret_key`
+- pikpak（阶段 B 只读）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
 
 创建 local 源示例：
 
@@ -423,6 +424,47 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 
 更新 S3 源时，如果不修改密钥，可以不传对应 `secret_patch` 字段；如果要清空密钥，可以传 `null`。
 
+创建 PikPak 源示例（阶段 B 只读）：
+
+```json
+{
+  "name": "PikPak 媒体库",
+  "driver_type": "pikpak",
+  "is_enabled": true,
+  "is_webdav_exposed": false,
+  "webdav_read_only": true,
+  "mount_path": "/pikpak",
+  "root_path": "/",
+  "sort_order": 20,
+  "config": {
+    "root_folder_id": "",
+    "platform": "web",
+    "disable_media_link": true,
+    "cache_ttl_seconds": 300,
+    "download_strategy": "redirect"
+  },
+  "secret_patch": {
+    "username": "user@example.com",
+    "password": "pikpak-password",
+    "refresh_token": "",
+    "captcha_token": "",
+    "device_id": ""
+  }
+}
+```
+
+PikPak 字段说明：
+
+- `driver_type` 固定为 `pikpak`
+- `root_path` 阶段 B 必须为 `/`；远端子目录挂载使用 `config.root_folder_id`，不要把 PikPak 远端路径写入 `root_path`
+- `config.root_folder_id` 为空表示 PikPak 账号根目录；填写文件夹 ID 表示把该远端文件夹作为挂载根
+- `config.platform` 支持 `web` / `android` / `pc`，默认推荐 `web`
+- `config.disable_media_link=true` 时下载使用原始文件链接；`false` 时允许优先使用 provider 媒体链接
+- `config.download_strategy` 阶段 B 仅支持 `redirect`，后端鉴权后由 `/files/download` 或 `/api/v2/fs/download` 302 到 PikPak 临时下载链接
+- `secret_patch.username/password/refresh_token/captcha_token/device_id` 均按敏感字段处理；更新时省略字段会保留旧值，传 `null` 会清空该字段
+- `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`
+- token/captcha/device_id 运行态刷新后会更新当前请求内的 source 配置；持久化写回仓储属于后续增强点，create/update 的探测阶段会随实体保存
+
 补充：
 
 - 初始化完成后自动创建默认本地源：`本地存储`
@@ -433,7 +475,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - local 源缺少 `config.base_path`、`base_path` 不存在 / 不是目录，或路径字段非法时返回 `400 PATH_INVALID`，不返回 500
 - `webdav_slug` 由后端按源名称生成并自动去重；前端创建源时无需传入
 - `PUT /sources/:id` 当前会保留原有 `driver_type`，不是切换驱动接口
-- `GET /sources/:id` 对 S3 源返回 `secret_fields`；只有 `super_admin` 可看到 `config.access_key / config.secret_key` 明文
+- `GET /sources/:id` 对 S3/PikPak 源返回 `secret_fields`；只有具备 `source.secret.read` 的账号可看到对应 secret 明文
 
 ### 3.6 files（`/api/v1`）
 
@@ -447,15 +489,16 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 | POST | `/files/copy` | Bearer | `source_id,path,target_path` | 200，`{source_path,new_path,copied}` |
 | DELETE | `/files` | Bearer | `source_id,path,delete_mode` | 200，`{deleted,delete_mode,path,deleted_at}` |
 | POST | `/files/access-url` | Bearer | `source_id,path,purpose,disposition,expires_in` | 200，`{url,method,expires_at}` |
-| GET | `/files/download` | Bearer 或 `access_token` | query: `source_id,path,disposition[,access_token]` | local：200 文件流；S3：302 |
+| GET | `/files/download` | Bearer 或 `access_token` | query: `source_id,path,disposition[,access_token]` | local：200 文件流；S3/PikPak：302 |
 
 补充：
 
 - `delete_mode` 为空时默认按 `trash`
 - 数据面接口会做 ACL 校验；失败返回 `403 ACL_DENIED`
 - 本地源 / 挂载目录探测为不可写时，`mkdir` / `rename` / `move` / `copy` / `delete` 返回 `403 SOURCE_READ_ONLY`；响应只暴露稳定错误码与通用消息，不返回容器或宿主机物理路径
-- `files/access-url` 对 local / S3 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`
-- 真正的 S3 presigned URL 在 `GET /files/download` 时再 302 跳转
+- `files/access-url` 对 local / S3 / PikPak 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`
+- 真正的 S3 presigned URL / PikPak 临时下载链接在 `GET /files/download` 时再 302 跳转
+- PikPak 阶段 B 支持 `list` / `search`（受限递归）/ `access-url` / `download`；返回的文件/VFS 条目 `can_delete=false`；`mkdir` / `rename` / `move` / `copy` / `delete` 暂返回 `422 SOURCE_OPERATION_UNSUPPORTED`
 
 ### 3.7 upload（`/api/v1`）
 
@@ -503,6 +546,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
   - `resolved_inner_parent_path`
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
+- PikPak 阶段 B 暂不支持上传；目标为 PikPak 时返回 `422 SOURCE_OPERATION_UNSUPPORTED`
 - 纯虚拟目录无落地存储时返回 `409 NO_BACKING_STORAGE`
 
 本地源上传调用顺序：
@@ -544,6 +588,8 @@ S3 finish Body 示例：
 }
 ```
 
+PikPak 阶段 B 暂不支持上传或离线下载导入到该源；写入能力将在后续阶段实现。
+
 ### 3.8 trash（`/api/v1`）
 
 | 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
@@ -579,6 +625,7 @@ S3 finish Body 示例：
 - 下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
   - local 目标：从 staging move/copy 到真实物理路径
   - S3 目标：从 staging 上传到对应对象 key
+  - PikPak 阶段 B 目标：暂不支持导入；创建任务时目标为 PikPak 会返回 `422 SOURCE_OPERATION_UNSUPPORTED`，后续阶段实现 PikPak `ImportFile`
   - staging 本地物理路径不会返回给前端
   - 导入完成后清理 staging；后续刷新如果遇到已导入文件但 staging 已清理，任务保持 `completed`，不会回退为 `failed`
   - 当 `target_filename` 非空且 staging 中只有一个有效文件时，导入阶段会把该文件落到目标父目录下的 `target_filename`；若 `target_filename` 没有明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名），会保留原下载文件扩展名；多文件任务保持原相对路径，不应用重命名
@@ -1031,7 +1078,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 | POST | `/fs/copy` | Bearer | `path,target_path` | 200，`{source_path,new_path,copied}` |
 | DELETE | `/fs` | Bearer | `path,delete_mode` | 200，`{deleted,delete_mode,path,deleted_at}` |
 | POST | `/fs/access-url` | Bearer | `path,purpose,disposition,expires_in` | 200，`{url,method,expires_at}` |
-| GET | `/fs/download` | Bearer 或 `access_token` | query: `path,disposition[,access_token]` | local：200 文件流；S3：302 |
+| GET | `/fs/download` | Bearer 或 `access_token` | query: `path,disposition[,access_token]` | local：200 文件流；S3/PikPak：302 |
 
 补充：
 
@@ -1290,11 +1337,17 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 
 - `SOURCE_NOT_FOUND`
 - `SOURCE_DRIVER_UNSUPPORTED`
+- `SOURCE_OPERATION_UNSUPPORTED`
 - `SOURCE_CONNECTION_FAILED`
 - `SOURCE_NAME_CONFLICT`
 - `SOURCE_IN_USE`
 - `SOURCE_READ_ONLY`
 - `CONFIG_INVALID`
+- `CLOUD_AUTH_FAILED`
+- `CLOUD_TOKEN_INVALID`
+- `CLOUD_CAPTCHA_REQUIRED`
+- `CLOUD_RATE_LIMITED`
+- `CLOUD_PROVIDER_UNAVAILABLE`
 - `MOUNT_PATH_CONFLICT`
 - `PATH_INVALID`
 
@@ -1361,7 +1414,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 6. `DELETE /api/v1/acl/rules/:id` 返回的是 `{}`，不是 `{deleted,id}`。
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
 8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
-9. 离线下载不会把下载器直接指向目标源目录，而是先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3。
+9. 离线下载不会把下载器直接指向目标源目录，而是先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3；PikPak 导入留到后续阶段，阶段 B 返回 `SOURCE_OPERATION_UNSUPPORTED`。
 10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
 11. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
 12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
@@ -1396,6 +1449,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
    - `POST /api/v1/upload/init`，传 `target_virtual_parent_path=<current_path>`
    - local：`PUT /api/v1/upload/chunk` 后 `POST /api/v1/upload/finish`
    - S3：按 `part_instructions` 直传后 `POST /api/v1/upload/finish`
+   - PikPak：阶段 B 只读，上传初始化返回 `SOURCE_OPERATION_UNSUPPORTED`
 5. 下载文件：
    - `POST /api/v2/fs/access-url`
    - 浏览器打开返回的 `url`
