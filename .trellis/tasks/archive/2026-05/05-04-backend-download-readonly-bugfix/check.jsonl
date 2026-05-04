@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"检查后端规范覆盖"}
+{"file":".trellis/spec/backend/error-handling.md","reason":"检查错误码与响应脱敏"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查测试/API 文档/质量门"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查任务状态持久化语义"}

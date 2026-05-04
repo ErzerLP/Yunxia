@@ -453,6 +453,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 
 - `delete_mode` 为空时默认按 `trash`
 - 数据面接口会做 ACL 校验；失败返回 `403 ACL_DENIED`
+- 本地源 / 挂载目录探测为不可写时，`mkdir` / `rename` / `move` / `copy` / `delete` 返回 `403 SOURCE_READ_ONLY`；响应只暴露稳定错误码与通用消息，不返回容器或宿主机物理路径
 - `files/access-url` 对 local / S3 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`
 - 真正的 S3 presigned URL 在 `GET /files/download` 时再 302 跳转
 
@@ -579,6 +580,7 @@ S3 finish Body 示例：
   - local 目标：从 staging move/copy 到真实物理路径
   - S3 目标：从 staging 上传到对应对象 key
   - staging 本地物理路径不会返回给前端
+  - 导入完成后清理 staging；后续刷新如果遇到已导入文件但 staging 已清理，任务保持 `completed`，不会回退为 `failed`
   - 当 `target_filename` 非空且 staging 中只有一个有效文件时，导入阶段会把该文件落到目标父目录下的 `target_filename`；若 `target_filename` 没有明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名），会保留原下载文件扩展名；多文件任务保持原相对路径，不应用重命名
 - 返回体当前会补充 VFS 快照字段：
   - `target_virtual_parent_path`
@@ -587,6 +589,8 @@ S3 finish Body 示例：
   - `resolved_source_id`
   - `resolved_inner_save_path`
 - 普通用户默认仅能看到 / 操作自己的任务
+- `DELETE /tasks/:id` 对终态任务是幂等的：已 `completed` / `failed` / `canceled` 的任务不会再调用底层下载器取消，因此不会把 Aria2/qBittorrent 的底层 400 暴露给前端；已完成任务保持 `completed`
+- 用户主动取消的非终态任务会先在 Yunxia 内记录为 `canceled` 和 `error_message="download canceled by user"`，后续下载器状态刷新不会覆盖该取消原因
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
 - `completed` 任务返回时 `error_message` 固定为 `null`；若导入失败，任务会转为 `failed` 并返回失败原因

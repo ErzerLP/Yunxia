@@ -287,18 +287,21 @@ function getItemMatchExplanation(item: RSSItemView, subscription?: RSSSubscripti
     const matchedKeywords = subscription.must_contain.filter((rule) =>
       matchesSubscriptionRule(searchableText, rule, subscription.use_regex, subscription.case_sensitive)
     )
+    const missingKeywords = subscription.must_contain.filter((rule) =>
+      !matchesSubscriptionRule(searchableText, rule, subscription.use_regex, subscription.case_sensitive)
+    )
     const excludedKeywords = subscription.must_not_contain.filter((rule) =>
       matchesSubscriptionRule(searchableText, rule, subscription.use_regex, subscription.case_sensitive)
     )
     const positivePart = subscription.must_contain.length === 0
       ? '未设置必须包含关键词'
-      : matchedKeywords.length > 0
-        ? `命中 ${subscription.use_regex ? '正则/关键词' : '关键词'}：${matchedKeywords.join('、')}`
-        : `匹配订阅规则：${subscription.must_contain.join('、')}`
+      : missingKeywords.length > 0
+        ? `缺失 ${subscription.use_regex ? '正则/关键词' : '关键词'}：${missingKeywords.join('、')}`
+        : `命中 ${subscription.use_regex ? '正则/关键词' : '关键词'}：${matchedKeywords.join('、')}`
     const excludePart = subscription.must_not_contain.length === 0
       ? '无排除关键词'
       : excludedKeywords.length > 0
-        ? `注意：当前标题命中排除项 ${excludedKeywords.join('、')}，建议重新预览规则`
+        ? `命中排除项：${excludedKeywords.join('、')}`
         : `未命中排除项：${subscription.must_not_contain.join('、')}`
     return `${positivePart}；${excludePart}`
   }
@@ -2354,7 +2357,13 @@ export function RssPage() {
                 const matchedSubscription = item.matched_subscription_id
                   ? subscriptionById.get(item.matched_subscription_id)
                   : undefined
-                const matchExplanation = getItemMatchExplanation(item, matchedSubscription)
+                const selectedFilterSubscription = subscriptionIdFilter
+                  ? subscriptionById.get(subscriptionIdFilter)
+                  : undefined
+                const matchExplanation = getItemMatchExplanation(
+                  item,
+                  matchedSubscription ?? selectedFilterSubscription
+                )
                 const isNeedsAttention = item.status === 'needs_attention'
                 const isRetryPending = item.status === 'retry_pending'
                 const isDownloading = activeItemAction?.id === item.id && activeItemAction.type === 'download'

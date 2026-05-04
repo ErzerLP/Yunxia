@@ -320,6 +320,8 @@ func mapFileErrorCode(err error) string {
 		return "UPLOAD_TOO_LARGE"
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "SOURCE_DRIVER_UNSUPPORTED"
+	case errors.Is(err, ErrSourceReadOnly):
+		return "SOURCE_READ_ONLY"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:

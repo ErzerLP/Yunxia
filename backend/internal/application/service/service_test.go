@@ -481,6 +481,90 @@ func TestTaskCreateDownloadsIntoStagingAndImportsCompletedLocalFile(t *testing.T
 	}
 }
 
+func TestTaskCompletedImportIsIdempotentWhenStagingAlreadyCleaned(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "幂等导入目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "archive.zip",
+		content:  []byte("downloaded archive"),
+	}
+	stagingRoot := filepath.Join(t.TempDir(), "staging")
+	svc := NewTaskService(taskRepo, sourceRepo, downloader, WithTaskStagingDir(stagingRoot))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/archive.zip",
+		SourceID: source.ID,
+		SavePath: "/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	storedBeforeImport, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("taskRepo.FindByID(before) error = %v", err)
+	}
+	originalStagingDir := storedBeforeImport.StagingDir
+
+	if _, err := svc.Get(ctx, created.ID); err != nil {
+		t.Fatalf("Get() first import error = %v", err)
+	}
+	if _, err := os.Stat(originalStagingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected staging dir removed after first import, stat err=%v", err)
+	}
+
+	// 模拟并发刷新中的旧快照：目标文件已导入，但旧任务状态仍尝试再次导入已清理的 staging。
+	staleTask, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("taskRepo.FindByID(after) error = %v", err)
+	}
+	staleTask.Status = "running"
+	staleTask.StagingDir = originalStagingDir
+	staleTask.ErrorMessage = nil
+	staleTask.FinishedAt = nil
+	if err := taskRepo.Update(context.Background(), staleTask); err != nil {
+		t.Fatalf("taskRepo.Update(stale) error = %v", err)
+	}
+
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() idempotent import error = %v", err)
+	}
+	if got.Status != "completed" || got.ErrorMessage != nil {
+		t.Fatalf("expected idempotent refresh to keep completed without error, got %+v", got)
+	}
+	stored, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("taskRepo.FindByID(final) error = %v", err)
+	}
+	if stored.StagingDir != "" {
+		t.Fatalf("expected cleaned staging dir snapshot to be persisted, got %q", stored.StagingDir)
+	}
+}
+
 func TestTaskTargetFilenameRenamesSingleStagedFile(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1101,6 +1185,45 @@ func TestTaskCancelSetsTerminalErrorMessage(t *testing.T) {
 	}
 }
 
+func TestTaskCancelCompletedTaskIsIdempotentAndDoesNotCallDownloader(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	taskRepo := gorm.NewTaskRepository(db)
+	now := time.Now()
+	task := &entity.DownloadTask{
+		UserID:     42,
+		Type:       "download",
+		Status:     "completed",
+		SourceURL:  "https://example.com/done.bin",
+		ExternalID: "gid-completed",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		FinishedAt: &now,
+	}
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("taskRepo.Create() error = %v", err)
+	}
+
+	downloader := &removeCountingDownloader{removeErr: errors.New("aria2 rpc status 400")}
+	svc := NewTaskService(taskRepo, nil, downloader)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	if _, err := svc.Cancel(ctx, task.ID, false); err != nil {
+		t.Fatalf("Cancel(completed) should be idempotent, got error = %v", err)
+	}
+	if downloader.removeCalls != 0 {
+		t.Fatalf("completed cancel should not call downloader remove, got %d calls", downloader.removeCalls)
+	}
+	stored, err := taskRepo.FindByID(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if stored.Status != "completed" {
+		t.Fatalf("completed task should remain completed, got %q", stored.Status)
+	}
+}
+
 func TestTaskCancelUpdatesRSSItemBacklinkNeedsAttention(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1712,6 +1835,32 @@ func (d fixedStatusDownloader) Remove(context.Context, string) error {
 	return nil
 }
 
+type removeCountingDownloader struct {
+	removeCalls int
+	removeErr   error
+}
+
+func (d *removeCountingDownloader) AddURI(context.Context, string, string) (string, error) {
+	return "gid-remove-counting", nil
+}
+
+func (d *removeCountingDownloader) TellStatus(context.Context, string) (*DownloadStatus, error) {
+	return &DownloadStatus{Status: "running"}, nil
+}
+
+func (d *removeCountingDownloader) Pause(context.Context, string) error {
+	return nil
+}
+
+func (d *removeCountingDownloader) Resume(context.Context, string) error {
+	return nil
+}
+
+func (d *removeCountingDownloader) Remove(context.Context, string) error {
+	d.removeCalls++
+	return d.removeErr
+}
+
 type recordingTaskImportDriver struct {
 	calls []recordingTaskImportCall
 }
@@ -2224,6 +2373,76 @@ func TestFileMkdirReadOnlyLocalSourceReturnsSourceReadOnly(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(basePath, "should-not-create")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("read-only mkdir should not create directory, stat err=%v", statErr)
+	}
+}
+
+func TestFileReadOnlyLocalWriteOperationsReturnSourceReadOnly(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	basePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(basePath, "locked.txt"), []byte("locked"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(locked.txt) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(basePath, "target"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(target) error = %v", err)
+	}
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "只读写操作本地源",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/readonly",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	svc := NewFileService(
+		sourceRepo,
+		nil,
+		nil,
+		nil,
+		WithFileLocalDirWritable(func(string) bool { return false }),
+	)
+
+	if _, _, err := svc.Move(context.Background(), appdto.MoveCopyRequest{
+		SourceID:   source.ID,
+		Path:       "/locked.txt",
+		TargetPath: "/target",
+	}); !errors.Is(err, ErrSourceReadOnly) {
+		t.Fatalf("Move() expected ErrSourceReadOnly, got %v", err)
+	}
+	if _, _, err := svc.Copy(context.Background(), appdto.MoveCopyRequest{
+		SourceID:   source.ID,
+		Path:       "/locked.txt",
+		TargetPath: "/target",
+	}); !errors.Is(err, ErrSourceReadOnly) {
+		t.Fatalf("Copy() expected ErrSourceReadOnly, got %v", err)
+	}
+	if _, err := svc.Delete(context.Background(), appdto.DeleteFileRequest{
+		SourceID:   source.ID,
+		Path:       "/locked.txt",
+		DeleteMode: "permanent",
+	}); !errors.Is(err, ErrSourceReadOnly) {
+		t.Fatalf("Delete(permanent) expected ErrSourceReadOnly, got %v", err)
+	}
+	if _, err := svc.Delete(context.Background(), appdto.DeleteFileRequest{
+		SourceID:   source.ID,
+		Path:       "/locked.txt",
+		DeleteMode: "trash",
+	}); !errors.Is(err, ErrSourceReadOnly) {
+		t.Fatalf("Delete(trash) expected ErrSourceReadOnly, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(basePath, "locked.txt")); err != nil {
+		t.Fatalf("read-only operations should not remove source file, stat err=%v", err)
 	}
 }
 

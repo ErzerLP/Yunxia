@@ -465,31 +465,19 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 		})
 		return nil, err
 	}
-	selectedDownloader, err := s.downloaderForTask(task)
-	if err != nil {
+	if isTerminalTaskStatus(task.Status) {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "task",
 			Action:       "cancel",
-			Result:       appaudit.ResultFailed,
-			ErrorCode:    "SOURCE_DRIVER_UNSUPPORTED",
+			Result:       appaudit.ResultSuccess,
 			ResourceID:   encodeUintID(id),
 			Before:       taskAuditView(task),
+			After:        taskAuditView(task),
+			Detail:       map[string]any{"delete_file": deleteFile, "idempotent": true},
 		})
-		return nil, err
+		return &appdto.CancelTaskResponse{ID: id, Canceled: task.Status == "canceled", DeleteFile: deleteFile}, nil
 	}
-	if task.ExternalID != "" {
-		if err := selectedDownloader.Remove(ctx, task.ExternalID); err != nil {
-			recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
-				ResourceType: "task",
-				Action:       "cancel",
-				Result:       appaudit.ResultFailed,
-				ErrorCode:    "INTERNAL_ERROR",
-				ResourceID:   encodeUintID(id),
-				Before:       taskAuditView(task),
-			})
-			return nil, err
-		}
-	}
+
 	now := time.Now()
 	before := taskAuditView(task)
 	task.Status = "canceled"
@@ -509,6 +497,13 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 			Before:       before,
 		})
 		return nil, err
+	}
+	if task.ExternalID != "" {
+		if selectedDownloader, err := s.downloaderForTask(task); err != nil {
+			s.logger.Warn("task cancel downloader unavailable after local cancellation", slog.String("event", "task.cancel.downloader_unavailable"), slog.Uint64("task_id", uint64(task.ID)), slog.String("downloader_type", task.DownloaderType), slog.Any("error", err))
+		} else if err := selectedDownloader.Remove(ctx, task.ExternalID); err != nil {
+			s.logger.Warn("task cancel downloader remove failed after local cancellation", slog.String("event", "task.cancel.downloader_remove_failed"), slog.Uint64("task_id", uint64(task.ID)), slog.String("downloader_type", task.DownloaderType), slog.Any("error", err))
+		}
 	}
 	s.notifyTaskTerminalStatus(ctx, task)
 	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
@@ -771,6 +766,16 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 
 	files, err := listStagedTaskFiles(task.StagingDir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			imported, existsErr := s.completedLocalTaskTargetExists(ctx, task)
+			if existsErr != nil {
+				return existsErr
+			}
+			if imported {
+				task.StagingDir = ""
+				return nil
+			}
+		}
 		return err
 	}
 	if len(files) == 0 {
@@ -802,7 +807,11 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 		}
 	}
 
-	return os.RemoveAll(task.StagingDir)
+	if err := os.RemoveAll(task.StagingDir); err != nil {
+		return err
+	}
+	task.StagingDir = ""
+	return nil
 }
 
 func taskImportRelativePath(task *entity.DownloadTask, file stagedTaskFile, fileCount int) string {
@@ -906,6 +915,76 @@ func listStagedTaskFiles(stagingDir string) ([]stagedTaskFile, error) {
 		return nil, err
 	}
 	return files, nil
+}
+
+func (s *TaskService) completedLocalTaskTargetExists(ctx context.Context, task *entity.DownloadTask) (bool, error) {
+	if task == nil {
+		return false, nil
+	}
+	sourceID := task.ResolvedSourceID
+	if sourceID == 0 {
+		sourceID = task.SourceID
+	}
+	source, err := s.sourceRepo.FindByID(ctx, sourceID)
+	if err != nil {
+		return false, err
+	}
+	if source.DriverType != "local" {
+		return false, nil
+	}
+
+	baseTargetPath := task.ResolvedInnerSavePath
+	if strings.TrimSpace(baseTargetPath) == "" {
+		baseTargetPath = task.SavePath
+	}
+	baseTargetPath, err = normalizeVirtualPath(baseTargetPath)
+	if err != nil {
+		return false, err
+	}
+
+	for _, relativePath := range completedTaskSingleFileCandidateRelativePaths(task) {
+		targetPath := joinVirtualPath(baseTargetPath, relativePath)
+		_, physicalPath, err := resolvePhysicalPath(source, targetPath)
+		if err != nil {
+			return false, err
+		}
+		info, err := os.Stat(physicalPath)
+		if err == nil && !info.IsDir() {
+			return true, nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func completedTaskSingleFileCandidateRelativePaths(task *entity.DownloadTask) []string {
+	if task == nil {
+		return nil
+	}
+	candidates := make([]string, 0, 4)
+	add := func(value string) {
+		value = strings.TrimSpace(filepath.ToSlash(value))
+		if value == "" || value == "." || strings.Contains(value, "/") || strings.Contains(value, "\\") {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == value {
+				return
+			}
+		}
+		candidates = append(candidates, value)
+	}
+
+	displayName := strings.TrimSpace(task.DisplayName)
+	if strings.TrimSpace(task.TargetFilename) != "" {
+		add(taskTargetFilenameWithOriginalExtension(task.TargetFilename, displayName))
+		add(task.TargetFilename)
+	}
+	add(displayName)
+	add(guessTaskDisplayName(task.SourceURL))
+	return candidates
 }
 
 func (s *TaskService) importStagedFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error {

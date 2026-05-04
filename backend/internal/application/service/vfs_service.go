@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -43,10 +44,10 @@ func (unsupportedVFSFileOperator) Delete(context.Context, appdto.DeleteFileReque
 
 // VFSService 提供统一虚拟目录树的路径解析能力。
 type VFSService struct {
-	registry      *MountRegistry
-	fileDrivers   map[string]FileDriver
-	fileOp        vfsFileOperator
-	aclAuthorizer *ACLAuthorizer
+	registry         *MountRegistry
+	fileDrivers      map[string]FileDriver
+	fileOp           vfsFileOperator
+	aclAuthorizer    *ACLAuthorizer
 	localDirWritable func(string) bool
 }
 
@@ -197,11 +198,15 @@ func (s *VFSService) Delete(ctx context.Context, req appdto.VFSDeleteRequest) (t
 		return time.Time{}, err
 	}
 
-	return s.requireFileOperator().Delete(ctx, appdto.DeleteFileRequest{
+	deletedAt, err := s.requireFileOperator().Delete(ctx, appdto.DeleteFileRequest{
 		SourceID:   resolvedPath.Source.ID,
 		Path:       resolvedPath.InnerPath,
 		DeleteMode: req.DeleteMode,
 	})
+	if err != nil {
+		return time.Time{}, normalizeVFSWriteError(err)
+	}
+	return deletedAt, nil
 }
 
 // ResolvePath 将统一虚拟路径解析到真实挂载源。
@@ -369,6 +374,9 @@ func (s *VFSService) copyAcrossSources(sourceResolved ResolvedPath, targetResolv
 	if !targetParentInfo.IsDir() {
 		return "", "", ErrPathInvalid
 	}
+	if !s.canWriteLocalDir(targetParentPhysicalPath) {
+		return "", "", ErrSourceReadOnly
+	}
 
 	_, targetPhysicalPath, err := resolvePhysicalPath(targetResolved.Source, targetResolved.InnerPath)
 	if err != nil {
@@ -382,11 +390,11 @@ func (s *VFSService) copyAcrossSources(sourceResolved ResolvedPath, targetResolv
 
 	if sourceInfo.IsDir() {
 		if err := copyDirectory(sourcePhysicalPath, targetPhysicalPath); err != nil {
-			return "", "", err
+			return "", "", normalizeLocalWriteError(err)
 		}
 	} else {
 		if err := copyFile(sourcePhysicalPath, targetPhysicalPath); err != nil {
-			return "", "", err
+			return "", "", normalizeLocalWriteError(err)
 		}
 	}
 
@@ -402,8 +410,15 @@ func (s *VFSService) removeLocalResolvedPath(resolvedPath ResolvedPath) error {
 	if err != nil {
 		return err
 	}
+	parentPhysicalPath := filepath.Dir(physicalPath)
+	if parentPhysicalPath == "." {
+		parentPhysicalPath = physicalPath
+	}
+	if !s.canWriteLocalDir(parentPhysicalPath) {
+		return ErrSourceReadOnly
+	}
 	if err := os.RemoveAll(physicalPath); err != nil {
-		return err
+		return normalizeLocalWriteError(err)
 	}
 	return nil
 }

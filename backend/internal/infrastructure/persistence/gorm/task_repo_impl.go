@@ -33,7 +33,12 @@ func (r *TaskRepository) Create(ctx context.Context, task *entity.DownloadTask) 
 // Update 更新任务。
 func (r *TaskRepository) Update(ctx context.Context, task *entity.DownloadTask) error {
 	model := taskModelFromEntity(task)
-	result := r.db.WithContext(ctx).Model(&DownloadTaskModel{}).Where("id = ?", task.ID).Updates(model)
+	result := r.db.WithContext(ctx).
+		Model(&DownloadTaskModel{}).
+		Where("id = ?", task.ID).
+		Select("*").
+		Omit("ID", "CreatedAt").
+		Updates(model)
 	if result.Error != nil {
 		return result.Error
 	}

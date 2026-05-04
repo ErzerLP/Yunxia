@@ -129,6 +129,23 @@ if result.Error != nil { return result.Error }
 if result.RowsAffected == 0 { return domainrepo.ErrNotFound }
 ```
 
+For state-machine records that intentionally clear fields or write zero values
+(for example `DownloadTaskModel` clearing `error_message`, `eta_seconds`, or
+`staging_dir` after a terminal transition), use `Select("*")` with explicit
+omits so GORM does not silently skip zero values:
+
+```go
+result := r.db.WithContext(ctx).
+    Model(&DownloadTaskModel{}).
+    Where("id = ?", task.ID).
+    Select("*").
+    Omit("ID", "CreatedAt").
+    Updates(model)
+```
+
+This is required when a later refresh must observe that a nullable/string field
+was actually cleared, not just hidden in the API view.
+
 ## Validation & Error Matrix
 
 | Condition | Return / Behavior |
@@ -138,6 +155,7 @@ if result.RowsAffected == 0 { return domainrepo.ErrNotFound }
 | Invalid path/config before persistence | Service sentinel such as `ErrPathInvalid` / `ErrConfigInvalid` |
 | Update/delete affects zero rows | `domainrepo.ErrNotFound` |
 | `Create` receives explicit `false` for a `default:true` bool | Persist `false` explicitly; do not let DB default rewrite it to `true` |
+| State transition clears nullable / zero-value fields | Repository update must use `Select("*")` with safe omits; API-only sanitization is not enough |
 
 Do not compare error strings; use `errors.Is`.
 

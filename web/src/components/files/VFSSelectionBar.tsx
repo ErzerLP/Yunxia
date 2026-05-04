@@ -43,18 +43,19 @@ export function VFSSelectionBar({ selectedItems, onClear, onRefresh }: VFSSelect
       const summary = `批量删除完成：成功 ${succeeded.length}，失败 ${failed.length}`
 
       if (failed.length > 0) {
-        const detail = failed
+        const detailLines = failed
           .slice(0, 3)
           .map((result) => `${result.item.name}：${result.error}`)
-          .join('；')
-        setError(`${summary}${detail ? `。${detail}` : ''}`)
-        addToast(summary, 'warning', 7000)
+        const hiddenCount = Math.max(failed.length - detailLines.length, 0)
+        const detail = detailLines.join('；')
+        setError(`${summary}。失败详情：${detail}${hiddenCount > 0 ? `；另有 ${hiddenCount} 项失败` : ''}`)
+        addToast(`${summary}：${detailLines[0] ?? '请查看页面内失败详情'}`, 'warning', 7000)
       } else {
         addToast(summary, 'success')
+        onClear()
       }
 
       onRefresh()
-      onClear()
     } finally {
       setIsDeleting(false)
     }

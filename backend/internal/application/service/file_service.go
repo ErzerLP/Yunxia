@@ -34,12 +34,12 @@ type FileService struct {
 	authTokens interface {
 		ValidateAccessToken(token string) (*security.Claims, error)
 	}
-	userRepo      domainrepo.UserRepository
-	fileDrivers   map[string]FileDriver
-	trashItemRepo domainrepo.TrashItemRepository
+	userRepo         domainrepo.UserRepository
+	fileDrivers      map[string]FileDriver
+	trashItemRepo    domainrepo.TrashItemRepository
 	localDirWritable func(string) bool
-	logger        *slog.Logger
-	auditRecorder *appaudit.Recorder
+	logger           *slog.Logger
+	auditRecorder    *appaudit.Recorder
 }
 
 // NewFileService 创建文件服务。
@@ -470,6 +470,13 @@ func (s *FileService) renameLocal(source *entity.StorageSource, req appdto.Renam
 	if parentVirtual == "." {
 		parentVirtual = "/"
 	}
+	_, parentPhysical, err := resolvePhysicalPath(source, parentVirtual)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if !s.canWriteLocalDir(parentPhysical) {
+		return "", "", nil, ErrSourceReadOnly
+	}
 	newVirtual := path.Join(parentVirtual, req.NewName)
 	if parentVirtual == "/" {
 		newVirtual = "/" + req.NewName
@@ -482,7 +489,7 @@ func (s *FileService) renameLocal(source *entity.StorageSource, req appdto.Renam
 		return "", "", nil, ErrFileAlreadyExists
 	}
 	if err := os.Rename(physicalPath, newPhysical); err != nil {
-		return "", "", nil, err
+		return "", "", nil, normalizeLocalWriteError(err)
 	}
 
 	info, _ := os.Stat(newPhysical)
@@ -591,6 +598,17 @@ func (s *FileService) moveLocal(source *entity.StorageSource, req appdto.MoveCop
 	if err != nil {
 		return "", "", ErrFileNotFound
 	}
+	sourceParentPath := path.Dir(virtualPath)
+	if sourceParentPath == "." {
+		sourceParentPath = "/"
+	}
+	_, sourceParentPhysical, err := resolvePhysicalPath(source, sourceParentPath)
+	if err != nil {
+		return "", "", err
+	}
+	if !s.canWriteLocalDir(sourceParentPhysical) {
+		return "", "", ErrSourceReadOnly
+	}
 
 	_, targetPhysicalDir, err := resolvePhysicalPath(source, targetPath)
 	if err != nil {
@@ -599,6 +617,9 @@ func (s *FileService) moveLocal(source *entity.StorageSource, req appdto.MoveCop
 	targetInfo, err := os.Stat(targetPhysicalDir)
 	if err != nil || !targetInfo.IsDir() {
 		return "", "", ErrPathInvalid
+	}
+	if !s.canWriteLocalDir(targetPhysicalDir) {
+		return "", "", ErrSourceReadOnly
 	}
 
 	newVirtual := path.Join(targetPath, info.Name())
@@ -613,7 +634,7 @@ func (s *FileService) moveLocal(source *entity.StorageSource, req appdto.MoveCop
 		return "", "", ErrFileMoveConflict
 	}
 	if err := os.Rename(physicalPath, newPhysical); err != nil {
-		return "", "", err
+		return "", "", normalizeLocalWriteError(err)
 	}
 
 	return virtualPath, newVirtual, nil
@@ -729,6 +750,9 @@ func (s *FileService) copyLocal(source *entity.StorageSource, req appdto.MoveCop
 	if err != nil || !targetInfo.IsDir() {
 		return "", "", ErrPathInvalid
 	}
+	if !s.canWriteLocalDir(targetPhysicalDir) {
+		return "", "", ErrSourceReadOnly
+	}
 
 	newVirtual := path.Join(targetPath, info.Name())
 	if targetPath == "/" {
@@ -744,11 +768,11 @@ func (s *FileService) copyLocal(source *entity.StorageSource, req appdto.MoveCop
 
 	if info.IsDir() {
 		if err := copyDirectory(physicalPath, newPhysical); err != nil {
-			return "", "", err
+			return "", "", normalizeLocalWriteError(err)
 		}
 	} else {
 		if err := copyFile(physicalPath, newPhysical); err != nil {
-			return "", "", err
+			return "", "", normalizeLocalWriteError(err)
 		}
 	}
 
@@ -847,13 +871,24 @@ func (s *FileService) deleteLocal(ctx context.Context, source *entity.StorageSou
 	if statErr != nil {
 		return time.Time{}, ErrFileNotFound
 	}
+	parentVirtual := path.Dir(virtualPath)
+	if parentVirtual == "." {
+		parentVirtual = "/"
+	}
+	_, parentPhysical, err := resolvePhysicalPath(source, parentVirtual)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !s.canWriteLocalDir(parentPhysical) {
+		return time.Time{}, ErrSourceReadOnly
+	}
 
 	if req.DeleteMode == "" {
 		req.DeleteMode = "trash"
 	}
 	if req.DeleteMode == "permanent" {
 		if err := os.RemoveAll(physicalPath); err != nil {
-			return time.Time{}, err
+			return time.Time{}, normalizeLocalWriteError(err)
 		}
 		return time.Now(), nil
 	}
@@ -869,10 +904,10 @@ func (s *FileService) deleteLocal(ctx context.Context, source *entity.StorageSou
 		return time.Time{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(trashPhysical), 0o755); err != nil {
-		return time.Time{}, err
+		return time.Time{}, normalizeLocalWriteError(err)
 	}
 	if err := os.Rename(physicalPath, trashPhysical); err != nil {
-		return time.Time{}, err
+		return time.Time{}, normalizeLocalWriteError(err)
 	}
 	if err := s.recordTrashItem(ctx, source, virtualPath, trashVirtual, info.Name(), info.IsDir(), size, deletedAt); err != nil {
 		_ = os.MkdirAll(filepath.Dir(physicalPath), 0o755)
