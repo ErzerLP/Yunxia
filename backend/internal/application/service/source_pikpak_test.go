@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
+	"path"
 	"reflect"
 	"testing"
+	"time"
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
@@ -162,8 +165,8 @@ func TestSourceServicePikPakCreateTestDetailSecretRetentionAndVFSList(t *testing
 	if got := collectVFSNames(vfsList.Items); !reflect.DeepEqual(got, []string{"remote.txt"}) {
 		t.Fatalf("expected remote file through VFS, got %v", got)
 	}
-	if len(vfsList.Items) != 1 || vfsList.Items[0].CanDelete || !vfsList.Items[0].CanDownload {
-		t.Fatalf("expected PikPak VFS item to be downloadable but read-only, got %+v", vfsList.Items)
+	if len(vfsList.Items) != 1 || !vfsList.Items[0].CanDelete || !vfsList.Items[0].CanDownload {
+		t.Fatalf("expected PikPak VFS item to expose stage C delete/download capabilities, got %+v", vfsList.Items)
 	}
 }
 
@@ -238,8 +241,255 @@ func TestTaskCreateToPikPakWithoutImportDriverReturnsOperationUnsupported(t *tes
 	}
 }
 
+func TestUploadInitToPikPakWithoutImportDriverReturnsOperationUnsupported(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	uploadSvc := NewUploadService(sourceRepo, uploadRepo, DefaultSystemOptions())
+	_, err = uploadSvc.Init(context.Background(), 1, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/",
+		Filename: "new.txt",
+		FileSize: 1,
+		FileHash: "hash",
+	})
+	if !errors.Is(err, ErrSourceOperationUnsupported) {
+		t.Fatalf("expected SOURCE_OPERATION_UNSUPPORTED for PikPak upload target, got %v", err)
+	}
+}
+
+func TestPikPakStageCFileAndVFSWritesUseDriverCapabilities(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	driver := &pikPakStageCFileDriver{
+		entriesByPath: map[string][]StorageEntry{
+			"/": {
+				{Name: "remote.txt", Path: "/remote.txt", IsDir: false},
+			},
+		},
+	}
+	capabilities := capabilityProviderStub{capabilities: StorageCapabilities{
+		CanList:          true,
+		CanSearch:        true,
+		CanDownload:      true,
+		CanMkdir:         true,
+		CanRename:        true,
+		CanMove:          true,
+		CanCopy:          true,
+		CanDelete:        true,
+		CanProviderTrash: true,
+	}}
+	fileSvc := NewFileService(
+		sourceRepo,
+		nil,
+		nil,
+		nil,
+		WithFileDriver(infraStorage.PikPakDriverType, driver),
+		WithFileCapabilityProvider(infraStorage.PikPakDriverType, capabilities),
+	)
+
+	if _, err := fileSvc.Mkdir(context.Background(), appdto.MkdirRequest{SourceID: source.ID, ParentPath: "/", Name: "new"}); err != nil {
+		t.Fatalf("FileService.Mkdir() error = %v", err)
+	}
+	if _, _, _, err := fileSvc.Rename(context.Background(), appdto.RenameRequest{SourceID: source.ID, Path: "/old.txt", NewName: "renamed.txt"}); err != nil {
+		t.Fatalf("FileService.Rename() error = %v", err)
+	}
+	if _, _, err := fileSvc.Move(context.Background(), appdto.MoveCopyRequest{SourceID: source.ID, Path: "/move.txt", TargetPath: "/Target"}); err != nil {
+		t.Fatalf("FileService.Move() error = %v", err)
+	}
+	if _, _, err := fileSvc.Copy(context.Background(), appdto.MoveCopyRequest{SourceID: source.ID, Path: "/copy.txt", TargetPath: "/Target"}); err != nil {
+		t.Fatalf("FileService.Copy() error = %v", err)
+	}
+	if _, err := fileSvc.Delete(context.Background(), appdto.DeleteFileRequest{SourceID: source.ID, Path: "/trash.txt"}); err != nil {
+		t.Fatalf("FileService.Delete() error = %v", err)
+	}
+	if _, err := fileSvc.Delete(context.Background(), appdto.DeleteFileRequest{SourceID: source.ID, Path: "/trash.txt", DeleteMode: "permanent"}); !errors.Is(err, ErrSourceOperationUnsupported) {
+		t.Fatalf("FileService.Delete(permanent) expected unsupported for provider trash driver, got %v", err)
+	}
+	wantFileCalls := []pikPakStageCFileCall{
+		{operation: "mkdir", parentPath: "/", name: "new"},
+		{operation: "rename", path: "/old.txt", name: "renamed.txt"},
+		{operation: "move", path: "/move.txt", targetPath: "/Target"},
+		{operation: "copy", path: "/copy.txt", targetPath: "/Target"},
+		{operation: "delete", path: "/trash.txt"},
+	}
+	if !reflect.DeepEqual(driver.calls, wantFileCalls) {
+		t.Fatalf("unexpected FileService driver calls = %+v", driver.calls)
+	}
+
+	fileList, _, _, _, _, err := fileSvc.List(context.Background(), appdto.FileListQuery{SourceID: source.ID, Path: "/"})
+	if err != nil {
+		t.Fatalf("FileService.List() error = %v", err)
+	}
+	if len(fileList.Items) != 1 || !fileList.Items[0].CanDelete {
+		t.Fatalf("expected FileService list can_delete from PikPak capability, got %+v", fileList.Items)
+	}
+
+	driver.calls = nil
+	vfsSvc := NewVFSService(
+		sourceRepo,
+		WithVFSFileDriver(infraStorage.PikPakDriverType, driver),
+		WithVFSCapabilityProvider(infraStorage.PikPakDriverType, capabilities),
+		WithVFSFileOperator(fileSvc),
+	)
+	vfsList, err := vfsSvc.List(context.Background(), "/pikpak")
+	if err != nil {
+		t.Fatalf("VFSService.List() error = %v", err)
+	}
+	if len(vfsList.Items) != 1 || vfsList.Items[0].Path != "/pikpak/remote.txt" || !vfsList.Items[0].CanDelete {
+		t.Fatalf("expected VFS can_delete from PikPak capability, got %+v", vfsList.Items)
+	}
+	if _, err := vfsSvc.Mkdir(context.Background(), appdto.VFSMkdirRequest{ParentPath: "/pikpak", Name: "vfs-new"}); err != nil {
+		t.Fatalf("VFSService.Mkdir() error = %v", err)
+	}
+	if _, _, _, err := vfsSvc.Rename(context.Background(), appdto.VFSRenameRequest{Path: "/pikpak/old.txt", NewName: "vfs-renamed.txt"}); err != nil {
+		t.Fatalf("VFSService.Rename() error = %v", err)
+	}
+	if _, _, err := vfsSvc.Move(context.Background(), appdto.VFSMoveCopyRequest{Path: "/pikpak/move.txt", TargetPath: "/pikpak/Target"}); err != nil {
+		t.Fatalf("VFSService.Move() error = %v", err)
+	}
+	if _, _, err := vfsSvc.Copy(context.Background(), appdto.VFSMoveCopyRequest{Path: "/pikpak/copy.txt", TargetPath: "/pikpak/Target"}); err != nil {
+		t.Fatalf("VFSService.Copy() error = %v", err)
+	}
+	if _, err := vfsSvc.Delete(context.Background(), appdto.VFSDeleteRequest{Path: "/pikpak/trash.txt"}); err != nil {
+		t.Fatalf("VFSService.Delete() error = %v", err)
+	}
+	wantVFSCalls := []pikPakStageCFileCall{
+		{operation: "list", path: "/"},
+		{operation: "mkdir", parentPath: "/", name: "vfs-new"},
+		{operation: "rename", path: "/old.txt", name: "vfs-renamed.txt"},
+		{operation: "move", path: "/move.txt", targetPath: "/Target"},
+		{operation: "copy", path: "/copy.txt", targetPath: "/Target"},
+		{operation: "delete", path: "/trash.txt"},
+	}
+	if !reflect.DeepEqual(driver.calls, wantVFSCalls) {
+		t.Fatalf("unexpected VFSService driver calls = %+v", driver.calls)
+	}
+}
+
 type sourceServiceFakePikPakClient struct {
 	filesByParent map[string][]infraStorage.PikPakFile
+}
+
+type pikPakStageCFileCall struct {
+	operation  string
+	parentPath string
+	name       string
+	path       string
+	targetPath string
+}
+
+type pikPakStageCFileDriver struct {
+	entriesByPath map[string][]StorageEntry
+	calls         []pikPakStageCFileCall
+}
+
+func (d *pikPakStageCFileDriver) List(_ context.Context, _ *entity.StorageSource, virtualPath string) ([]StorageEntry, error) {
+	d.calls = append(d.calls, pikPakStageCFileCall{operation: "list", path: virtualPath})
+	return d.entriesByPath[virtualPath], nil
+}
+
+func (d *pikPakStageCFileDriver) SearchByName(context.Context, *entity.StorageSource, string, string) ([]StorageEntry, error) {
+	return nil, nil
+}
+
+func (d *pikPakStageCFileDriver) Stat(_ context.Context, _ *entity.StorageSource, virtualPath string) (*StorageEntry, error) {
+	for _, entries := range d.entriesByPath {
+		for _, entry := range entries {
+			if entry.Path == virtualPath {
+				found := entry
+				return &found, nil
+			}
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
+func (d *pikPakStageCFileDriver) Mkdir(_ context.Context, _ *entity.StorageSource, parentPath string, name string) (*StorageEntry, error) {
+	d.calls = append(d.calls, pikPakStageCFileCall{operation: "mkdir", parentPath: parentPath, name: name})
+	return &StorageEntry{Name: name, Path: joinVirtualPath(parentPath, name), IsDir: true}, nil
+}
+
+func (d *pikPakStageCFileDriver) Rename(_ context.Context, _ *entity.StorageSource, virtualPath string, newName string) (*StorageEntry, error) {
+	d.calls = append(d.calls, pikPakStageCFileCall{operation: "rename", path: virtualPath, name: newName})
+	parentPath := path.Dir(virtualPath)
+	if parentPath == "." {
+		parentPath = "/"
+	}
+	return &StorageEntry{Name: newName, Path: joinVirtualPath(parentPath, newName), IsDir: false}, nil
+}
+
+func (d *pikPakStageCFileDriver) Move(_ context.Context, _ *entity.StorageSource, virtualPath string, targetPath string) error {
+	d.calls = append(d.calls, pikPakStageCFileCall{operation: "move", path: virtualPath, targetPath: targetPath})
+	return nil
+}
+
+func (d *pikPakStageCFileDriver) Copy(_ context.Context, _ *entity.StorageSource, virtualPath string, targetPath string) error {
+	d.calls = append(d.calls, pikPakStageCFileCall{operation: "copy", path: virtualPath, targetPath: targetPath})
+	return nil
+}
+
+func (d *pikPakStageCFileDriver) Delete(_ context.Context, _ *entity.StorageSource, virtualPath string) error {
+	d.calls = append(d.calls, pikPakStageCFileCall{operation: "delete", path: virtualPath})
+	return nil
+}
+
+func (d *pikPakStageCFileDriver) PresignDownload(context.Context, *entity.StorageSource, string, string, time.Duration) (string, time.Time, error) {
+	return "", time.Time{}, nil
 }
 
 func (c *sourceServiceFakePikPakClient) RefreshToken(context.Context, infraStorage.PikPakConfig) (*infraStorage.PikPakAuthToken, error) {
@@ -260,6 +510,26 @@ func (c *sourceServiceFakePikPakClient) ListFiles(_ context.Context, _ infraStor
 
 func (c *sourceServiceFakePikPakClient) GetFile(context.Context, infraStorage.PikPakSession, string, string) (*infraStorage.PikPakFile, error) {
 	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) CreateFolder(context.Context, infraStorage.PikPakSession, string, string) (*infraStorage.PikPakFile, error) {
+	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) RenameFile(context.Context, infraStorage.PikPakSession, string, string) (*infraStorage.PikPakFile, error) {
+	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) BatchMove(context.Context, infraStorage.PikPakSession, []string, string) error {
+	return errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) BatchCopy(context.Context, infraStorage.PikPakSession, []string, string) error {
+	return errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) BatchTrash(context.Context, infraStorage.PikPakSession, []string) error {
+	return errors.New("not used")
 }
 
 func (c *sourceServiceFakePikPakClient) About(context.Context, infraStorage.PikPakSession) (*infraStorage.PikPakAbout, error) {

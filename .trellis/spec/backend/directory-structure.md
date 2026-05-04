@@ -155,6 +155,10 @@ type DriverBundle struct {
 - `FileDriver` paths are always source-internal virtual paths beginning with
   `/`; VFS is responsible for mapping mount path `/mount/...` to inner path
   `/...`.
+- If a driver delete operation maps to a provider recycle-bin operation (for
+  example PikPak `batchTrash`), expose that through capabilities and document
+  that `delete_mode=trash` does not create a Yunxia `.trash` item; do not label
+  it as permanent delete.
 - `ImportDriver` imports a backend-visible local staging file into the target
   source path. It is used by offline downloads and by upload flows for drivers
   that cannot safely expose direct browser-upload instructions.
@@ -180,9 +184,13 @@ type DriverBundle struct {
   actually supports, e.g. PikPak phase B registers `Config`, `Probe`, `File`,
   `Capacity`, and `Capabilities`, but omits `Upload` / `Import`; write and
   import entry points return `SOURCE_OPERATION_UNSUPPORTED`.
-- Good: a later writable/import-capable PikPak phase can add `Import`; upload
-  then uses `server_chunk -> ImportFile`; system stats still use quota instead
-  of recursive listing.
+- Good: a writable-but-not-import-capable third-party phase can expose
+  `Mkdir` / `Rename` / `Move` / `Copy` / `Delete` through `FileDriver` and
+  `Capabilities` while still omitting `Upload` / `Import`; upload and task
+  import entry points return `SOURCE_OPERATION_UNSUPPORTED`.
+- Good: a later import-capable PikPak phase can add `Import`; upload then uses
+  `server_chunk -> ImportFile`; system stats still use quota instead of
+  recursive listing.
 - Base: S3 registers `Config`, `Probe`, `File`, `Upload`, `Import`, and sets
   `RecursiveStatsFallback=true` to preserve existing recursive stats behavior.
 - Bad: adding `if driverType == "pikpak"` branches in `SourceService`,
@@ -198,7 +206,8 @@ tests that assert:
   secrets only with `source.secret.read`.
 - The registry wires every intended capability into Source/File/VFS/Trash/
   Upload/Task/Share/System services and omits unsupported capabilities (for
-  example read-only PikPak must not be registered as Upload/Task Import).
+  example writable PikPak stage C still must not be registered as Upload/Task
+  Import).
 - Existing S3 direct-upload behavior still returns `transport.mode=direct_parts`.
 - Import-only non-local drivers return `transport.mode=server_chunk` and call
   `ImportFile` on finish.
@@ -231,7 +240,7 @@ drivers := NewStorageDriverRegistry(DriverBundle{
     Probe:        pikpak,
     File:         pikpak,
     Capacity:     pikpak,
-    Capabilities: pikpak, // read-only phase: no Upload/Import registration.
+    Capabilities: pikpak, // writable stage C: still no Upload/Import registration.
 })
 
 sourceOpts := append(baseSourceOpts, drivers.SourceServiceOptions()...)

@@ -42,7 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
-| 待适配 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
+| 待适配 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload/init`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
 | 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
 | 待联调 | 2026-05-02 | RSS 导入导出 | RSS/追番页、设置/备份页 | P1 | `/api/v1/rss/export`、`/api/v1/rss/import` | [详情](#handoff-2026-05-02-rss-import-export) |
 | 待联调 | 2026-05-02 | RSS 订阅批量控制 | RSS/追番页、订阅列表 | P1 | `/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/subscriptions/batch-state` | [详情](#handoff-2026-05-02-rss-subscription-bulk-controls) |
@@ -845,7 +845,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 <a id="handoff-2026-05-04-pikpak-source-readonly"></a>
 
-### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak 只读 source 与 VFS 浏览
+### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览与阶段 C 文件写操作
 
 #### 前端适配 checklist
 
@@ -853,13 +853,15 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 - [ ] 表单支持 PikPak public config：`root_folder_id`、`platform`、`disable_media_link`、`cache_ttl_seconds`、`download_strategy`。
 - [ ] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
 - [ ] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
-- [ ] 文件/VFS 页面把 PikPak 阶段 B 当作只读源：隐藏或禁用 mkdir/rename/move/copy/delete/upload/离线下载目标写入入口。
-- [ ] 错误提示新增 `SOURCE_OPERATION_UNSUPPORTED`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
+- [ ] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
+- [ ] 继续隐藏或禁用 PikPak 上传入口、离线下载目标写入入口；这些阶段 C 仍返回 `SOURCE_OPERATION_UNSUPPORTED`。
+- [ ] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
+- [ ] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
 - [ ] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
 
 #### 背景 / 变更摘要
 
-后端新增 `driver_type="pikpak"` 的基础 source 管理与只读 FileDriver。阶段 B 支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download；写操作、上传导入、离线下载导入暂不支持。
+后端新增 `driver_type="pikpak"` 的基础 source 管理与 FileDriver。阶段 C 已支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download，以及文件写操作 `mkdir` / `rename` / `move` / `copy` / `delete`。上传导入、离线下载导入暂不支持。
 
 #### 接口与字段
 
@@ -888,6 +890,8 @@ type PikPakSecretPatch = {
 #### 注意事项
 
 - `root_path` 必须传 `/`；远端子目录挂载用 `config.root_folder_id`。
-- 阶段 B 的 PikPak 源是只读源；写入口如果仍调用，会返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
+- 阶段 C 的 PikPak 文件写入口已可调用；列表项 `can_delete` 由后端按 driver capability + ACL 计算。
+- PikPak 删除调用 provider `batchTrash`，语义是移入 PikPak 回收站；后端不会为该操作创建 Yunxia `.trash` 记录。
+- 上传初始化、离线下载导入目标、`delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。

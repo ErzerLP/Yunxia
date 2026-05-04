@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +19,7 @@ const (
 	defaultPikPakSearchMaxEntries = 500
 )
 
-// PikPakDriver 提供 PikPak 只读存储源能力。
+// PikPakDriver 提供 PikPak 存储源文件能力。
 type PikPakDriver struct {
 	sessions         *PikPakSessionManager
 	searchMaxDepth   int
@@ -216,45 +217,207 @@ func (d *PikPakDriver) Capacity(ctx context.Context, source *entity.StorageSourc
 	return info, err
 }
 
-// Capabilities 描述 PikPak 阶段 B 只读能力，供上层禁用写入口提示。
+// Capabilities 描述 PikPak 阶段 C 文件能力。上传/导入仍留待后续阶段。
 func (d *PikPakDriver) Capabilities(context.Context, *entity.StorageSource) (domainstorage.StorageCapabilities, error) {
 	return domainstorage.StorageCapabilities{
-		CanList:       true,
-		CanSearch:     true,
-		CanDownload:   true,
-		CanCapacity:   true,
-		CanMkdir:      false,
-		CanRename:     false,
-		CanMove:       false,
-		CanCopy:       false,
-		CanDelete:     false,
-		CanImportFile: false,
+		CanList:          true,
+		CanSearch:        true,
+		CanDownload:      true,
+		CanCapacity:      true,
+		CanMkdir:         true,
+		CanRename:        true,
+		CanMove:          true,
+		CanCopy:          true,
+		CanDelete:        true,
+		CanProviderTrash: true,
+		CanImportFile:    false,
 	}, nil
 }
 
-// Mkdir 阶段 B 暂未实现，返回稳定 unsupported。
-func (d *PikPakDriver) Mkdir(context.Context, *entity.StorageSource, string, string) (*domainstorage.StorageEntry, error) {
-	return nil, domainstorage.ErrOperationUnsupported
+// Mkdir 在 PikPak 中创建目录。
+func (d *PikPakDriver) Mkdir(ctx context.Context, source *entity.StorageSource, parentPath string, name string) (*domainstorage.StorageEntry, error) {
+	parentPath, err := normalizeVirtualPath(parentPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePikPakFileName(name); err != nil {
+		return nil, err
+	}
+
+	var entry *domainstorage.StorageEntry
+	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		parent, resolveErr := d.resolvePathWithSession(ctx, session, cfg, parentPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !parent.isFolder() {
+			return os.ErrInvalid
+		}
+		if err := d.ensureNoChildWithName(ctx, session, parent.ID, name); err != nil {
+			return err
+		}
+		created, createErr := d.sessions.client.CreateFolder(ctx, session, parent.ID, name)
+		if createErr != nil {
+			return createErr
+		}
+		if created == nil {
+			created = &PikPakFile{Name: name, Kind: "drive#folder"}
+		}
+		if created.Name == "" {
+			created.Name = name
+		}
+		if created.Kind == "" {
+			created.Kind = "drive#folder"
+		}
+		storageEntry := pikPakFileToStorageEntry(*created, joinVirtualPath(parentPath, name))
+		entry = &storageEntry
+		return nil
+	})
+	return entry, err
 }
 
-// Rename 阶段 B 暂未实现，返回稳定 unsupported。
-func (d *PikPakDriver) Rename(context.Context, *entity.StorageSource, string, string) (*domainstorage.StorageEntry, error) {
-	return nil, domainstorage.ErrOperationUnsupported
+// Rename 重命名 PikPak 对象，根目录不可重命名。
+func (d *PikPakDriver) Rename(ctx context.Context, source *entity.StorageSource, virtualPath string, newName string) (*domainstorage.StorageEntry, error) {
+	virtualPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return nil, err
+	}
+	if virtualPath == "/" {
+		return nil, os.ErrInvalid
+	}
+	if err := validatePikPakFileName(newName); err != nil {
+		return nil, err
+	}
+
+	parentPath := path.Dir(virtualPath)
+	if parentPath == "." {
+		parentPath = "/"
+	}
+	newPath := joinVirtualPath(parentPath, newName)
+	var entry *domainstorage.StorageEntry
+	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		parent, parentErr := d.resolvePathWithSession(ctx, session, cfg, parentPath)
+		if parentErr != nil {
+			return parentErr
+		}
+		if !parent.isFolder() {
+			return os.ErrInvalid
+		}
+		if err := d.ensureNoChildWithName(ctx, session, parent.ID, newName); err != nil {
+			return err
+		}
+		renamed, renameErr := d.sessions.client.RenameFile(ctx, session, file.ID, newName)
+		if renameErr != nil {
+			return renameErr
+		}
+		if renamed == nil {
+			renamed = &file
+		}
+		renamed.Name = newName
+		if renamed.Kind == "" {
+			renamed.Kind = file.Kind
+		}
+		storageEntry := pikPakFileToStorageEntry(*renamed, newPath)
+		entry = &storageEntry
+		return nil
+	})
+	return entry, err
 }
 
-// Move 阶段 B 暂未实现，返回稳定 unsupported。
-func (d *PikPakDriver) Move(context.Context, *entity.StorageSource, string, string) error {
-	return domainstorage.ErrOperationUnsupported
+// Move 将 PikPak 对象移动到目标目录，根目录不可移动。
+func (d *PikPakDriver) Move(ctx context.Context, source *entity.StorageSource, virtualPath string, targetPath string) error {
+	return d.moveOrCopy(ctx, source, virtualPath, targetPath, true)
 }
 
-// Copy 阶段 B 暂未实现，返回稳定 unsupported。
-func (d *PikPakDriver) Copy(context.Context, *entity.StorageSource, string, string) error {
-	return domainstorage.ErrOperationUnsupported
+// Copy 将 PikPak 对象复制到目标目录，根目录不可复制。
+func (d *PikPakDriver) Copy(ctx context.Context, source *entity.StorageSource, virtualPath string, targetPath string) error {
+	return d.moveOrCopy(ctx, source, virtualPath, targetPath, false)
 }
 
-// Delete 阶段 B 暂未实现，返回稳定 unsupported。
-func (d *PikPakDriver) Delete(context.Context, *entity.StorageSource, string) error {
-	return domainstorage.ErrOperationUnsupported
+// Delete 将 PikPak 对象移入 provider 回收站，根目录不可删除。
+func (d *PikPakDriver) Delete(ctx context.Context, source *entity.StorageSource, virtualPath string) error {
+	virtualPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return err
+	}
+	if virtualPath == "/" {
+		return os.ErrInvalid
+	}
+	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		return d.sessions.client.BatchTrash(ctx, session, []string{file.ID})
+	})
+}
+
+func (d *PikPakDriver) moveOrCopy(ctx context.Context, source *entity.StorageSource, virtualPath string, targetPath string, removeSource bool) error {
+	virtualPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return err
+	}
+	targetPath, err = normalizeVirtualPath(targetPath)
+	if err != nil {
+		return err
+	}
+	if virtualPath == "/" {
+		return os.ErrInvalid
+	}
+	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		target, targetErr := d.resolvePathWithSession(ctx, session, cfg, targetPath)
+		if targetErr != nil {
+			return targetErr
+		}
+		if !target.isFolder() {
+			return os.ErrInvalid
+		}
+		if file.isFolder() && isPikPakSelfOrDescendantTarget(virtualPath, targetPath) {
+			return os.ErrInvalid
+		}
+		if err := d.ensureNoChildWithName(ctx, session, target.ID, file.Name); err != nil {
+			return err
+		}
+		if removeSource {
+			return d.sessions.client.BatchMove(ctx, session, []string{file.ID}, target.ID)
+		}
+		return d.sessions.client.BatchCopy(ctx, session, []string{file.ID}, target.ID)
+	})
+}
+
+func (d *PikPakDriver) ensureNoChildWithName(ctx context.Context, session PikPakSession, parentID string, name string) error {
+	files, err := d.listFilesAll(ctx, session, parentID)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if file.Name == name {
+			return fs.ErrExist
+		}
+	}
+	return nil
+}
+
+func isPikPakSelfOrDescendantTarget(sourcePath string, targetPath string) bool {
+	if sourcePath == "/" {
+		return true
+	}
+	return targetPath == sourcePath || strings.HasPrefix(targetPath, sourcePath+"/")
+}
+
+func validatePikPakFileName(name string) error {
+	if name == "" || strings.Contains(name, "/") || strings.Contains(name, "\\") || name == "." || name == ".." {
+		return os.ErrInvalid
+	}
+	return nil
 }
 
 func (d *PikPakDriver) resolvePathWithSession(ctx context.Context, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {

@@ -59,18 +59,19 @@ type CapacityDriver interface {
 
 // StorageCapabilities 描述 driver 支持的存储操作。
 type StorageCapabilities struct {
-	CanList         bool
-	CanSearch       bool
-	CanDownload     bool
-	CanMkdir        bool
-	CanRename       bool
-	CanMove         bool
-	CanCopy         bool
-	CanDelete       bool
-	CanImportFile   bool
-	CanDirectUpload bool
-	CanServerUpload bool
-	CanCapacity     bool
+	CanList          bool
+	CanSearch        bool
+	CanDownload      bool
+	CanMkdir         bool
+	CanRename        bool
+	CanMove          bool
+	CanCopy          bool
+	CanDelete        bool
+	CanProviderTrash bool
+	CanImportFile    bool
+	CanDirectUpload  bool
+	CanServerUpload  bool
+	CanCapacity      bool
 }
 
 // CapabilityProvider 定义 driver 运行时能力查询接口。

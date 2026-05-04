@@ -1419,7 +1419,28 @@ func (s *FileService) deleteWithDriver(ctx context.Context, source *entity.Stora
 	if req.DeleteMode == "" {
 		req.DeleteMode = "trash"
 	}
+	capabilities, err := s.driverCapabilities(ctx, source)
+	if err != nil {
+		return time.Time{}, err
+	}
+	providerTrash := capabilities != nil && capabilities.CanProviderTrash
+	if req.DeleteMode == "trash" && providerTrash {
+		if err := driver.Delete(ctx, source, virtualPath); err != nil {
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				return time.Time{}, ErrFileNotFound
+			case errors.Is(err, os.ErrInvalid):
+				return time.Time{}, ErrPathInvalid
+			default:
+				return time.Time{}, err
+			}
+		}
+		return time.Now(), nil
+	}
 	if req.DeleteMode == "permanent" {
+		if providerTrash {
+			return time.Time{}, ErrSourceOperationUnsupported
+		}
 		if err := driver.Delete(ctx, source, virtualPath); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return time.Time{}, ErrFileNotFound

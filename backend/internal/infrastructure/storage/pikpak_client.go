@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -74,6 +75,11 @@ type PikPakAPIClient interface {
 	RefreshCaptcha(ctx context.Context, cfg PikPakConfig, action string, userID string) (*PikPakCaptchaToken, error)
 	ListFiles(ctx context.Context, session PikPakSession, parentID string, pageToken string) (*PikPakListFilesResponse, error)
 	GetFile(ctx context.Context, session PikPakSession, fileID string, usage string) (*PikPakFile, error)
+	CreateFolder(ctx context.Context, session PikPakSession, parentID string, name string) (*PikPakFile, error)
+	RenameFile(ctx context.Context, session PikPakSession, fileID string, name string) (*PikPakFile, error)
+	BatchMove(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error
+	BatchCopy(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error
+	BatchTrash(ctx context.Context, session PikPakSession, ids []string) error
 	About(ctx context.Context, session PikPakSession) (*PikPakAbout, error)
 }
 
@@ -307,6 +313,62 @@ func (c *PikPakHTTPClient) GetFile(ctx context.Context, session PikPakSession, f
 	return &resp, nil
 }
 
+// CreateFolder 创建 PikPak 目录。
+func (c *PikPakHTTPClient) CreateFolder(ctx context.Context, session PikPakSession, parentID string, name string) (*PikPakFile, error) {
+	payload := map[string]any{
+		"kind":      "drive#folder",
+		"parent_id": parentID,
+		"name":      name,
+	}
+	var resp PikPakFile
+	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// RenameFile 修改 PikPak 对象名称。
+func (c *PikPakHTTPClient) RenameFile(ctx context.Context, session PikPakSession, fileID string, name string) (*PikPakFile, error) {
+	payload := map[string]any{
+		"name": name,
+	}
+	var resp PikPakFile
+	if err := c.doJSON(ctx, http.MethodPatch, c.driveBaseURL+"/drive/v1/files/"+url.PathEscape(fileID), session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// BatchMove 批量移动 PikPak 对象到目标目录。
+func (c *PikPakHTTPClient) BatchMove(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error {
+	payload := map[string]any{
+		"ids": ids,
+		"to": map[string]any{
+			"parent_id": targetParentID,
+		},
+	}
+	return c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchMove", session.UserAgent, sessionHeaders(session), nil, payload, nil)
+}
+
+// BatchCopy 批量复制 PikPak 对象到目标目录。
+func (c *PikPakHTTPClient) BatchCopy(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error {
+	payload := map[string]any{
+		"ids": ids,
+		"to": map[string]any{
+			"parent_id": targetParentID,
+		},
+	}
+	return c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchCopy", session.UserAgent, sessionHeaders(session), nil, payload, nil)
+}
+
+// BatchTrash 将 PikPak 对象移入 provider 回收站。
+func (c *PikPakHTTPClient) BatchTrash(ctx context.Context, session PikPakSession, ids []string) error {
+	payload := map[string]any{
+		"ids": ids,
+	}
+	return c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchTrash", session.UserAgent, sessionHeaders(session), nil, payload, nil)
+}
+
 // About 查询容量。
 func (c *PikPakHTTPClient) About(ctx context.Context, session PikPakSession) (*PikPakAbout, error) {
 	var resp PikPakAbout
@@ -416,7 +478,7 @@ type pikPakErrorPayload struct {
 func mapPikPakHTTPError(status int, body []byte) error {
 	var payload pikPakErrorPayload
 	_ = json.Unmarshal(body, &payload)
-	code := normalizePikPakErrorCode(payload.ErrorCode)
+	code := pikPakProviderErrorSignal(payload)
 	if code != "" && code != "0" {
 		return mapPikPakProviderCode(code, payload)
 	}
@@ -425,6 +487,8 @@ func mapPikPakHTTPError(status int, body []byte) error {
 		return nil
 	case status == http.StatusNotFound:
 		return os.ErrNotExist
+	case status == http.StatusConflict:
+		return fs.ErrExist
 	case status == http.StatusTooManyRequests:
 		return domainstorage.NewProviderError(domainstorage.ErrCloudRateLimited, "cloud rate limited")
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
@@ -441,11 +505,17 @@ func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
 	switch code {
 	case "404", "not_found", "file_not_found", "resource_not_found":
 		return os.ErrNotExist
-	case "4126", "4122", "4121", "16":
+	case "409", "name_conflict", "file_already_exists", "already_exists", "duplicate":
+		return fs.ErrExist
+	case "401", "403", "4126", "4122", "4121", "16", "invalid_grant", "invalid_token", "unauthorized", "forbidden":
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudTokenInvalid, Message: "cloud token invalid", ProviderCode: code}
-	case "9":
+	case "auth_failed", "invalid_credentials":
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudAuthFailed, Message: "cloud auth failed", ProviderCode: code}
+	case "9", "captcha_expired", "captcha_token_expired":
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaExpired, Message: "cloud captcha expired", ProviderCode: code}
-	case "10":
+	case "captcha_required", "verification_required":
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code}
+	case "10", "rate_limited", "too_many_requests":
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRateLimited, Message: "cloud rate limited", ProviderCode: code}
 	default:
 		if strings.Contains(strings.ToLower(message), "verify") {
@@ -455,18 +525,26 @@ func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
 	}
 }
 
+func pikPakProviderErrorSignal(payload pikPakErrorPayload) string {
+	code := normalizePikPakErrorCode(payload.ErrorCode)
+	if code != "" {
+		return code
+	}
+	return normalizePikPakErrorCode(payload.Error)
+}
+
 func normalizePikPakErrorCode(value any) string {
 	switch typed := value.(type) {
 	case nil:
 		return ""
 	case string:
-		return strings.TrimSpace(typed)
+		return strings.ToLower(strings.TrimSpace(typed))
 	case float64:
 		return strconv.FormatInt(int64(typed), 10)
 	case int:
 		return strconv.Itoa(typed)
 	default:
-		return fmt.Sprint(typed)
+		return strings.ToLower(strings.TrimSpace(fmt.Sprint(typed)))
 	}
 }
 
