@@ -111,14 +111,15 @@ func main() {
 			RecursiveStatsFallback: true,
 		},
 		appsvc.DriverBundle{
-			Type:         infraStorage.PikPakDriverType,
-			DisplayName:  "PikPak",
-			Config:       appsvc.NewPikPakSourceConfigCodec(),
-			Probe:        pikPakDriver,
-			File:         pikPakDriver,
-			Import:       pikPakDriver,
-			Capacity:     pikPakDriver,
-			Capabilities: pikPakDriver,
+			Type:           infraStorage.PikPakDriverType,
+			DisplayName:    "PikPak",
+			Config:         appsvc.NewPikPakSourceConfigCodec(),
+			Probe:          pikPakDriver,
+			File:           pikPakDriver,
+			Import:         pikPakDriver,
+			NativeDownload: pikPakDriver,
+			Capacity:       pikPakDriver,
+			Capabilities:   pikPakDriver,
 		},
 	)
 

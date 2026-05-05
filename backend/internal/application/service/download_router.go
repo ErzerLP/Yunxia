@@ -11,6 +11,8 @@ const (
 	DownloaderTypeAria2 = "aria2"
 	// DownloaderTypeQBittorrent 表示 BT/magnet 下载使用 qBittorrent。
 	DownloaderTypeQBittorrent = "qbittorrent"
+	// DownloaderTypePikPakNative 表示目标 PikPak source 使用 provider 原生离线下载。
+	DownloaderTypePikPakNative = "pikpak_native"
 )
 
 const (

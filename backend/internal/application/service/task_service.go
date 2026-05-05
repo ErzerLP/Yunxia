@@ -33,13 +33,14 @@ type Downloader interface {
 
 // DownloadStatus 表示下载器返回的状态。
 type DownloadStatus struct {
-	Status         string
-	CompletedBytes int64
-	TotalBytes     *int64
-	DownloadSpeed  int64
-	ETASeconds     *int64
-	DisplayName    string
-	ErrorMessage   *string
+	Status          string
+	CompletedBytes  int64
+	TotalBytes      *int64
+	DownloadSpeed   int64
+	ETASeconds      *int64
+	ProgressPercent *float64
+	DisplayName     string
+	ErrorMessage    *string
 }
 
 // TaskTerminalStatusObserver 接收任务终态变更通知，用于同步跨模块反向引用。
@@ -57,6 +58,7 @@ type TaskService struct {
 	stagingRoot            string
 	stagingRoots           map[string]string
 	importDrivers          map[string]TaskImportDriver
+	nativeDownloadDrivers  map[string]NativeDownloadDriver
 	terminalStatusObserver TaskTerminalStatusObserver
 	vfsResolver            interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
@@ -79,14 +81,15 @@ const maxTaskTargetFilenameRunes = 240
 // NewTaskService 创建任务服务。
 func NewTaskService(taskRepo domainrepo.TaskRepository, sourceRepo domainrepo.SourceRepository, downloader Downloader, options ...TaskServiceOption) *TaskService {
 	service := &TaskService{
-		taskRepo:       taskRepo,
-		sourceRepo:     sourceRepo,
-		downloader:     downloader,
-		downloadRouter: NewDownloaderRouter(downloader),
-		stagingRoot:    filepath.Join(os.TempDir(), "yunxia-download-staging"),
-		stagingRoots:   make(map[string]string),
-		importDrivers:  make(map[string]TaskImportDriver),
-		logger:         newServiceLogger("service.task"),
+		taskRepo:              taskRepo,
+		sourceRepo:            sourceRepo,
+		downloader:            downloader,
+		downloadRouter:        NewDownloaderRouter(downloader),
+		stagingRoot:           filepath.Join(os.TempDir(), "yunxia-download-staging"),
+		stagingRoots:          make(map[string]string),
+		importDrivers:         make(map[string]TaskImportDriver),
+		nativeDownloadDrivers: make(map[string]NativeDownloadDriver),
+		logger:                newServiceLogger("service.task"),
 	}
 	for _, option := range options {
 		option(service)
@@ -145,6 +148,20 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		return nil, err
 	}
 	source := target.source
+	if err := s.authorizeTaskPath(ctx, source.ID, target.savePath, ACLActionWrite); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "ACL_DENIED",
+			SourceID:     &source.ID,
+			VirtualPath:  target.saveVirtualPath,
+		})
+		return nil, err
+	}
+	if view, handled, err := s.tryCreateNativeDownloadTask(ctx, req, target); handled || err != nil {
+		return view, err
+	}
 	if source.DriverType != "local" {
 		if _, err := s.getTaskImportDriver(source.DriverType); err != nil {
 			if errors.Is(err, ErrSourceDriverUnsupported) {
@@ -160,17 +177,6 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 			})
 			return nil, err
 		}
-	}
-	if err := s.authorizeTaskPath(ctx, source.ID, target.savePath, ACLActionWrite); err != nil {
-		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
-			ResourceType: "task",
-			Action:       "create",
-			Result:       appaudit.ResultDenied,
-			ErrorCode:    "ACL_DENIED",
-			SourceID:     &source.ID,
-			VirtualPath:  target.saveVirtualPath,
-		})
-		return nil, err
 	}
 	downloaderType, selectedDownloader, err := s.selectDownloaderForURL(req.URL)
 	if err != nil {
@@ -263,6 +269,108 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		After:        taskAuditView(task),
 	})
 	return &view, nil
+}
+
+func (s *TaskService) tryCreateNativeDownloadTask(ctx context.Context, req appdto.CreateTaskRequest, target resolvedTaskTarget) (*appdto.DownloadTaskView, bool, error) {
+	source := target.source
+	if source == nil || ClassifyDownloadLink(req.URL) == RSSLinkTypeUnsupported {
+		return nil, false, nil
+	}
+	driver, exists := s.nativeDownloadDrivers[source.DriverType]
+	if !exists || driver == nil {
+		return nil, false, nil
+	}
+
+	nativeTask, err := driver.CreateNativeDownload(ctx, source, NativeDownloadRequest{
+		URL:            req.URL,
+		TargetDirPath:  target.savePath,
+		TargetFilename: req.TargetFilename,
+	})
+	if err != nil {
+		if errors.Is(err, ErrSourceOperationUnsupported) || errors.Is(err, ErrDownloadLinkUnsupported) {
+			return nil, false, nil
+		}
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    taskCreateErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  target.saveVirtualPath,
+		})
+		return nil, true, err
+	}
+	if nativeTask == nil || strings.TrimSpace(nativeTask.ExternalID) == "" {
+		err := ErrCloudProviderUnavailable
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    taskCreateErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  target.saveVirtualPath,
+		})
+		return nil, true, err
+	}
+
+	now := time.Now()
+	displayName := strings.TrimSpace(nativeTask.DisplayName)
+	if displayName == "" {
+		displayName = guessTaskDisplayName(req.URL)
+	}
+	progress := float64(0)
+	if nativeTask.ProgressPercent != nil {
+		progress = clampTaskProgressPercent(*nativeTask.ProgressPercent)
+	}
+	task := &entity.DownloadTask{
+		UserID:                  s.currentTaskUserID(ctx),
+		Type:                    req.Type,
+		DownloaderType:          DownloaderTypePikPakNative,
+		Status:                  "pending",
+		SourceID:                source.ID,
+		SavePath:                target.savePath,
+		TargetVirtualParentPath: target.targetVirtualParentPath,
+		TargetFilename:          req.TargetFilename,
+		SaveVirtualPath:         target.saveVirtualPath,
+		ResolvedSourceID:        target.resolvedSourceID,
+		ResolvedInnerSavePath:   target.resolvedInnerSavePath,
+		StagingDir:              "",
+		DisplayName:             displayName,
+		SourceURL:               req.URL,
+		ExternalID:              strings.TrimSpace(nativeTask.ExternalID),
+		Progress:                progress,
+		DownloadedBytes:         0,
+		TotalBytes:              nil,
+		SpeedBytes:              0,
+		ETASeconds:              nil,
+		ErrorMessage:            nil,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := s.taskRepo.Create(ctx, task); err != nil {
+		_ = driver.CancelNativeDownload(ctx, source, task.ExternalID, false)
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "task",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    "INTERNAL_ERROR",
+			SourceID:     &source.ID,
+			VirtualPath:  target.saveVirtualPath,
+		})
+		return nil, true, err
+	}
+
+	view := toTaskView(task)
+	recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+		ResourceType: "task",
+		Action:       "create",
+		Result:       appaudit.ResultSuccess,
+		ResourceID:   encodeUintID(task.ID),
+		SourceID:     &source.ID,
+		VirtualPath:  target.saveVirtualPath,
+		After:        taskAuditView(task),
+	})
+	return &view, true, nil
 }
 
 func (s *TaskService) resolveCreateTarget(ctx context.Context, req appdto.CreateTaskRequest) (resolvedTaskTarget, error) {
@@ -375,6 +483,9 @@ func (s *TaskService) downloaderForTask(task *entity.DownloadTask) (Downloader, 
 	if downloaderType == "" {
 		downloaderType = DownloaderTypeAria2
 	}
+	if downloaderType == DownloaderTypePikPakNative {
+		return nativeTaskDownloader{service: s, sourceID: taskResolvedSourceID(task)}, nil
+	}
 	if s.downloadRouter != nil {
 		return s.downloadRouter.Get(downloaderType)
 	}
@@ -385,6 +496,101 @@ func (s *TaskService) downloaderForTask(task *entity.DownloadTask) (Downloader, 
 		return nil, ErrSourceDriverUnsupported
 	}
 	return s.downloader, nil
+}
+
+type nativeTaskDownloader struct {
+	service  *TaskService
+	sourceID uint
+}
+
+func (d nativeTaskDownloader) AddURI(context.Context, string, string) (string, error) {
+	return "", ErrSourceOperationUnsupported
+}
+
+func (d nativeTaskDownloader) TellStatus(ctx context.Context, externalID string) (*DownloadStatus, error) {
+	source, driver, err := d.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	status, err := driver.GetNativeDownloadStatus(ctx, source, externalID)
+	if err != nil {
+		return nil, err
+	}
+	return downloadStatusFromNative(status), nil
+}
+
+func (d nativeTaskDownloader) Pause(ctx context.Context, externalID string) error {
+	source, driver, err := d.resolve(ctx)
+	if err != nil {
+		return err
+	}
+	return driver.PauseNativeDownload(ctx, source, externalID)
+}
+
+func (d nativeTaskDownloader) Resume(ctx context.Context, externalID string) error {
+	source, driver, err := d.resolve(ctx)
+	if err != nil {
+		return err
+	}
+	return driver.ResumeNativeDownload(ctx, source, externalID)
+}
+
+func (d nativeTaskDownloader) Remove(ctx context.Context, externalID string) error {
+	source, driver, err := d.resolve(ctx)
+	if err != nil {
+		return err
+	}
+	return driver.CancelNativeDownload(ctx, source, externalID, false)
+}
+
+func (d nativeTaskDownloader) resolve(ctx context.Context) (*entity.StorageSource, NativeDownloadDriver, error) {
+	if d.service == nil || d.service.sourceRepo == nil || d.sourceID == 0 {
+		return nil, nil, ErrSourceDriverUnsupported
+	}
+	source, err := d.service.sourceRepo.FindByID(ctx, d.sourceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	driver, exists := d.service.nativeDownloadDrivers[source.DriverType]
+	if !exists || driver == nil {
+		return nil, nil, ErrSourceDriverUnsupported
+	}
+	return source, driver, nil
+}
+
+func downloadStatusFromNative(status *NativeDownloadStatus) *DownloadStatus {
+	if status == nil {
+		return &DownloadStatus{Status: "pending"}
+	}
+	progress := status.ProgressPercent
+	if progress != nil {
+		clamped := clampTaskProgressPercent(*progress)
+		progress = &clamped
+	}
+	if status.Status == "completed" && progress == nil {
+		value := float64(100)
+		progress = &value
+	}
+	return &DownloadStatus{
+		Status:          status.Status,
+		CompletedBytes:  status.CompletedBytes,
+		TotalBytes:      status.TotalBytes,
+		DownloadSpeed:   status.DownloadSpeed,
+		ETASeconds:      status.ETASeconds,
+		ProgressPercent: progress,
+		DisplayName:     status.DisplayName,
+		ErrorMessage:    status.ErrorMessage,
+	}
+}
+
+func taskResolvedSourceID(task *entity.DownloadTask) uint {
+	if task == nil {
+		return 0
+	}
+	if task.ResolvedSourceID != 0 {
+		return task.ResolvedSourceID
+	}
+	return task.SourceID
 }
 
 // Get 返回单个任务。
@@ -497,7 +703,11 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 		return nil, err
 	}
 	if task.ExternalID != "" {
-		if selectedDownloader, err := s.downloaderForTask(task); err != nil {
+		if task.DownloaderType == DownloaderTypePikPakNative {
+			if err := s.cancelNativeDownloadTask(ctx, task, deleteFile); err != nil {
+				s.logger.Warn("task cancel native downloader remove failed after local cancellation", slog.String("event", "task.cancel.native_remove_failed"), slog.Uint64("task_id", uint64(task.ID)), slog.String("downloader_type", task.DownloaderType), slog.Any("error", err))
+			}
+		} else if selectedDownloader, err := s.downloaderForTask(task); err != nil {
 			s.logger.Warn("task cancel downloader unavailable after local cancellation", slog.String("event", "task.cancel.downloader_unavailable"), slog.Uint64("task_id", uint64(task.ID)), slog.String("downloader_type", task.DownloaderType), slog.Any("error", err))
 		} else if err := selectedDownloader.Remove(ctx, task.ExternalID); err != nil {
 			s.logger.Warn("task cancel downloader remove failed after local cancellation", slog.String("event", "task.cancel.downloader_remove_failed"), slog.Uint64("task_id", uint64(task.ID)), slog.String("downloader_type", task.DownloaderType), slog.Any("error", err))
@@ -514,6 +724,21 @@ func (s *TaskService) Cancel(ctx context.Context, id uint, deleteFile bool) (*ap
 		Detail:       map[string]any{"delete_file": deleteFile},
 	})
 	return &appdto.CancelTaskResponse{ID: id, Canceled: true, DeleteFile: deleteFile}, nil
+}
+
+func (s *TaskService) cancelNativeDownloadTask(ctx context.Context, task *entity.DownloadTask, deleteFile bool) error {
+	if task == nil {
+		return ErrTaskInvalidState
+	}
+	source, err := s.sourceRepo.FindByID(ctx, taskResolvedSourceID(task))
+	if err != nil {
+		return err
+	}
+	driver, exists := s.nativeDownloadDrivers[source.DriverType]
+	if !exists || driver == nil {
+		return ErrSourceDriverUnsupported
+	}
+	return driver.CancelNativeDownload(ctx, source, task.ExternalID, deleteFile)
 }
 
 // Pause 暂停任务。
@@ -568,7 +793,7 @@ func (s *TaskService) Pause(ctx context.Context, id uint) (*appdto.TaskActionRes
 			ResourceType: "task",
 			Action:       "pause",
 			Result:       appaudit.ResultFailed,
-			ErrorCode:    "INTERNAL_ERROR",
+			ErrorCode:    taskErrorCode(err),
 			ResourceID:   encodeUintID(id),
 			Before:       taskAuditView(task),
 		})
@@ -651,7 +876,7 @@ func (s *TaskService) Resume(ctx context.Context, id uint) (*appdto.TaskActionRe
 			ResourceType: "task",
 			Action:       "resume",
 			Result:       appaudit.ResultFailed,
-			ErrorCode:    "INTERNAL_ERROR",
+			ErrorCode:    taskErrorCode(err),
 			ResourceID:   encodeUintID(id),
 			Before:       taskAuditView(task),
 		})
@@ -709,6 +934,9 @@ func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask
 	if status.TotalBytes != nil && *status.TotalBytes > 0 {
 		task.Progress = float64(status.CompletedBytes) * 100 / float64(*status.TotalBytes)
 	}
+	if status.ProgressPercent != nil {
+		task.Progress = clampTaskProgressPercent(*status.ProgressPercent)
+	}
 	if status.Status == "failed" {
 		if task.ErrorMessage == nil || strings.TrimSpace(*task.ErrorMessage) == "" {
 			message := "download failed"
@@ -732,6 +960,9 @@ func (s *TaskService) refreshTask(ctx context.Context, task *entity.DownloadTask
 	if status.Status == "completed" {
 		task.SpeedBytes = 0
 		task.ETASeconds = nil
+		if task.Progress < 100 {
+			task.Progress = 100
+		}
 		if err := s.importCompletedTask(ctx, task); err != nil {
 			message := err.Error()
 			task.Status = "failed"
@@ -1107,6 +1338,16 @@ func guessTaskDisplayName(rawURL string) string {
 		return rawURL
 	}
 	return name
+}
+
+func clampTaskProgressPercent(progress float64) float64 {
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+	return progress
 }
 
 func taskCreateErrorCode(err error) string {

@@ -845,7 +845,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 <a id="handoff-2026-05-04-pikpak-source-readonly"></a>
 
-### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览、文件写操作与阶段 D 上传导入
+### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览、文件写操作、上传导入与原生离线下载
 
 #### 前端适配 checklist
 
@@ -855,7 +855,8 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 - [ ] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
 - [ ] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
 - [ ] 上传入口允许选择 PikPak 挂载目录；`POST /api/v1/upload/init` 会返回 `transport.mode="server_chunk"`、`transport.driver_type="pikpak"`、`part_instructions=[]`，前端沿用后端分片上传流程。
-- [ ] 离线任务/RSS 目标目录允许选择 PikPak 挂载目录；后端下载到 staging 后会导入 PikPak，任务完成后文件可通过 VFS 列表刷新看到。
+- [ ] 离线任务/RSS 目标目录允许选择 PikPak 挂载目录；目标解析到 PikPak source 时后端会优先使用 `downloader_type="pikpak_native"` 的 provider 原生离线下载，任务完成后文件可通过 VFS 列表刷新看到。
+- [ ] 任务页把 `DownloadTaskView.downloader_type` 枚举扩展为 `aria2 | qbittorrent | pikpak_native`；`pikpak_native` 暂停/恢复会返回 `SOURCE_OPERATION_UNSUPPORTED`，取消仍可用。
 - [ ] 不实现/不展示浏览器直传 PikPak OSS；PikPak 不会返回 S3 式 `direct_parts`。
 - [ ] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
 - [ ] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
@@ -863,7 +864,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 #### 背景 / 变更摘要
 
-后端新增 `driver_type="pikpak"` 的基础 source 管理与 FileDriver。当前已支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download、文件写操作 `mkdir` / `rename` / `move` / `copy` / `delete`，以及阶段 D 的后端 staging 上传导入、HTTP/BT/RSS 离线下载完成后导入 PikPak。
+后端新增 `driver_type="pikpak"` 的基础 source 管理与 FileDriver。当前已支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download、文件写操作 `mkdir` / `rename` / `move` / `copy` / `delete`，后端 staging 上传导入，以及目标为 PikPak source 时的 provider 原生离线下载。
 
 #### 接口与字段
 
@@ -897,6 +898,8 @@ type PikPakSecretPatch = {
 - PikPak 删除调用 provider `batchTrash`，语义是移入 PikPak 回收站；后端不会为该操作创建 Yunxia `.trash` 记录。
 - 上传到 PikPak 使用后端 staging：前端不需要处理 GCID、OSS 参数、`access_key_secret`、`security_token`、`bucket/key`。
 - PikPak 上传目标父目录不存在时，后端会在 provider 侧递归创建父目录；如果路径中的父级已存在但不是目录，会返回 `PATH_INVALID`。
+- PikPak 离线任务目标目录不存在时，原生离线下载路径也会由后端递归创建 provider 侧父目录；`target_filename` 非空时会作为 provider 任务名并做同名冲突预检查。
+- 非 PikPak 目标仍使用原有 staging 下载与导入策略；PikPak 原生离线下载不要求前端改创建任务入参，只需要识别任务返回的 `downloader_type="pikpak_native"`。
 - PikPak provider 429/5xx 会由后端有限退避重试；前端仍只需要处理最终稳定错误码，例如 `CLOUD_RATE_LIMITED` 或 `CLOUD_PROVIDER_UNAVAILABLE`。
 - `delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。

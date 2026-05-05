@@ -254,19 +254,20 @@ func (d *PikPakDriver) Capacity(ctx context.Context, source *entity.StorageSourc
 // Capabilities 描述 PikPak 阶段 D 文件写入与后端 staging 上传导入能力。
 func (d *PikPakDriver) Capabilities(context.Context, *entity.StorageSource) (domainstorage.StorageCapabilities, error) {
 	return domainstorage.StorageCapabilities{
-		CanList:          true,
-		CanSearch:        true,
-		CanDownload:      true,
-		CanCapacity:      true,
-		CanMkdir:         true,
-		CanRename:        true,
-		CanMove:          true,
-		CanCopy:          true,
-		CanDelete:        true,
-		CanProviderTrash: true,
-		CanImportFile:    true,
-		CanServerUpload:  true,
-		CanDirectUpload:  false,
+		CanList:           true,
+		CanSearch:         true,
+		CanDownload:       true,
+		CanCapacity:       true,
+		CanMkdir:          true,
+		CanRename:         true,
+		CanMove:           true,
+		CanCopy:           true,
+		CanDelete:         true,
+		CanProviderTrash:  true,
+		CanImportFile:     true,
+		CanServerUpload:   true,
+		CanDirectUpload:   false,
+		CanNativeDownload: true,
 	}, nil
 }
 
@@ -333,6 +334,91 @@ func (d *PikPakDriver) ImportFile(ctx context.Context, source *entity.StorageSou
 		}
 		return d.ossUploader.PutObject(ctx, upload.Resumable.Params, localPath, contentTypeForPikPakImport(targetPath))
 	})
+}
+
+// CreateNativeDownload 直接在 PikPak 目标目录创建 provider 原生离线下载任务。
+func (d *PikPakDriver) CreateNativeDownload(ctx context.Context, source *entity.StorageSource, req domainstorage.NativeDownloadRequest) (*domainstorage.NativeDownloadTask, error) {
+	targetDirPath, err := normalizeVirtualPath(req.TargetDirPath)
+	if err != nil {
+		return nil, err
+	}
+	rawURL := strings.TrimSpace(req.URL)
+	if rawURL == "" {
+		return nil, domainstorage.ErrOperationUnsupported
+	}
+	targetFilename := strings.TrimSpace(req.TargetFilename)
+	if targetFilename != "" {
+		if err := validatePikPakFileName(targetFilename); err != nil {
+			return nil, err
+		}
+	}
+
+	var result *domainstorage.NativeDownloadTask
+	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		defer d.invalidatePikPakPathCache(source.ID, cfg)
+		parent, resolveErr := d.ensureFolderPathWithSession(ctx, source.ID, session, cfg, targetDirPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if targetFilename != "" {
+			if err := d.ensureNoChildWithName(ctx, session, parent.ID, targetFilename); err != nil {
+				return err
+			}
+		}
+		task, createErr := d.sessions.client.CreateOfflineDownload(ctx, session, PikPakCreateOfflineDownloadRequest{
+			ParentID: parent.ID,
+			URL:      rawURL,
+			Name:     targetFilename,
+		})
+		if createErr != nil {
+			return createErr
+		}
+		if task == nil || strings.TrimSpace(task.ID) == "" {
+			return domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider task missing")
+		}
+		progress := pikPakOfflineProgressPercent(task.Progress)
+		result = &domainstorage.NativeDownloadTask{
+			ExternalID:      strings.TrimSpace(task.ID),
+			DisplayName:     pikPakOfflineTaskDisplayName(task, rawURL),
+			ProgressPercent: progress,
+		}
+		return nil
+	})
+	return result, err
+}
+
+// GetNativeDownloadStatus 查询 PikPak provider 原生离线下载任务状态。
+func (d *PikPakDriver) GetNativeDownloadStatus(ctx context.Context, source *entity.StorageSource, externalID string) (*domainstorage.NativeDownloadStatus, error) {
+	var status *domainstorage.NativeDownloadStatus
+	err := d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		task, err := d.sessions.client.GetOfflineDownloadTask(ctx, session, externalID)
+		if err != nil {
+			return err
+		}
+		status = pikPakOfflineTaskToNativeStatus(task)
+		if status.Status == "completed" {
+			d.invalidatePikPakPathCache(source.ID, cfg)
+		}
+		return nil
+	})
+	return status, err
+}
+
+// CancelNativeDownload 删除 PikPak provider 离线任务记录。
+func (d *PikPakDriver) CancelNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string, deleteFiles bool) error {
+	return d.sessions.withSession(ctx, source, func(session PikPakSession, _ PikPakConfig) error {
+		return d.sessions.client.DeleteOfflineDownloadTasks(ctx, session, []string{externalID}, deleteFiles)
+	})
+}
+
+// PauseNativeDownload 当前 PikPak provider 原生任务暂不暴露暂停能力。
+func (d *PikPakDriver) PauseNativeDownload(context.Context, *entity.StorageSource, string) error {
+	return domainstorage.ErrOperationUnsupported
+}
+
+// ResumeNativeDownload 当前 PikPak provider 原生任务暂不暴露恢复能力。
+func (d *PikPakDriver) ResumeNativeDownload(context.Context, *entity.StorageSource, string) error {
+	return domainstorage.ErrOperationUnsupported
 }
 
 func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, sourceID uint, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {
@@ -758,6 +844,84 @@ func pikPakFileToStorageEntry(file PikPakFile, virtualPath string) domainstorage
 		ETag:       file.Hash,
 		ModifiedAt: modifiedAt,
 	}
+}
+
+func pikPakOfflineTaskToNativeStatus(task *PikPakOfflineTask) *domainstorage.NativeDownloadStatus {
+	if task == nil {
+		return &domainstorage.NativeDownloadStatus{Status: "pending"}
+	}
+	progress := pikPakOfflineProgressPercent(task.Progress)
+	var errorMessage *string
+	if strings.TrimSpace(task.Message) != "" {
+		message := strings.TrimSpace(task.Message)
+		errorMessage = &message
+	}
+	status := &domainstorage.NativeDownloadStatus{
+		Status:          mapPikPakOfflinePhase(task.Phase),
+		ProgressPercent: progress,
+		DisplayName:     pikPakOfflineTaskDisplayName(task, ""),
+		ErrorMessage:    errorMessage,
+	}
+	if status.Status == "completed" {
+		completed := float64(100)
+		status.ProgressPercent = &completed
+	}
+	return status
+}
+
+func mapPikPakOfflinePhase(phase string) string {
+	switch strings.ToUpper(strings.TrimSpace(phase)) {
+	case "PHASE_TYPE_PENDING":
+		return "pending"
+	case "PHASE_TYPE_RUNNING":
+		return "running"
+	case "PHASE_TYPE_COMPLETE":
+		return "completed"
+	case "PHASE_TYPE_ERROR":
+		return "failed"
+	case "PHASE_TYPE_CANCEL", "PHASE_TYPE_CANCELED", "PHASE_TYPE_CANCELLED":
+		return "canceled"
+	default:
+		return "running"
+	}
+}
+
+func pikPakOfflineProgressPercent(progress float64) *float64 {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress <= 1 {
+		progress *= 100
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	return &progress
+}
+
+func pikPakOfflineTaskDisplayName(task *PikPakOfflineTask, fallbackURL string) string {
+	if task == nil {
+		return path.Base(fallbackURL)
+	}
+	for _, candidate := range []string{
+		task.Name,
+		pikPakOfflineFileName(task.File),
+		pikPakOfflineFileName(task.ReferenceResource),
+		path.Base(fallbackURL),
+	} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" && candidate != "." && candidate != "/" {
+			return candidate
+		}
+	}
+	return fallbackURL
+}
+
+func pikPakOfflineFileName(file *PikPakFile) string {
+	if file == nil {
+		return ""
+	}
+	return file.Name
 }
 
 func (f PikPakFile) isFolder() bool {

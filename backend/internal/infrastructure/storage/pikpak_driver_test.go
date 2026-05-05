@@ -296,8 +296,72 @@ func TestPikPakDriverCapabilitiesExposeStageDImportOnlyUpload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capabilities() error = %v", err)
 	}
-	if !caps.CanImportFile || !caps.CanServerUpload || caps.CanDirectUpload {
-		t.Fatalf("expected stage D import/server upload without direct upload, got %+v", caps)
+	if !caps.CanImportFile || !caps.CanServerUpload || !caps.CanNativeDownload || caps.CanDirectUpload {
+		t.Fatalf("expected stage E native download and import/server upload without direct upload, got %+v", caps)
+	}
+}
+
+func TestPikPakDriverNativeDownloadCreateStatusAndCancel(t *testing.T) {
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {
+				{ID: "folder-downloads", Name: "Downloads", Kind: "drive#folder"},
+			},
+			"folder-downloads": {},
+		},
+		offlineTasks: map[string]PikPakOfflineTask{
+			"offline-1": {
+				ID:       "offline-1",
+				Name:     "episode.mkv",
+				Phase:    "PHASE_TYPE_COMPLETE",
+				Progress: 1,
+			},
+		},
+	}
+	driver := NewPikPakDriver(WithPikPakAPIClient(client))
+	source := newTestPikPakSource(t)
+
+	task, err := driver.CreateNativeDownload(context.Background(), source, domainstorage.NativeDownloadRequest{
+		URL:            "magnet:?xt=urn:btih:abcdef",
+		TargetDirPath:  "/Downloads",
+		TargetFilename: "episode.mkv",
+	})
+	if err != nil {
+		t.Fatalf("CreateNativeDownload() error = %v", err)
+	}
+	if task.ExternalID != "offline-1" || task.DisplayName != "episode.mkv" || task.ProgressPercent == nil || *task.ProgressPercent != 0 {
+		t.Fatalf("unexpected native task = %+v", task)
+	}
+	if len(client.createOfflineCalls) != 1 {
+		t.Fatalf("expected one native create call, got %+v", client.createOfflineCalls)
+	}
+	call := client.createOfflineCalls[0]
+	if call.ParentID != "folder-downloads" || call.URL != "magnet:?xt=urn:btih:abcdef" || call.Name != "episode.mkv" {
+		t.Fatalf("unexpected native create call = %+v", call)
+	}
+	client.offlineTasks[task.ExternalID] = PikPakOfflineTask{
+		ID:       task.ExternalID,
+		Name:     "episode.mkv",
+		Phase:    "PHASE_TYPE_COMPLETE",
+		Progress: 1,
+	}
+
+	status, err := driver.GetNativeDownloadStatus(context.Background(), source, "offline-1")
+	if err != nil {
+		t.Fatalf("GetNativeDownloadStatus() error = %v", err)
+	}
+	if status.Status != "completed" || status.ProgressPercent == nil || *status.ProgressPercent != 100 {
+		t.Fatalf("unexpected native status = %+v", status)
+	}
+
+	if err := driver.CancelNativeDownload(context.Background(), source, "offline-1", true); err != nil {
+		t.Fatalf("CancelNativeDownload() error = %v", err)
+	}
+	if !reflect.DeepEqual(client.deletedOfflineTasks, []string{"offline-1"}) || !reflect.DeepEqual(client.deleteOfflineFiles, []bool{true}) {
+		t.Fatalf("unexpected native cancel calls = ids=%v delete=%v", client.deletedOfflineTasks, client.deleteOfflineFiles)
+	}
+	if err := driver.PauseNativeDownload(context.Background(), source, "offline-1"); !errors.Is(err, domainstorage.ErrOperationUnsupported) {
+		t.Fatalf("expected pause unsupported, got %v", err)
 	}
 }
 
@@ -701,6 +765,10 @@ type fakePikPakClient struct {
 	createUploadResponse *PikPakCreateUploadFileResponse
 	createUploadErr      error
 	createUploadCalls    []PikPakCreateUploadFileRequest
+	offlineTasks         map[string]PikPakOfflineTask
+	createOfflineCalls   []PikPakCreateOfflineDownloadRequest
+	deletedOfflineTasks  []string
+	deleteOfflineFiles   []bool
 	listCalls            []string
 	moves                []fakePikPakBatchCall
 	copies               []fakePikPakBatchCall
@@ -760,6 +828,38 @@ func (c *fakePikPakClient) CreateUploadFile(_ context.Context, _ PikPakSession, 
 	file := PikPakFile{ID: "file-" + req.Name, Name: req.Name, Kind: "drive#file", Size: strconv.FormatInt(req.Size, 10), Hash: req.Hash}
 	c.filesByParent[req.ParentID] = append(c.filesByParent[req.ParentID], file)
 	return &PikPakCreateUploadFileResponse{File: &file}, nil
+}
+
+func (c *fakePikPakClient) CreateOfflineDownload(_ context.Context, _ PikPakSession, req PikPakCreateOfflineDownloadRequest) (*PikPakOfflineTask, error) {
+	c.createOfflineCalls = append(c.createOfflineCalls, req)
+	if c.offlineTasks == nil {
+		c.offlineTasks = make(map[string]PikPakOfflineTask)
+	}
+	id := "offline-" + strconv.Itoa(len(c.createOfflineCalls))
+	task := PikPakOfflineTask{
+		ID:       id,
+		Name:     req.Name,
+		Phase:    "PHASE_TYPE_PENDING",
+		Progress: 0,
+	}
+	c.offlineTasks[id] = task
+	return &task, nil
+}
+
+func (c *fakePikPakClient) GetOfflineDownloadTask(_ context.Context, _ PikPakSession, taskID string) (*PikPakOfflineTask, error) {
+	task, ok := c.offlineTasks[taskID]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return &task, nil
+}
+
+func (c *fakePikPakClient) DeleteOfflineDownloadTasks(_ context.Context, _ PikPakSession, taskIDs []string, deleteFiles bool) error {
+	for _, id := range taskIDs {
+		c.deletedOfflineTasks = append(c.deletedOfflineTasks, id)
+		c.deleteOfflineFiles = append(c.deleteOfflineFiles, deleteFiles)
+	}
+	return nil
 }
 
 func (c *fakePikPakClient) RenameFile(_ context.Context, _ PikPakSession, fileID string, name string) (*PikPakFile, error) {

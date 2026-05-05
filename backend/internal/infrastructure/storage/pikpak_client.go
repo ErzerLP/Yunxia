@@ -78,6 +78,9 @@ type PikPakAPIClient interface {
 	GetFile(ctx context.Context, session PikPakSession, fileID string, usage string) (*PikPakFile, error)
 	CreateFolder(ctx context.Context, session PikPakSession, parentID string, name string) (*PikPakFile, error)
 	CreateUploadFile(ctx context.Context, session PikPakSession, req PikPakCreateUploadFileRequest) (*PikPakCreateUploadFileResponse, error)
+	CreateOfflineDownload(ctx context.Context, session PikPakSession, req PikPakCreateOfflineDownloadRequest) (*PikPakOfflineTask, error)
+	GetOfflineDownloadTask(ctx context.Context, session PikPakSession, taskID string) (*PikPakOfflineTask, error)
+	DeleteOfflineDownloadTasks(ctx context.Context, session PikPakSession, taskIDs []string, deleteFiles bool) error
 	RenameFile(ctx context.Context, session PikPakSession, fileID string, name string) (*PikPakFile, error)
 	BatchMove(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error
 	BatchCopy(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error
@@ -142,6 +145,24 @@ type PikPakCreateUploadFileResponse struct {
 	UploadType string                 `json:"upload_type"`
 	Resumable  *PikPakResumableUpload `json:"resumable"`
 	File       *PikPakFile            `json:"file"`
+}
+
+// PikPakCreateOfflineDownloadRequest 表示 PikPak 原生离线下载创建参数。
+type PikPakCreateOfflineDownloadRequest struct {
+	ParentID string
+	URL      string
+	Name     string
+}
+
+// PikPakOfflineTask 表示 PikPak 离线下载任务。
+type PikPakOfflineTask struct {
+	ID                string      `json:"id"`
+	Name              string      `json:"name"`
+	Phase             string      `json:"phase"`
+	Progress          float64     `json:"progress"`
+	Message           string      `json:"message"`
+	File              *PikPakFile `json:"file"`
+	ReferenceResource *PikPakFile `json:"reference_resource"`
 }
 
 // PikPakResumableUpload 表示需要继续上传实体的 OSS 参数集合。
@@ -420,6 +441,88 @@ func (c *PikPakHTTPClient) CreateUploadFile(ctx context.Context, session PikPakS
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// CreateOfflineDownload 创建 PikPak provider 原生离线下载任务。
+func (c *PikPakHTTPClient) CreateOfflineDownload(ctx context.Context, session PikPakSession, req PikPakCreateOfflineDownloadRequest) (*PikPakOfflineTask, error) {
+	payload := map[string]any{
+		"kind":        "drive#file",
+		"name":        req.Name,
+		"upload_type": "UPLOAD_TYPE_URL",
+		"url": map[string]any{
+			"url": req.URL,
+		},
+		"parent_id":   req.ParentID,
+		"folder_type": "",
+	}
+	var resp struct {
+		Task *PikPakOfflineTask `json:"task"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Task == nil {
+		return nil, domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider task missing")
+	}
+	return resp.Task, nil
+}
+
+// GetOfflineDownloadTask 查询单个 PikPak provider 原生离线下载任务。
+func (c *PikPakHTTPClient) GetOfflineDownloadTask(ctx context.Context, session PikPakSession, taskID string) (*PikPakOfflineTask, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, os.ErrNotExist
+	}
+	pageToken := ""
+	for {
+		query := map[string]string{
+			"type":           "offline",
+			"thumbnail_size": "SIZE_SMALL",
+			"limit":          "10000",
+			"with":           "reference_resource",
+			"filters":        `{"phase":{"in":"PHASE_TYPE_RUNNING,PHASE_TYPE_ERROR,PHASE_TYPE_PENDING,PHASE_TYPE_COMPLETE"}}`,
+		}
+		if pageToken != "" {
+			query["page_token"] = pageToken
+		}
+		var resp struct {
+			Tasks         []PikPakOfflineTask `json:"tasks"`
+			NextPageToken string              `json:"next_page_token"`
+		}
+		if err := c.doJSON(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/tasks", session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
+			return nil, err
+		}
+		for _, task := range resp.Tasks {
+			if task.ID == taskID {
+				found := task
+				return &found, nil
+			}
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return nil, os.ErrNotExist
+}
+
+// DeleteOfflineDownloadTasks 删除 PikPak provider 原生离线下载任务记录。
+func (c *PikPakHTTPClient) DeleteOfflineDownloadTasks(ctx context.Context, session PikPakSession, taskIDs []string, deleteFiles bool) error {
+	cleanIDs := make([]string, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			cleanIDs = append(cleanIDs, id)
+		}
+	}
+	if len(cleanIDs) == 0 {
+		return nil
+	}
+	query := map[string]string{
+		"task_ids":     strings.Join(cleanIDs, ","),
+		"delete_files": strconv.FormatBool(deleteFiles),
+	}
+	return c.doJSON(ctx, http.MethodDelete, c.driveBaseURL+"/drive/v1/tasks", session.UserAgent, sessionHeaders(session), query, nil, nil)
 }
 
 // RenameFile 修改 PikPak 对象名称。

@@ -118,6 +118,13 @@ type UploadDriver interface { /* direct upload / multipart */ }
 type ImportDriver interface {
     ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error
 }
+type NativeDownloadDriver interface {
+    CreateNativeDownload(ctx context.Context, source *entity.StorageSource, req NativeDownloadRequest) (*NativeDownloadTask, error)
+    GetNativeDownloadStatus(ctx context.Context, source *entity.StorageSource, externalID string) (*NativeDownloadStatus, error)
+    CancelNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string, deleteFiles bool) error
+    PauseNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string) error
+    ResumeNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string) error
+}
 type CapacityDriver interface {
     Capacity(ctx context.Context, source *entity.StorageSource) (*CapacityInfo, error)
 }
@@ -134,6 +141,7 @@ type DriverBundle struct {
     File        FileDriver
     Upload      UploadDriver
     Import      ImportDriver
+    NativeDownload NativeDownloadDriver
     Capacity    CapacityDriver
     Capabilities CapabilityProvider
 
@@ -171,6 +179,12 @@ type DriverBundle struct {
 - `ImportDriver` imports a backend-visible local staging file into the target
   source path. It is used by offline downloads and by upload flows for drivers
   that cannot safely expose direct browser-upload instructions.
+- `NativeDownloadDriver` is an optimization for source targets that can create
+  provider-side offline download tasks directly, e.g. PikPak URL tasks. It must
+  be registered through `DriverBundle`, and TaskService must keep the generic
+  staging -> `ImportDriver` path as fallback / non-native behavior. Native task
+  status must use the same task states (`pending`, `running`, `completed`,
+  `failed`, `canceled`) and must not leak provider task payloads or secrets.
 - `CapacityDriver` is preferred for source capacity/used bytes. If it returns
   `nil` or `UsedBytes == nil`, system stats may fall back to recursive
   `FileDriver` only when `RecursiveStatsFallback` is explicitly true.
@@ -201,6 +215,12 @@ type DriverBundle struct {
   upload then uses `server_chunk -> ImportFile`; offline/RSS/BT tasks import
   their backend-visible staging files through the same `ImportDriver`; system
   stats still use quota instead of recursive listing.
+- Good: a native-download-capable PikPak phase additionally registers
+  `NativeDownload`; TaskService chooses it only when the resolved target source
+  itself is PikPak, stores `downloader_type=pikpak_native`, and skips local
+  staging/import because the provider writes directly into the target folder.
+  Non-PikPak targets and unsupported native links continue through the generic
+  downloader staging path.
 - Base: S3 registers `Config`, `Probe`, `File`, `Upload`, `Import`, and sets
   `RecursiveStatsFallback=true` to preserve existing recursive stats behavior.
 - Bad: adding `if driverType == "pikpak"` branches in `SourceService`,
@@ -222,6 +242,10 @@ tests that assert:
 - Import-only non-local drivers return `transport.mode=server_chunk`, do not
   return direct part instructions, and call `ImportFile` on finish. Task
   completion must also call `ImportFile` and clean the staging directory.
+- Native-download driver tests cover create/status/cancel mapping, provider
+  target folder resolution, no local staging/import for native PikPak targets,
+  `downloader_type=pikpak_native`, and unsupported pause/resume returning a
+  stable unsupported error.
 - Path cache tests cover both repeated reads avoiding redundant provider
   resolution and write/import operations invalidating cached paths.
 - Provider retry tests cover transient failures eventually succeeding, request
@@ -255,8 +279,9 @@ drivers := NewStorageDriverRegistry(DriverBundle{
     Probe:        pikpak,
     File:         pikpak,
     Import:       pikpak,
+    NativeDownload: pikpak,
     Capacity:     pikpak,
-    Capabilities: pikpak, // import-capable stage: still no Upload/direct-parts registration.
+    Capabilities: pikpak, // still no Upload/direct-parts registration.
 })
 
 sourceOpts := append(baseSourceOpts, drivers.SourceServiceOptions()...)
@@ -287,10 +312,15 @@ the minimal application-layer `Downloader` interface. When multiple downloaders
 coexist, keep routing and task orchestration in `application/service` and keep
 protocol-specific HTTP/RPC calls in infrastructure.
 
-Tasks must always download into a backend-visible staging directory first, then
+Tasks normally download into a backend-visible staging directory first, then
 import into the resolved VFS/storage target. If different downloader backends use
 different shared volumes, configure per-downloader staging roots instead of
 letting one downloader's path become the global default for every task type.
+The exception is a registered `NativeDownloadDriver` whose resolved target
+source is the same provider (currently PikPak): provider native tasks may write
+directly into the target folder, store `downloader_type=pikpak_native`, and skip
+staging/import. Do not use provider native downloads for unrelated targets unless
+an explicit temp-provider transfer flow is implemented and tested.
 
 ## Naming Conventions
 

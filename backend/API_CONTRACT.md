@@ -22,7 +22,7 @@
 | 传统文件 | `/api/v1/files*` | 按 `source_id + path` 管理文件 | 兼容旧文件页 |
 | 上传 | `/api/v1/upload*` | 初始化、分片、完成、会话、取消 | 文件上传 |
 | 回收站 | `/api/v1/trash*` | 列表、恢复、永久删除、清空 | 回收站页 |
-| 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消；HTTP 走 Aria2，BT/magnet 走 qBittorrent | 离线任务页 |
+| 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消；普通目标按链接类型走 Aria2/qBittorrent，PikPak 目标优先走 provider 原生离线下载 | 离线任务页 |
 | RSS 订阅 | `/api/v1/rss*` | RSS 源、订阅规则、条目、手动刷新、BT/magnet 入队、qBittorrent 健康检查 | RSS 追番页 |
 | 通知告警 | `/api/v1/notifications*` | Webhook 通道、通知事件、失败重试 | 设置/通知页、RSS 待处理入口 |
 | 分享 | `/api/v1/shares*`、`/s/:token` | 分享管理、公开分享访问 | 分享管理页、公开分享页 |
@@ -375,7 +375,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - 通用：`name,driver_type,is_enabled,is_webdav_exposed,webdav_read_only,mount_path,root_path,sort_order`
 - local：`config.base_path`
 - s3：`config.endpoint,region,bucket,base_prefix,force_path_style` + `secret_patch.access_key/secret_key`
-- pikpak（阶段 D 文件写操作、后端暂存上传导入、离线下载导入可用；浏览器直传暂不支持）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
+- pikpak（阶段 E 文件写操作、后端暂存上传导入、PikPak 目标原生离线下载可用；浏览器直传暂不支持）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
 
 创建 local 源示例：
 
@@ -424,7 +424,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 
 更新 S3 源时，如果不修改密钥，可以不传对应 `secret_patch` 字段；如果要清空密钥，可以传 `null`。
 
-创建 PikPak 源示例（阶段 D 文件写操作、上传导入、离线下载导入可用）：
+创建 PikPak 源示例（阶段 E 文件写操作、上传导入、PikPak 目标原生离线下载可用）：
 
 ```json
 {
@@ -466,6 +466,7 @@ PikPak 字段说明：
 - `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`
 - token/captcha/device_id 运行态刷新后会更新当前请求内的 source 配置；持久化写回仓储属于后续增强点，create/update 的探测阶段会随实体保存
 - PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required 等用户可修正错误不会重试，最终仍按稳定错误码返回
+- 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
 
 补充：
 
@@ -500,7 +501,7 @@ PikPak 字段说明：
 - 本地源 / 挂载目录探测为不可写时，`mkdir` / `rename` / `move` / `copy` / `delete` 返回 `403 SOURCE_READ_ONLY`；响应只暴露稳定错误码与通用消息，不返回容器或宿主机物理路径
 - `files/access-url` 对 local / S3 / PikPak 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`
 - 真正的 S3 presigned URL / PikPak 临时下载链接在 `GET /files/download` 时再 302 跳转
-- PikPak 阶段 D 支持 `list` / `search`（受限递归）/ `stat` / `access-url` / `download` / `mkdir` / `rename` / `move` / `copy` / `delete`，并支持后端 staging 文件导入；文件/VFS 条目 `can_delete` 会按 driver capability 与 ACL 共同计算。
+- PikPak 阶段 E 支持 `list` / `search`（受限递归）/ `stat` / `access-url` / `download` / `mkdir` / `rename` / `move` / `copy` / `delete`，并支持后端 staging 文件导入与 PikPak 目标原生离线下载；文件/VFS 条目 `can_delete` 会按 driver capability 与 ACL 共同计算。
 - PikPak `delete_mode` 为空或 `trash` 时调用 provider `batchTrash`，语义是移入 PikPak 回收站，不会创建 Yunxia `.trash` 记录；`delete_mode=permanent` 暂返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 
 ### 3.7 upload（`/api/v1`）
@@ -549,7 +550,7 @@ PikPak 字段说明：
   - `resolved_inner_parent_path`
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
-- PikPak 阶段 D 返回 `transport.mode=server_chunk`，由后端接收分片合并成本地 staging 文件，再调用 PikPak `ImportFile` 计算 GCID、创建 provider 上传任务，并在需要时上传到 OSS；不会返回 `part_instructions[]`
+- PikPak 上传返回 `transport.mode=server_chunk`，由后端接收分片合并成本地 staging 文件，再调用 PikPak `ImportFile` 计算 GCID、创建 provider 上传任务，并在需要时上传到 OSS；不会返回 `part_instructions[]`
 - 纯虚拟目录无落地存储时返回 `409 NO_BACKING_STORAGE`
 
 本地源上传调用顺序：
@@ -591,7 +592,7 @@ S3 finish Body 示例：
 }
 ```
 
-PikPak 阶段 D 上传调用顺序与本地源相同：
+PikPak 上传调用顺序与本地源相同：
 
 1. `POST /api/v1/upload/init`
    - `transport.mode="server_chunk"`
@@ -636,15 +637,23 @@ PikPak 阶段 D 上传调用顺序与本地源相同：
 - 推荐新建任务时传 `target_virtual_parent_path`，语义是“统一虚拟目录中的目标父目录”，后端会解析到具体挂载存储源
 - 兼容旧模式：不传 `target_virtual_parent_path` 时，继续使用 `source_id + save_path`
 - 旧模式下 `save_path` 是 **source 内部目标父目录**，不是统一虚拟目录路径
-- 下载器按链接类型分发：普通 HTTP/HTTPS 走 Aria2；`magnet:?` 与 `.torrent` URL 走 qBittorrent（未启用 qBittorrent 时返回 `503 DOWNLOADER_UNAVAILABLE`）
+- 下载器按目标与链接类型分发：
+  - 目标解析到 PikPak source 时，普通 HTTP/HTTPS、`magnet:?` 与 `.torrent` URL 优先走 PikPak provider 原生离线下载，`DownloadTaskView.downloader_type="pikpak_native"`。
+  - 其他目标：普通 HTTP/HTTPS 走 Aria2；`magnet:?` 与 `.torrent` URL 走 qBittorrent（未启用 qBittorrent 时返回 `503 DOWNLOADER_UNAVAILABLE`）。
 - `target_filename` 为可选任务级目标文件名快照，主要由 RSS `filename_template` 自动生成；直接创建任务也可传入。它只能是文件名，不能包含路径分隔符、`..` 或 Windows drive-style 前缀；非法时返回 `422 FILE_NAME_INVALID`。
-- 下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
+- 除 PikPak 原生离线下载外，下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
   - local 目标：从 staging move/copy 到真实物理路径
   - S3 目标：从 staging 上传到对应对象 key
-  - PikPak 阶段 D 目标：从 staging 调 PikPak `ImportFile` 导入；HTTP/BT/RSS 任务完成后可落到 PikPak 挂载源
+  - PikPak fallback 目标：从 staging 调 PikPak `ImportFile` 导入；当 PikPak 原生离线下载不可用或未注册时仍保留该路径
   - staging 本地物理路径不会返回给前端
   - 导入完成后清理 staging；后续刷新如果遇到已导入文件但 staging 已清理，任务保持 `completed`，不会回退为 `failed`
   - 当 `target_filename` 非空且 staging 中只有一个有效文件时，导入阶段会把该文件落到目标父目录下的 `target_filename`；若 `target_filename` 没有明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名），会保留原下载文件扩展名；多文件任务保持原相对路径，不应用重命名
+- PikPak 原生离线下载任务：
+  - 创建任务时后端会把目标 VFS 目录解析为 PikPak source 内目录；目标父目录不存在时会由 PikPak driver 递归创建。
+  - `target_filename` 非空时会传给 provider 作为任务名，并在创建前检查同目录同名冲突；为空时由 provider 按链接自行命名。
+  - 任务完成后文件已经在 PikPak source 中，不再调用 staging 导入；刷新 VFS 列表即可看到 provider 侧结果。
+  - provider `PHASE_TYPE_PENDING/RUNNING/COMPLETE/ERROR` 分别映射为 `pending/running/completed/failed`。
+  - 暂停/恢复当前返回 `422 SOURCE_OPERATION_UNSUPPORTED`；取消会调用 provider 删除任务记录，并透传 `delete_file` 为 provider `delete_files`。
 - 返回体当前会补充 VFS 快照字段：
   - `target_virtual_parent_path`
   - `target_filename`
@@ -658,7 +667,7 @@ PikPak 阶段 D 上传调用顺序与本地源相同：
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
 - `completed` 任务返回时 `error_message` 固定为 `null`；若导入失败，任务会转为 `failed` 并返回失败原因
 - `failed` / `canceled` 任务会返回明确 `error_message`；下载器未返回原因时后端补默认原因，用户主动取消时为 `download canceled by user`
-- `DownloadTaskView.downloader_type` 当前可能为 `aria2` 或 `qbittorrent`
+- `DownloadTaskView.downloader_type` 当前可能为 `aria2`、`qbittorrent` 或 `pikpak_native`
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
 - 当前没有 `retry` 接口
 
@@ -1430,7 +1439,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 6. `DELETE /api/v1/acl/rules/:id` 返回的是 `{}`，不是 `{deleted,id}`。
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
 8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
-9. 离线下载不会把下载器直接指向目标源目录，而是先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3 / PikPak；PikPak 目标使用 `ImportFile` 写入 provider。
+9. 离线下载默认先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3 / PikPak；但目标解析到 PikPak source 时会优先使用 `pikpak_native` provider 原生离线下载，完成后文件已在 PikPak 中，不再走 staging。
 10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
 11. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
 12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。

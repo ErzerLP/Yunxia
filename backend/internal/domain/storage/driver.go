@@ -46,6 +46,44 @@ type ImportDriver interface {
 	ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error
 }
 
+// NativeDownloadDriver 定义 provider 原生离线下载能力。
+//
+// 该接口只用于目标 source 自身支持离线下载的场景。上层仍保留通用
+// 下载器 staging -> ImportFile 路径，不能把 provider 原生任务作为唯一入口。
+type NativeDownloadDriver interface {
+	CreateNativeDownload(ctx context.Context, source *entity.StorageSource, req NativeDownloadRequest) (*NativeDownloadTask, error)
+	GetNativeDownloadStatus(ctx context.Context, source *entity.StorageSource, externalID string) (*NativeDownloadStatus, error)
+	CancelNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string, deleteFiles bool) error
+	PauseNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string) error
+	ResumeNativeDownload(ctx context.Context, source *entity.StorageSource, externalID string) error
+}
+
+// NativeDownloadRequest 表示 provider 原生离线下载创建请求。
+type NativeDownloadRequest struct {
+	URL            string
+	TargetDirPath  string
+	TargetFilename string
+}
+
+// NativeDownloadTask 表示 provider 原生离线下载创建结果。
+type NativeDownloadTask struct {
+	ExternalID      string
+	DisplayName     string
+	ProgressPercent *float64
+}
+
+// NativeDownloadStatus 表示 provider 原生离线下载状态。
+type NativeDownloadStatus struct {
+	Status          string
+	CompletedBytes  int64
+	TotalBytes      *int64
+	DownloadSpeed   int64
+	ETASeconds      *int64
+	ProgressPercent *float64
+	DisplayName     string
+	ErrorMessage    *string
+}
+
 // CapacityInfo 表示存储源容量信息。nil 字段表示 provider 暂不提供该值。
 type CapacityInfo struct {
 	UsedBytes  *int64
@@ -59,19 +97,20 @@ type CapacityDriver interface {
 
 // StorageCapabilities 描述 driver 支持的存储操作。
 type StorageCapabilities struct {
-	CanList          bool
-	CanSearch        bool
-	CanDownload      bool
-	CanMkdir         bool
-	CanRename        bool
-	CanMove          bool
-	CanCopy          bool
-	CanDelete        bool
-	CanProviderTrash bool
-	CanImportFile    bool
-	CanDirectUpload  bool
-	CanServerUpload  bool
-	CanCapacity      bool
+	CanList           bool
+	CanSearch         bool
+	CanDownload       bool
+	CanMkdir          bool
+	CanRename         bool
+	CanMove           bool
+	CanCopy           bool
+	CanDelete         bool
+	CanProviderTrash  bool
+	CanImportFile     bool
+	CanDirectUpload   bool
+	CanServerUpload   bool
+	CanNativeDownload bool
+	CanCapacity       bool
 }
 
 // CapabilityProvider 定义 driver 运行时能力查询接口。

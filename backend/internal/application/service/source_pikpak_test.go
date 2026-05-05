@@ -472,6 +472,166 @@ func TestPikPakStageDTaskDownloadImportsAndCleansStaging(t *testing.T) {
 	}
 }
 
+func TestPikPakNativeTaskDownloadUsesProviderWithoutStagingImport(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	nativeDriver := &recordingNativeDownloadDriver{
+		createResult: &NativeDownloadTask{ExternalID: "native-1", DisplayName: "episode.mkv"},
+		statusByID: map[string]*NativeDownloadStatus{
+			"native-1": {Status: "completed", DisplayName: "episode.mkv"},
+		},
+	}
+	fallbackDownloader := &completedWritingDownloader{filename: "fallback.mkv", content: []byte("fallback")}
+	importer := &recordingTaskImportDriver{}
+	taskSvc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		fallbackDownloader,
+		WithTaskStagingDir(filepath.Join(t.TempDir(), "task-staging")),
+		WithTaskImportDriver(infraStorage.PikPakDriverType, importer),
+		WithTaskNativeDownloadDriver(infraStorage.PikPakDriverType, nativeDriver),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       42,
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		Capabilities: []string{},
+	})
+
+	created, err := taskSvc.Create(ctx, appdto.CreateTaskRequest{
+		Type:           "download",
+		URL:            "magnet:?xt=urn:btih:abcdef",
+		SourceID:       source.ID,
+		SavePath:       "/Downloads",
+		TargetFilename: "episode.mkv",
+	})
+	if err != nil {
+		t.Fatalf("Create(native) error = %v", err)
+	}
+	if created.DownloaderType != DownloaderTypePikPakNative {
+		t.Fatalf("expected native downloader type, got %+v", created)
+	}
+	if fallbackDownloader.addDir != "" {
+		t.Fatalf("fallback downloader should not receive native PikPak task, addDir=%q", fallbackDownloader.addDir)
+	}
+	if len(nativeDriver.createCalls) != 1 || nativeDriver.createCalls[0].TargetDirPath != "/Downloads" || nativeDriver.createCalls[0].TargetFilename != "episode.mkv" {
+		t.Fatalf("unexpected native create calls = %+v", nativeDriver.createCalls)
+	}
+	storedBefore, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID(before) error = %v", err)
+	}
+	if storedBefore.StagingDir != "" || storedBefore.ExternalID != "native-1" {
+		t.Fatalf("expected native task without staging, got %+v", storedBefore)
+	}
+
+	got, err := taskSvc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get(native) error = %v", err)
+	}
+	if got.Status != "completed" || got.Progress != 100 || got.ErrorMessage != nil {
+		t.Fatalf("expected completed native task with sanitized terminal fields, got %+v", got)
+	}
+	if len(importer.calls) != 0 {
+		t.Fatalf("native task should not import local staging, got %+v", importer.calls)
+	}
+}
+
+func TestPikPakNativeTaskCancelPassesDeleteFileFlag(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	nativeDriver := &recordingNativeDownloadDriver{
+		createResult: &NativeDownloadTask{ExternalID: "native-1", DisplayName: "movie.mkv"},
+		statusByID: map[string]*NativeDownloadStatus{
+			"native-1": {Status: "running", ProgressPercent: ptrFloat64(20)},
+		},
+	}
+	taskSvc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		&completedWritingDownloader{filename: "fallback.mkv", content: []byte("fallback")},
+		WithTaskNativeDownloadDriver(infraStorage.PikPakDriverType, nativeDriver),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       42,
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		Capabilities: []string{},
+	})
+	created, err := taskSvc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/movie.mkv",
+		SourceID: source.ID,
+		SavePath: "/Downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create(native) error = %v", err)
+	}
+
+	if _, err := taskSvc.Cancel(ctx, created.ID, true); err != nil {
+		t.Fatalf("Cancel(native) error = %v", err)
+	}
+	if len(nativeDriver.cancelCalls) != 1 || nativeDriver.cancelCalls[0].externalID != "native-1" || !nativeDriver.cancelCalls[0].deleteFiles {
+		t.Fatalf("unexpected native cancel calls = %+v", nativeDriver.cancelCalls)
+	}
+}
+
 func TestPikPakStageCFileAndVFSWritesUseDriverCapabilities(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -625,6 +785,56 @@ type pikPakStageCFileDriver struct {
 	calls         []pikPakStageCFileCall
 }
 
+type nativeCancelCall struct {
+	externalID  string
+	deleteFiles bool
+}
+
+type recordingNativeDownloadDriver struct {
+	createResult *NativeDownloadTask
+	createErr    error
+	statusByID   map[string]*NativeDownloadStatus
+	createCalls  []NativeDownloadRequest
+	cancelCalls  []nativeCancelCall
+}
+
+func ptrFloat64(value float64) *float64 {
+	return &value
+}
+
+func (d *recordingNativeDownloadDriver) CreateNativeDownload(_ context.Context, _ *entity.StorageSource, req NativeDownloadRequest) (*NativeDownloadTask, error) {
+	d.createCalls = append(d.createCalls, req)
+	if d.createErr != nil {
+		return nil, d.createErr
+	}
+	if d.createResult != nil {
+		return d.createResult, nil
+	}
+	return &NativeDownloadTask{ExternalID: "native-created", DisplayName: path.Base(req.URL)}, nil
+}
+
+func (d *recordingNativeDownloadDriver) GetNativeDownloadStatus(_ context.Context, _ *entity.StorageSource, externalID string) (*NativeDownloadStatus, error) {
+	if d.statusByID != nil {
+		if status := d.statusByID[externalID]; status != nil {
+			return status, nil
+		}
+	}
+	return &NativeDownloadStatus{Status: "running"}, nil
+}
+
+func (d *recordingNativeDownloadDriver) CancelNativeDownload(_ context.Context, _ *entity.StorageSource, externalID string, deleteFiles bool) error {
+	d.cancelCalls = append(d.cancelCalls, nativeCancelCall{externalID: externalID, deleteFiles: deleteFiles})
+	return nil
+}
+
+func (d *recordingNativeDownloadDriver) PauseNativeDownload(context.Context, *entity.StorageSource, string) error {
+	return ErrSourceOperationUnsupported
+}
+
+func (d *recordingNativeDownloadDriver) ResumeNativeDownload(context.Context, *entity.StorageSource, string) error {
+	return ErrSourceOperationUnsupported
+}
+
 func (d *pikPakStageCFileDriver) List(_ context.Context, _ *entity.StorageSource, virtualPath string) ([]StorageEntry, error) {
 	d.calls = append(d.calls, pikPakStageCFileCall{operation: "list", path: virtualPath})
 	return d.entriesByPath[virtualPath], nil
@@ -705,6 +915,18 @@ func (c *sourceServiceFakePikPakClient) CreateFolder(context.Context, infraStora
 
 func (c *sourceServiceFakePikPakClient) CreateUploadFile(context.Context, infraStorage.PikPakSession, infraStorage.PikPakCreateUploadFileRequest) (*infraStorage.PikPakCreateUploadFileResponse, error) {
 	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) CreateOfflineDownload(context.Context, infraStorage.PikPakSession, infraStorage.PikPakCreateOfflineDownloadRequest) (*infraStorage.PikPakOfflineTask, error) {
+	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) GetOfflineDownloadTask(context.Context, infraStorage.PikPakSession, string) (*infraStorage.PikPakOfflineTask, error) {
+	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) DeleteOfflineDownloadTasks(context.Context, infraStorage.PikPakSession, []string, bool) error {
+	return errors.New("not used")
 }
 
 func (c *sourceServiceFakePikPakClient) RenameFile(context.Context, infraStorage.PikPakSession, string, string) (*infraStorage.PikPakFile, error) {

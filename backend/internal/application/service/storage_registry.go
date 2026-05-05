@@ -7,13 +7,14 @@ type DriverBundle struct {
 	Type        string
 	DisplayName string
 
-	Config       SourceConfigCodec
-	Probe        SourceDriverProbe
-	File         FileDriver
-	Upload       UploadDriver
-	Import       ImportDriver
-	Capacity     CapacityDriver
-	Capabilities CapabilityProvider
+	Config         SourceConfigCodec
+	Probe          SourceDriverProbe
+	File           FileDriver
+	Upload         UploadDriver
+	Import         ImportDriver
+	NativeDownload NativeDownloadDriver
+	Capacity       CapacityDriver
+	Capabilities   CapabilityProvider
 
 	// RecursiveStatsFallback 仅用于已确认可安全递归统计的 driver（当前为 S3 兼容）。
 	RecursiveStatsFallback bool
@@ -141,6 +142,9 @@ func (r *StorageDriverRegistry) TaskServiceOptions() []TaskServiceOption {
 	for _, bundle := range r.Bundles() {
 		if bundle.Import != nil {
 			options = append(options, WithTaskImportDriver(bundle.Type, bundle.Import))
+		}
+		if bundle.NativeDownload != nil {
+			options = append(options, WithTaskNativeDownloadDriver(bundle.Type, bundle.NativeDownload))
 		}
 	}
 	return options

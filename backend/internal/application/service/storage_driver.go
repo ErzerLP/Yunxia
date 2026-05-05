@@ -25,6 +25,18 @@ type ImportDriver = domainstorage.ImportDriver
 // TaskImportDriver 保留旧任务导入命名兼容，底层复用通用 ImportDriver。
 type TaskImportDriver = domainstorage.ImportDriver
 
+// NativeDownloadDriver 是 domain 层 provider 原生离线下载接口的别名。
+type NativeDownloadDriver = domainstorage.NativeDownloadDriver
+
+// NativeDownloadRequest 是 provider 原生离线下载创建请求的别名。
+type NativeDownloadRequest = domainstorage.NativeDownloadRequest
+
+// NativeDownloadTask 是 provider 原生离线下载创建结果的别名。
+type NativeDownloadTask = domainstorage.NativeDownloadTask
+
+// NativeDownloadStatus 是 provider 原生离线下载状态的别名。
+type NativeDownloadStatus = domainstorage.NativeDownloadStatus
+
 // CapacityInfo 是 domain 层容量信息的别名。
 type CapacityInfo = domainstorage.CapacityInfo
 
@@ -251,6 +263,19 @@ func WithTaskImportDriver(driverType string, driver TaskImportDriver) TaskServic
 			s.importDrivers = make(map[string]TaskImportDriver)
 		}
 		s.importDrivers[driverType] = driver
+	}
+}
+
+// WithTaskNativeDownloadDriver 注册 provider 原生离线下载驱动。
+func WithTaskNativeDownloadDriver(driverType string, driver NativeDownloadDriver) TaskServiceOption {
+	return func(s *TaskService) {
+		if driverType == "" || driver == nil {
+			return
+		}
+		if s.nativeDownloadDrivers == nil {
+			s.nativeDownloadDrivers = make(map[string]NativeDownloadDriver)
+		}
+		s.nativeDownloadDrivers[driverType] = driver
 	}
 }
 
