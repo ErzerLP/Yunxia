@@ -188,9 +188,10 @@ type DriverBundle struct {
   `Mkdir` / `Rename` / `Move` / `Copy` / `Delete` through `FileDriver` and
   `Capabilities` while still omitting `Upload` / `Import`; upload and task
   import entry points return `SOURCE_OPERATION_UNSUPPORTED`.
-- Good: a later import-capable PikPak phase can add `Import`; upload then uses
-  `server_chunk -> ImportFile`; system stats still use quota instead of
-  recursive listing.
+- Good: an import-capable PikPak phase registers `Import` but not `Upload`;
+  upload then uses `server_chunk -> ImportFile`; offline/RSS/BT tasks import
+  their backend-visible staging files through the same `ImportDriver`; system
+  stats still use quota instead of recursive listing.
 - Base: S3 registers `Config`, `Probe`, `File`, `Upload`, `Import`, and sets
   `RecursiveStatsFallback=true` to preserve existing recursive stats behavior.
 - Bad: adding `if driverType == "pikpak"` branches in `SourceService`,
@@ -206,11 +207,12 @@ tests that assert:
   secrets only with `source.secret.read`.
 - The registry wires every intended capability into Source/File/VFS/Trash/
   Upload/Task/Share/System services and omits unsupported capabilities (for
-  example writable PikPak stage C still must not be registered as Upload/Task
-  Import).
+  example writable-but-not-import-capable drivers omit Import, while PikPak
+  import-capable stage registers Import but still omits Upload/direct parts).
 - Existing S3 direct-upload behavior still returns `transport.mode=direct_parts`.
-- Import-only non-local drivers return `transport.mode=server_chunk` and call
-  `ImportFile` on finish.
+- Import-only non-local drivers return `transport.mode=server_chunk`, do not
+  return direct part instructions, and call `ImportFile` on finish. Task
+  completion must also call `ImportFile` and clean the staging directory.
 - System stats use `CapacityDriver` before recursive `FileDriver`, and only use
   recursive fallback when explicitly enabled.
 
@@ -239,8 +241,9 @@ drivers := NewStorageDriverRegistry(DriverBundle{
     Config:       NewPikPakSourceConfigCodec(),
     Probe:        pikpak,
     File:         pikpak,
+    Import:       pikpak,
     Capacity:     pikpak,
-    Capabilities: pikpak, // writable stage C: still no Upload/Import registration.
+    Capabilities: pikpak, // import-capable stage: still no Upload/direct-parts registration.
 })
 
 sourceOpts := append(baseSourceOpts, drivers.SourceServiceOptions()...)

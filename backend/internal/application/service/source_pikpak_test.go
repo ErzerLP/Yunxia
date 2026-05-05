@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
+	domainrepo "yunxia/internal/domain/repository"
 	"yunxia/internal/infrastructure/persistence/gorm"
 	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
@@ -285,6 +287,191 @@ func TestUploadInitToPikPakWithoutImportDriverReturnsOperationUnsupported(t *tes
 	}
 }
 
+func TestPikPakStageDUploadUsesServerChunkImport(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	importer := &recordingTaskImportDriver{}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 4
+	options.MaxUploadSize = 1024
+	uploadSvc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadImportDriver(infraStorage.PikPakDriverType, importer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       7,
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		Capabilities: []string{},
+	})
+
+	initResp, err := uploadSvc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/Anime",
+		Filename: "episode.mkv",
+		FileSize: int64(len("video-body")),
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if initResp.Transport == nil ||
+		initResp.Transport.Mode != "server_chunk" ||
+		initResp.Transport.DriverType != infraStorage.PikPakDriverType ||
+		len(initResp.PartInstructions) != 0 {
+		t.Fatalf("expected PikPak server_chunk transport without direct parts, got %+v", initResp)
+	}
+
+	chunks := [][]byte{[]byte("vide"), []byte("o-bo"), []byte("dy")}
+	for i, chunk := range chunks {
+		if _, err := uploadSvc.UploadChunk(ctx, initResp.Upload.UploadID, i, chunk); err != nil {
+			t.Fatalf("UploadChunk(%d) error = %v", i, err)
+		}
+	}
+
+	finishResp, err := uploadSvc.Finish(ctx, appdto.UploadFinishRequest{UploadID: initResp.Upload.UploadID})
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if finishResp.File.Path != "/Anime/episode.mkv" || finishResp.File.Size != int64(len("video-body")) {
+		t.Fatalf("unexpected finish file = %+v", finishResp.File)
+	}
+	if len(importer.calls) != 1 {
+		t.Fatalf("expected one PikPak import call, got %+v", importer.calls)
+	}
+	call := importer.calls[0]
+	if call.sourceID != source.ID || call.targetPath != "/Anime/episode.mkv" || string(call.content) != "video-body" {
+		t.Fatalf("unexpected PikPak upload import call = %+v", call)
+	}
+	if _, err := uploadRepo.FindByID(context.Background(), initResp.Upload.UploadID); !errors.Is(err, domainrepo.ErrNotFound) {
+		t.Fatalf("expected upload session to be deleted after finish, err=%v", err)
+	}
+}
+
+func TestPikPakStageDTaskDownloadImportsAndCleansStaging(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "movie.mkv",
+		content:  []byte("downloaded-video"),
+	}
+	importer := &recordingTaskImportDriver{}
+	stagingRoot := filepath.Join(t.TempDir(), "task-staging")
+	taskSvc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		downloader,
+		WithTaskStagingDir(stagingRoot),
+		WithTaskImportDriver(infraStorage.PikPakDriverType, importer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       42,
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		Capabilities: []string{},
+	})
+
+	created, err := taskSvc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "https://example.com/movie.mkv",
+		SourceID: source.ID,
+		SavePath: "/Downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	storedBefore, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID(before) error = %v", err)
+	}
+	if storedBefore.StagingDir == "" || filepath.Dir(storedBefore.StagingDir) != stagingRoot {
+		t.Fatalf("expected PikPak task staging under %q, got %q", stagingRoot, storedBefore.StagingDir)
+	}
+
+	got, err := taskSvc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" || got.ErrorMessage != nil {
+		t.Fatalf("expected completed PikPak task without error, got %+v", got)
+	}
+	if len(importer.calls) != 1 {
+		t.Fatalf("expected one PikPak task import call, got %+v", importer.calls)
+	}
+	call := importer.calls[0]
+	if call.sourceID != source.ID || call.targetPath != "/Downloads/movie.mkv" || string(call.content) != "downloaded-video" {
+		t.Fatalf("unexpected PikPak task import call = %+v", call)
+	}
+	if _, err := os.Stat(storedBefore.StagingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected staging dir removed after PikPak import, stat err=%v", err)
+	}
+	storedAfter, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID(after) error = %v", err)
+	}
+	if storedAfter.StagingDir != "" {
+		t.Fatalf("expected persisted staging dir to be cleared, got %q", storedAfter.StagingDir)
+	}
+}
+
 func TestPikPakStageCFileAndVFSWritesUseDriverCapabilities(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -513,6 +700,10 @@ func (c *sourceServiceFakePikPakClient) GetFile(context.Context, infraStorage.Pi
 }
 
 func (c *sourceServiceFakePikPakClient) CreateFolder(context.Context, infraStorage.PikPakSession, string, string) (*infraStorage.PikPakFile, error) {
+	return nil, errors.New("not used")
+}
+
+func (c *sourceServiceFakePikPakClient) CreateUploadFile(context.Context, infraStorage.PikPakSession, infraStorage.PikPakCreateUploadFileRequest) (*infraStorage.PikPakCreateUploadFileResponse, error) {
 	return nil, errors.New("not used")
 }
 

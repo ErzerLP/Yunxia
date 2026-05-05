@@ -24,6 +24,8 @@ type PikPakDriver struct {
 	sessions         *PikPakSessionManager
 	searchMaxDepth   int
 	searchMaxEntries int
+	uploadHasher     PikPakUploadHashCalculator
+	ossUploader      PikPakOSSUploader
 }
 
 // PikPakDriverOption 定义 PikPak driver 可选配置。
@@ -35,6 +37,8 @@ func NewPikPakDriver(options ...PikPakDriverOption) *PikPakDriver {
 		sessions:         NewPikPakSessionManager(nil),
 		searchMaxDepth:   defaultPikPakSearchMaxDepth,
 		searchMaxEntries: defaultPikPakSearchMaxEntries,
+		uploadHasher:     PikPakGCIDUploadHashCalculator{},
+		ossUploader:      NewPikPakHTTPOSSUploader(),
 	}
 	for _, option := range options {
 		option(driver)
@@ -68,6 +72,24 @@ func WithPikPakSearchLimits(maxDepth int, maxEntries int) PikPakDriverOption {
 		}
 		if maxEntries > 0 {
 			d.searchMaxEntries = maxEntries
+		}
+	}
+}
+
+// WithPikPakUploadHashCalculator 注入 PikPak 上传 hash 计算器。
+func WithPikPakUploadHashCalculator(calculator PikPakUploadHashCalculator) PikPakDriverOption {
+	return func(d *PikPakDriver) {
+		if calculator != nil {
+			d.uploadHasher = calculator
+		}
+	}
+}
+
+// WithPikPakOSSUploader 注入 OSS uploader，测试应使用 fake 避免真实网络。
+func WithPikPakOSSUploader(uploader PikPakOSSUploader) PikPakDriverOption {
+	return func(d *PikPakDriver) {
+		if uploader != nil {
+			d.ossUploader = uploader
 		}
 	}
 }
@@ -217,7 +239,7 @@ func (d *PikPakDriver) Capacity(ctx context.Context, source *entity.StorageSourc
 	return info, err
 }
 
-// Capabilities 描述 PikPak 阶段 C 文件能力。上传/导入仍留待后续阶段。
+// Capabilities 描述 PikPak 阶段 D 文件写入与后端 staging 上传导入能力。
 func (d *PikPakDriver) Capabilities(context.Context, *entity.StorageSource) (domainstorage.StorageCapabilities, error) {
 	return domainstorage.StorageCapabilities{
 		CanList:          true,
@@ -230,8 +252,136 @@ func (d *PikPakDriver) Capabilities(context.Context, *entity.StorageSource) (dom
 		CanCopy:          true,
 		CanDelete:        true,
 		CanProviderTrash: true,
-		CanImportFile:    false,
+		CanImportFile:    true,
+		CanServerUpload:  true,
+		CanDirectUpload:  false,
 	}, nil
+}
+
+// ImportFile 将后端本地 staging 文件导入 PikPak 目标路径。
+func (d *PikPakDriver) ImportFile(ctx context.Context, source *entity.StorageSource, targetPath string, localPath string) error {
+	targetPath, err := normalizeVirtualPath(targetPath)
+	if err != nil {
+		return err
+	}
+	if targetPath == "/" || strings.TrimSpace(localPath) == "" {
+		return os.ErrInvalid
+	}
+	name := path.Base(targetPath)
+	if err := validatePikPakFileName(name); err != nil {
+		return err
+	}
+	parentPath := path.Dir(targetPath)
+	if parentPath == "." {
+		parentPath = "/"
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return os.ErrInvalid
+	}
+
+	hasher := d.uploadHasher
+	if hasher == nil {
+		hasher = PikPakGCIDUploadHashCalculator{}
+	}
+	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		parent, resolveErr := d.ensureFolderPathWithSession(ctx, session, cfg, parentPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if err := d.ensureNoChildWithName(ctx, session, parent.ID, name); err != nil {
+			return err
+		}
+		uploadHash, hashErr := hasher.HashFile(ctx, localPath)
+		if hashErr != nil {
+			return hashErr
+		}
+		uploadHash = strings.ToUpper(strings.TrimSpace(uploadHash))
+		if uploadHash == "" {
+			return domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider upload hash invalid")
+		}
+		upload, createErr := d.sessions.client.CreateUploadFile(ctx, session, PikPakCreateUploadFileRequest{
+			ParentID: parent.ID,
+			Name:     name,
+			Size:     info.Size(),
+			Hash:     uploadHash,
+		})
+		if createErr != nil {
+			return createErr
+		}
+		if upload == nil || upload.Resumable == nil {
+			return nil
+		}
+		if d.ossUploader == nil {
+			return domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider upload unavailable")
+		}
+		return d.ossUploader.PutObject(ctx, upload.Resumable.Params, localPath, contentTypeForPikPakImport(targetPath))
+	})
+}
+
+func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {
+	virtualPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return PikPakFile{}, err
+	}
+	current := PikPakFile{
+		ID:   cfg.RootFolderID,
+		Name: "/",
+		Kind: "drive#folder",
+	}
+	if virtualPath == "/" {
+		return current, nil
+	}
+
+	segments := strings.Split(strings.TrimPrefix(virtualPath, "/"), "/")
+	for _, segment := range segments {
+		if err := validatePikPakFileName(segment); err != nil {
+			return PikPakFile{}, err
+		}
+		files, listErr := d.listFilesAll(ctx, session, current.ID)
+		if listErr != nil {
+			return PikPakFile{}, listErr
+		}
+		var found *PikPakFile
+		for _, file := range files {
+			if file.Name == segment {
+				copied := file
+				found = &copied
+				break
+			}
+		}
+		if found != nil {
+			if !found.isFolder() {
+				return PikPakFile{}, os.ErrInvalid
+			}
+			current = *found
+			continue
+		}
+		created, createErr := d.sessions.client.CreateFolder(ctx, session, current.ID, segment)
+		if createErr != nil {
+			return PikPakFile{}, createErr
+		}
+		if created == nil {
+			created = &PikPakFile{Name: segment, Kind: "drive#folder"}
+		}
+		if created.ID == "" {
+			return PikPakFile{}, domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider folder id missing")
+		}
+		if created.Name == "" {
+			created.Name = segment
+		}
+		if created.Kind == "" {
+			created.Kind = "drive#folder"
+		}
+		if !created.isFolder() {
+			return PikPakFile{}, os.ErrInvalid
+		}
+		current = *created
+	}
+	return current, nil
 }
 
 // Mkdir 在 PikPak 中创建目录。

@@ -997,7 +997,7 @@ func (s *TaskService) importStagedFile(ctx context.Context, source *entity.Stora
 		}
 		return err
 	}
-	return driver.ImportFile(ctx, source, targetPath, localPath)
+	return normalizeImportDriverError(driver.ImportFile(ctx, source, targetPath, localPath))
 }
 
 func importLocalStagedFile(source *entity.StorageSource, targetPath string, localPath string) error {

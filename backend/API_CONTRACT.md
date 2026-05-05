@@ -375,7 +375,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - 通用：`name,driver_type,is_enabled,is_webdav_exposed,webdav_read_only,mount_path,root_path,sort_order`
 - local：`config.base_path`
 - s3：`config.endpoint,region,bucket,base_prefix,force_path_style` + `secret_patch.access_key/secret_key`
-- pikpak（阶段 C 文件写操作可用，上传/导入暂缓）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
+- pikpak（阶段 D 文件写操作、后端暂存上传导入、离线下载导入可用；浏览器直传暂不支持）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
 
 创建 local 源示例：
 
@@ -424,7 +424,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 
 更新 S3 源时，如果不修改密钥，可以不传对应 `secret_patch` 字段；如果要清空密钥，可以传 `null`。
 
-创建 PikPak 源示例（阶段 C 文件写操作可用，上传/导入暂缓）：
+创建 PikPak 源示例（阶段 D 文件写操作、上传导入、离线下载导入可用）：
 
 ```json
 {
@@ -456,11 +456,11 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 PikPak 字段说明：
 
 - `driver_type` 固定为 `pikpak`
-- `root_path` 阶段 C 必须为 `/`；远端子目录挂载使用 `config.root_folder_id`，不要把 PikPak 远端路径写入 `root_path`
+- `root_path` 当前必须为 `/`；远端子目录挂载使用 `config.root_folder_id`，不要把 PikPak 远端路径写入 `root_path`
 - `config.root_folder_id` 为空表示 PikPak 账号根目录；填写文件夹 ID 表示把该远端文件夹作为挂载根
 - `config.platform` 支持 `web` / `android` / `pc`，默认推荐 `web`
 - `config.disable_media_link=true` 时下载使用原始文件链接；`false` 时允许优先使用 provider 媒体链接
-- `config.download_strategy` 阶段 C 仅支持 `redirect`，后端鉴权后由 `/files/download` 或 `/api/v2/fs/download` 302 到 PikPak 临时下载链接
+- `config.download_strategy` 当前仅支持 `redirect`，后端鉴权后由 `/files/download` 或 `/api/v2/fs/download` 302 到 PikPak 临时下载链接
 - `secret_patch.username/password/refresh_token/captcha_token/device_id` 均按敏感字段处理；更新时省略字段会保留旧值，传 `null` 会清空该字段
 - `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`
 - token/captcha/device_id 运行态刷新后会更新当前请求内的 source 配置；持久化写回仓储属于后续增强点，create/update 的探测阶段会随实体保存
@@ -498,7 +498,7 @@ PikPak 字段说明：
 - 本地源 / 挂载目录探测为不可写时，`mkdir` / `rename` / `move` / `copy` / `delete` 返回 `403 SOURCE_READ_ONLY`；响应只暴露稳定错误码与通用消息，不返回容器或宿主机物理路径
 - `files/access-url` 对 local / S3 / PikPak 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`
 - 真正的 S3 presigned URL / PikPak 临时下载链接在 `GET /files/download` 时再 302 跳转
-- PikPak 阶段 C 支持 `list` / `search`（受限递归）/ `stat` / `access-url` / `download` / `mkdir` / `rename` / `move` / `copy` / `delete`；文件/VFS 条目 `can_delete` 会按 driver capability 与 ACL 共同计算。
+- PikPak 阶段 D 支持 `list` / `search`（受限递归）/ `stat` / `access-url` / `download` / `mkdir` / `rename` / `move` / `copy` / `delete`，并支持后端 staging 文件导入；文件/VFS 条目 `can_delete` 会按 driver capability 与 ACL 共同计算。
 - PikPak `delete_mode` 为空或 `trash` 时调用 provider `batchTrash`，语义是移入 PikPak 回收站，不会创建 Yunxia `.trash` 记录；`delete_mode=permanent` 暂返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 
 ### 3.7 upload（`/api/v1`）
@@ -547,7 +547,7 @@ PikPak 字段说明：
   - `resolved_inner_parent_path`
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
-- PikPak 阶段 C 暂不支持上传/导入；目标为 PikPak 时返回 `422 SOURCE_OPERATION_UNSUPPORTED`
+- PikPak 阶段 D 返回 `transport.mode=server_chunk`，由后端接收分片合并成本地 staging 文件，再调用 PikPak `ImportFile` 计算 GCID、创建 provider 上传任务，并在需要时上传到 OSS；不会返回 `part_instructions[]`
 - 纯虚拟目录无落地存储时返回 `409 NO_BACKING_STORAGE`
 
 本地源上传调用顺序：
@@ -589,7 +589,20 @@ S3 finish Body 示例：
 }
 ```
 
-PikPak 阶段 C 已支持文件写操作（mkdir/rename/move/copy/delete），但暂不支持上传或离线下载导入到该源；上传/导入能力留到阶段 D。
+PikPak 阶段 D 上传调用顺序与本地源相同：
+
+1. `POST /api/v1/upload/init`
+   - `transport.mode="server_chunk"`
+   - `transport.driver_type="pikpak"`
+   - `part_instructions=[]`
+2. 前端按 `upload.chunk_size` 调 `PUT /api/v1/upload/chunk`
+3. `POST /api/v1/upload/finish`
+   - 后端合并 staging 文件后导入 PikPak
+   - PikPak 秒传成功时不触发 OSS 实体上传
+   - 需要实体上传时由后端使用 provider 返回的 OSS 临时参数上传，前端不接触 `access_key_secret`、`security_token`、`bucket/key`
+   - 目标父目录不存在时，PikPak 导入会按目标路径递归创建远端父目录；如果某段父路径已存在但不是目录，返回 `400 PATH_INVALID`
+
+当前仍不支持浏览器直传 PikPak OSS；PikPak 源不会返回 S3 式 `direct_parts`。
 
 ### 3.8 trash（`/api/v1`）
 
@@ -626,7 +639,7 @@ PikPak 阶段 C 已支持文件写操作（mkdir/rename/move/copy/delete），�
 - 下载器只写入后端本地 staging 目录；任务完成后由后端导入目标存储源：
   - local 目标：从 staging move/copy 到真实物理路径
   - S3 目标：从 staging 上传到对应对象 key
-  - PikPak 阶段 C 目标：暂不支持导入；创建任务时目标为 PikPak 会返回 `422 SOURCE_OPERATION_UNSUPPORTED`，后续阶段实现 PikPak `ImportFile`
+  - PikPak 阶段 D 目标：从 staging 调 PikPak `ImportFile` 导入；HTTP/BT/RSS 任务完成后可落到 PikPak 挂载源
   - staging 本地物理路径不会返回给前端
   - 导入完成后清理 staging；后续刷新如果遇到已导入文件但 staging 已清理，任务保持 `completed`，不会回退为 `failed`
   - 当 `target_filename` 非空且 staging 中只有一个有效文件时，导入阶段会把该文件落到目标父目录下的 `target_filename`；若 `target_filename` 没有明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名），会保留原下载文件扩展名；多文件任务保持原相对路径，不应用重命名
@@ -1415,7 +1428,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 6. `DELETE /api/v1/acl/rules/:id` 返回的是 `{}`，不是 `{deleted,id}`。
 7. 上传初始化已支持 `target_virtual_parent_path`，且优先级高于 `source_id/path`。
 8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
-9. 离线下载不会把下载器直接指向目标源目录，而是先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3；PikPak 导入留到后续阶段，阶段 C 仍返回 `SOURCE_OPERATION_UNSUPPORTED`。
+9. 离线下载不会把下载器直接指向目标源目录，而是先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3 / PikPak；PikPak 目标使用 `ImportFile` 写入 provider。
 10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
 11. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
 12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
@@ -1450,7 +1463,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
    - `POST /api/v1/upload/init`，传 `target_virtual_parent_path=<current_path>`
    - local：`PUT /api/v1/upload/chunk` 后 `POST /api/v1/upload/finish`
    - S3：按 `part_instructions` 直传后 `POST /api/v1/upload/finish`
-   - PikPak：阶段 C 可文件写操作但仍不支持上传/导入，上传初始化返回 `SOURCE_OPERATION_UNSUPPORTED`
+   - PikPak：走 `server_chunk`，前端分片上传到后端，finish 后由后端导入 PikPak；不会返回 `direct_parts`
 5. 下载文件：
    - `POST /api/v2/fs/access-url`
    - 浏览器打开返回的 `url`

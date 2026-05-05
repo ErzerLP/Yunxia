@@ -625,7 +625,7 @@ func (s *UploadService) finishWithImportDriver(ctx context.Context, source *enti
 
 	targetPath := joinVirtualPath(session.Path, session.Filename)
 	if err := driver.ImportFile(ctx, source, targetPath, stagedPath); err != nil {
-		return nil, err
+		return nil, normalizeImportDriverError(err)
 	}
 
 	_ = os.RemoveAll(s.sessionTempDir(session.UploadID))

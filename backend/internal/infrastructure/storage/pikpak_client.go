@@ -76,6 +76,7 @@ type PikPakAPIClient interface {
 	ListFiles(ctx context.Context, session PikPakSession, parentID string, pageToken string) (*PikPakListFilesResponse, error)
 	GetFile(ctx context.Context, session PikPakSession, fileID string, usage string) (*PikPakFile, error)
 	CreateFolder(ctx context.Context, session PikPakSession, parentID string, name string) (*PikPakFile, error)
+	CreateUploadFile(ctx context.Context, session PikPakSession, req PikPakCreateUploadFileRequest) (*PikPakCreateUploadFileResponse, error)
 	RenameFile(ctx context.Context, session PikPakSession, fileID string, name string) (*PikPakFile, error)
 	BatchMove(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error
 	BatchCopy(ctx context.Context, session PikPakSession, ids []string, targetParentID string) error
@@ -125,6 +126,39 @@ type PikPakFile struct {
 	ThumbnailLink  string        `json:"thumbnail_link"`
 	WebContentLink string        `json:"web_content_link"`
 	Medias         []PikPakMedia `json:"medias"`
+}
+
+// PikPakCreateUploadFileRequest 表示创建 resumable 上传任务所需参数。
+type PikPakCreateUploadFileRequest struct {
+	ParentID string
+	Name     string
+	Size     int64
+	Hash     string
+}
+
+// PikPakCreateUploadFileResponse 表示 PikPak 创建上传任务响应。
+type PikPakCreateUploadFileResponse struct {
+	UploadType string                 `json:"upload_type"`
+	Resumable  *PikPakResumableUpload `json:"resumable"`
+	File       *PikPakFile            `json:"file"`
+}
+
+// PikPakResumableUpload 表示需要继续上传实体的 OSS 参数集合。
+type PikPakResumableUpload struct {
+	Kind     string                `json:"kind"`
+	Provider string                `json:"provider"`
+	Params   PikPakOSSUploadParams `json:"params"`
+}
+
+// PikPakOSSUploadParams 是 PikPak 返回的临时 OSS 上传凭证。
+type PikPakOSSUploadParams struct {
+	AccessKeyID     string `json:"access_key_id"`
+	AccessKeySecret string `json:"access_key_secret"`
+	Bucket          string `json:"bucket"`
+	Endpoint        string `json:"endpoint"`
+	Expiration      string `json:"expiration"`
+	Key             string `json:"key"`
+	SecurityToken   string `json:"security_token"`
 }
 
 // PikPakMedia 表示视频媒体链接。
@@ -321,6 +355,27 @@ func (c *PikPakHTTPClient) CreateFolder(ctx context.Context, session PikPakSessi
 		"name":      name,
 	}
 	var resp PikPakFile
+	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CreateUploadFile 创建 PikPak resumable 上传任务。
+func (c *PikPakHTTPClient) CreateUploadFile(ctx context.Context, session PikPakSession, req PikPakCreateUploadFileRequest) (*PikPakCreateUploadFileResponse, error) {
+	payload := map[string]any{
+		"kind":        "drive#file",
+		"name":        req.Name,
+		"size":        req.Size,
+		"hash":        req.Hash,
+		"upload_type": "UPLOAD_TYPE_RESUMABLE",
+		"objProvider": map[string]any{
+			"provider": "UPLOAD_TYPE_UNKNOWN",
+		},
+		"parent_id":   req.ParentID,
+		"folder_type": "NORMAL",
+	}
+	var resp PikPakCreateUploadFileResponse
 	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
 		return nil, err
 	}

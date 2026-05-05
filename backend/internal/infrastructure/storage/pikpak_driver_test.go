@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -136,6 +138,165 @@ func TestPikPakDriverWriteOperationsSuccess(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.trashedIDs, []string{"file-trash"}) {
 		t.Fatalf("unexpected trashed ids = %+v", client.trashedIDs)
+	}
+}
+
+func TestPikPakDriverImportFileFastUploadSuccess(t *testing.T) {
+	localPath := writeTempPikPakUploadFile(t, "fast-content")
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {
+				{ID: "folder-uploads", Name: "Uploads", Kind: "drive#folder"},
+			},
+			"folder-uploads": {},
+		},
+		createUploadResponse: &PikPakCreateUploadFileResponse{
+			File: &PikPakFile{ID: "file-fast", Name: "fast.txt", Kind: "drive#file", Size: "12", Hash: "FAKE-GCID"},
+		},
+	}
+	hasher := &fakePikPakUploadHasher{hash: "fake-gcid"}
+	uploader := &fakePikPakOSSUploader{}
+	driver := NewPikPakDriver(
+		WithPikPakAPIClient(client),
+		WithPikPakUploadHashCalculator(hasher),
+		WithPikPakOSSUploader(uploader),
+	)
+
+	if err := driver.ImportFile(context.Background(), newTestPikPakSource(t), "/Uploads/fast.txt", localPath); err != nil {
+		t.Fatalf("ImportFile(fast) error = %v", err)
+	}
+	if len(client.createUploadCalls) != 1 {
+		t.Fatalf("expected one create upload call, got %+v", client.createUploadCalls)
+	}
+	call := client.createUploadCalls[0]
+	if call.ParentID != "folder-uploads" || call.Name != "fast.txt" || call.Size != int64(len("fast-content")) || call.Hash != "FAKE-GCID" {
+		t.Fatalf("unexpected create upload call = %+v", call)
+	}
+	if len(uploader.calls) != 0 {
+		t.Fatalf("fast upload should not call OSS uploader, got %+v", uploader.calls)
+	}
+	if _, err := os.Stat(localPath); err != nil {
+		t.Fatalf("ImportFile must not remove staging source, stat err=%v", err)
+	}
+}
+
+func TestPikPakDriverImportFileOSSPutObjectSuccess(t *testing.T) {
+	localPath := writeTempPikPakUploadFile(t, "oss-content")
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {
+				{ID: "folder-uploads", Name: "Uploads", Kind: "drive#folder"},
+			},
+			"folder-uploads": {},
+		},
+		createUploadResponse: &PikPakCreateUploadFileResponse{
+			Resumable: &PikPakResumableUpload{
+				Provider: "UPLOAD_TYPE_UNKNOWN",
+				Params: PikPakOSSUploadParams{
+					AccessKeyID:     "ak",
+					AccessKeySecret: "sk",
+					Bucket:          "bucket",
+					Endpoint:        "https://oss.example",
+					Key:             "object-key",
+					SecurityToken:   "token",
+				},
+			},
+			File: &PikPakFile{ID: "file-oss", Name: "oss.txt", Kind: "drive#file", Size: "11"},
+		},
+	}
+	uploader := &fakePikPakOSSUploader{}
+	driver := NewPikPakDriver(
+		WithPikPakAPIClient(client),
+		WithPikPakUploadHashCalculator(&fakePikPakUploadHasher{hash: "fake-gcid"}),
+		WithPikPakOSSUploader(uploader),
+	)
+
+	if err := driver.ImportFile(context.Background(), newTestPikPakSource(t), "/Uploads/oss.txt", localPath); err != nil {
+		t.Fatalf("ImportFile(oss) error = %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("expected one OSS upload call, got %+v", uploader.calls)
+	}
+	call := uploader.calls[0]
+	if call.params.Bucket != "bucket" || call.params.Key != "object-key" || string(call.content) != "oss-content" {
+		t.Fatalf("unexpected OSS upload call = %+v", call)
+	}
+	if call.contentType != "text/plain; charset=utf-8" {
+		t.Fatalf("expected text/plain content type, got %q", call.contentType)
+	}
+}
+
+func TestPikPakDriverImportFileConflictRecursiveParentAndProviderError(t *testing.T) {
+	localPath := writeTempPikPakUploadFile(t, "content")
+	source := newTestPikPakSource(t)
+
+	conflictClient := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {
+				{ID: "file-existing", Name: "existing.txt", Kind: "drive#file"},
+			},
+		},
+	}
+	conflictDriver := NewPikPakDriver(
+		WithPikPakAPIClient(conflictClient),
+		WithPikPakUploadHashCalculator(&fakePikPakUploadHasher{hash: "fake-gcid"}),
+		WithPikPakOSSUploader(&fakePikPakOSSUploader{}),
+	)
+	if err := conflictDriver.ImportFile(context.Background(), source, "/existing.txt", localPath); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("expected fs.ErrExist for same-name conflict, got %v", err)
+	}
+	if len(conflictClient.createUploadCalls) != 0 {
+		t.Fatalf("conflict should not create upload task, got %+v", conflictClient.createUploadCalls)
+	}
+
+	recursiveParentClient := &fakePikPakClient{filesByParent: map[string][]PikPakFile{"root": {}}}
+	recursiveParentDriver := NewPikPakDriver(
+		WithPikPakAPIClient(recursiveParentClient),
+		WithPikPakUploadHashCalculator(&fakePikPakUploadHasher{hash: "fake-gcid"}),
+		WithPikPakOSSUploader(&fakePikPakOSSUploader{}),
+	)
+	if err := recursiveParentDriver.ImportFile(context.Background(), source, "/Missing/Nested/file.txt", localPath); err != nil {
+		t.Fatalf("expected recursive parent creation, got %v", err)
+	}
+	if len(recursiveParentClient.createUploadCalls) != 1 ||
+		recursiveParentClient.createUploadCalls[0].ParentID != "folder-Nested" ||
+		recursiveParentClient.createUploadCalls[0].Name != "file.txt" {
+		t.Fatalf("unexpected recursive parent upload calls = %+v", recursiveParentClient.createUploadCalls)
+	}
+
+	fileParentDriver := NewPikPakDriver(
+		WithPikPakAPIClient(&fakePikPakClient{filesByParent: map[string][]PikPakFile{
+			"root": {{ID: "file-parent", Name: "NotAFolder", Kind: "drive#file"}},
+		}}),
+		WithPikPakUploadHashCalculator(&fakePikPakUploadHasher{hash: "fake-gcid"}),
+		WithPikPakOSSUploader(&fakePikPakOSSUploader{}),
+	)
+	if err := fileParentDriver.ImportFile(context.Background(), source, "/NotAFolder/file.txt", localPath); !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("expected os.ErrInvalid for non-folder parent segment, got %v", err)
+	}
+
+	providerErr := domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider unavailable")
+	providerClient := &fakePikPakClient{
+		filesByParent:   map[string][]PikPakFile{"root": {}},
+		createUploadErr: providerErr,
+	}
+	providerDriver := NewPikPakDriver(
+		WithPikPakAPIClient(providerClient),
+		WithPikPakUploadHashCalculator(&fakePikPakUploadHasher{hash: "fake-gcid"}),
+		WithPikPakOSSUploader(&fakePikPakOSSUploader{}),
+	)
+	if err := providerDriver.ImportFile(context.Background(), source, "/provider.txt", localPath); !errors.Is(err, domainstorage.ErrCloudProviderUnavailable) {
+		t.Fatalf("expected provider unavailable mapping, got %v", err)
+	}
+}
+
+func TestPikPakDriverCapabilitiesExposeStageDImportOnlyUpload(t *testing.T) {
+	caps, err := NewPikPakDriver(WithPikPakAPIClient(&fakePikPakClient{})).Capabilities(context.Background(), newTestPikPakSource(t))
+	if err != nil {
+		t.Fatalf("Capabilities() error = %v", err)
+	}
+	if !caps.CanImportFile || !caps.CanServerUpload || caps.CanDirectUpload {
+		t.Fatalf("expected stage D import/server upload without direct upload, got %+v", caps)
 	}
 }
 
@@ -286,6 +447,17 @@ func TestPikPakHTTPClientWriteRequests(t *testing.T) {
 		}
 		switch r.Method + " " + r.URL.EscapedPath() {
 		case "POST /drive/v1/files":
+			if uploadType, _ := payload["upload_type"].(string); uploadType == "UPLOAD_TYPE_RESUMABLE" {
+				if payload["kind"] != "drive#file" || payload["parent_id"] != "root" || payload["name"] != "upload.bin" || payload["hash"] != "FAKE-GCID" || payload["size"] != float64(123) {
+					t.Fatalf("unexpected create upload payload = %+v", payload)
+				}
+				objProvider, ok := payload["objProvider"].(map[string]any)
+				if !ok || objProvider["provider"] != "UPLOAD_TYPE_UNKNOWN" {
+					t.Fatalf("unexpected upload provider payload = %+v", payload)
+				}
+				_, _ = w.Write([]byte(`{"upload_type":"UPLOAD_TYPE_RESUMABLE","resumable":{"provider":"oss","params":{"access_key_id":"ak","access_key_secret":"sk","bucket":"bucket","endpoint":"https://oss.example","key":"object.bin"}}}`))
+				return
+			}
 			if payload["kind"] != "drive#folder" || payload["parent_id"] != "root" || payload["name"] != "new" {
 				t.Fatalf("unexpected create folder payload = %+v", payload)
 			}
@@ -324,6 +496,16 @@ func TestPikPakHTTPClientWriteRequests(t *testing.T) {
 	if _, err := client.CreateFolder(context.Background(), session, "root", "new"); err != nil {
 		t.Fatalf("CreateFolder() error = %v", err)
 	}
+	if upload, err := client.CreateUploadFile(context.Background(), session, PikPakCreateUploadFileRequest{
+		ParentID: "root",
+		Name:     "upload.bin",
+		Size:     123,
+		Hash:     "FAKE-GCID",
+	}); err != nil {
+		t.Fatalf("CreateUploadFile() error = %v", err)
+	} else if upload == nil || upload.Resumable == nil || upload.Resumable.Params.Bucket != "bucket" {
+		t.Fatalf("unexpected CreateUploadFile response = %+v", upload)
+	}
 	if _, err := client.RenameFile(context.Background(), session, "file-1", "renamed.txt"); err != nil {
 		t.Fatalf("RenameFile() error = %v", err)
 	}
@@ -338,6 +520,7 @@ func TestPikPakHTTPClientWriteRequests(t *testing.T) {
 	}
 
 	expected := []string{
+		"POST /drive/v1/files",
 		"POST /drive/v1/files",
 		"PATCH /drive/v1/files/file-1",
 		"POST /drive/v1/files:batchMove",
@@ -378,12 +561,15 @@ func newTestPikPakSource(t *testing.T) *entity.StorageSource {
 }
 
 type fakePikPakClient struct {
-	filesByParent map[string][]PikPakFile
-	fileDetails   map[string]PikPakFile
-	about         *PikPakAbout
-	moves         []fakePikPakBatchCall
-	copies        []fakePikPakBatchCall
-	trashedIDs    []string
+	filesByParent        map[string][]PikPakFile
+	fileDetails          map[string]PikPakFile
+	about                *PikPakAbout
+	createUploadResponse *PikPakCreateUploadFileResponse
+	createUploadErr      error
+	createUploadCalls    []PikPakCreateUploadFileRequest
+	moves                []fakePikPakBatchCall
+	copies               []fakePikPakBatchCall
+	trashedIDs           []string
 }
 
 type fakePikPakBatchCall struct {
@@ -422,6 +608,22 @@ func (c *fakePikPakClient) CreateFolder(_ context.Context, _ PikPakSession, pare
 		c.filesByParent[file.ID] = []PikPakFile{}
 	}
 	return &file, nil
+}
+
+func (c *fakePikPakClient) CreateUploadFile(_ context.Context, _ PikPakSession, req PikPakCreateUploadFileRequest) (*PikPakCreateUploadFileResponse, error) {
+	c.createUploadCalls = append(c.createUploadCalls, req)
+	if c.createUploadErr != nil {
+		return nil, c.createUploadErr
+	}
+	if c.createUploadResponse != nil {
+		if c.createUploadResponse.File != nil {
+			c.filesByParent[req.ParentID] = append(c.filesByParent[req.ParentID], *c.createUploadResponse.File)
+		}
+		return c.createUploadResponse, nil
+	}
+	file := PikPakFile{ID: "file-" + req.Name, Name: req.Name, Kind: "drive#file", Size: strconv.FormatInt(req.Size, 10), Hash: req.Hash}
+	c.filesByParent[req.ParentID] = append(c.filesByParent[req.ParentID], file)
+	return &PikPakCreateUploadFileResponse{File: &file}, nil
 }
 
 func (c *fakePikPakClient) RenameFile(_ context.Context, _ PikPakSession, fileID string, name string) (*PikPakFile, error) {
@@ -489,4 +691,54 @@ func (c *fakePikPakClient) findFile(fileID string) (string, int, PikPakFile, boo
 		}
 	}
 	return "", -1, PikPakFile{}, false
+}
+
+type fakePikPakUploadHasher struct {
+	hash string
+	err  error
+}
+
+func (h *fakePikPakUploadHasher) HashFile(context.Context, string) (string, error) {
+	if h.err != nil {
+		return "", h.err
+	}
+	return h.hash, nil
+}
+
+type fakePikPakOSSUploader struct {
+	calls []fakePikPakOSSUploadCall
+	err   error
+}
+
+type fakePikPakOSSUploadCall struct {
+	params      PikPakOSSUploadParams
+	localPath   string
+	contentType string
+	content     []byte
+}
+
+func (u *fakePikPakOSSUploader) PutObject(_ context.Context, params PikPakOSSUploadParams, localPath string, contentType string) error {
+	if u.err != nil {
+		return u.err
+	}
+	content, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	u.calls = append(u.calls, fakePikPakOSSUploadCall{
+		params:      params,
+		localPath:   localPath,
+		contentType: contentType,
+		content:     content,
+	})
+	return nil
+}
+
+func writeTempPikPakUploadFile(t *testing.T, content string) string {
+	t.Helper()
+	localPath := path.Join(t.TempDir(), "upload.txt")
+	if err := os.WriteFile(localPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return localPath
 }
