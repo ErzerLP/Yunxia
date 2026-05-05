@@ -56,7 +56,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
-| 待联调 | 2026-05-05 | 存储源/PikPak | 存储源管理页、文件页/VFS、上传弹窗、离线下载页、RSS/追番目标目录、WebDAV 配置 | P1 | `/api/v1/sources*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks`、`/dav/{slug}` | PikPak 源创建/编辑/secret 掩码，PikPak VFS 写操作/删除回收站文案，上传 server/direct 分支，`pikpak_native` 任务展示与取消，非 local WebDAV 暴露 | [详情](#test-handoff-2026-05-05-pikpak-storage-adaptation) |
+| 阻塞 | 2026-05-05 | 存储源/PikPak | 存储源管理页、文件页/VFS、上传弹窗、离线下载页、RSS/追番目标目录、WebDAV 配置 | P1 | `/api/v1/sources*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks`、`/dav/{slug}` | PikPak 源创建/编辑/secret 掩码，PikPak VFS 写操作/删除回收站文案，上传 server/direct 分支，`pikpak_native` 任务展示与取消，非 local WebDAV 暴露；operator WebDAV 权限展示已前端修复待回归，仍有创建只读开关后端问题 | [详情](#test-handoff-2026-05-05-pikpak-storage-adaptation) |
 | 已通过 | 2026-05-03 | 前端体验完善 | 文件页/VFS、离线下载页、RSS/追番页 | P1 | `/api/v2/fs`、`/api/v1/tasks`、`/api/v1/rss/items` | VFS 批量选择/批量删除、单项文件操作失败提示、任务失败/取消原因、RSS 条目匹配说明展示；2026-05-04 `main@23dbcd7` 回归通过 | [详情](#test-handoff-2026-05-03-frontend-ux-polish) |
 | 已通过 | 2026-05-03 | RSS/通知增强 | RSS/追番页、任务页、设置页/通知区块 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-*`、`/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/export`、`/api/v1/notifications/*` | 后端修复后已完成完整回归；订阅复制显式禁用、RSS 关联任务取消回写 `needs_attention` 和待处理通知均已通过 | [详情](#test-handoff-2026-05-03-rss-notification-handoff) |
 | 已通过 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 测试完成反馈确认：刷新全部、规则预览、重试/重处理、`needs_attention`、自动重试/完成回写展示均已覆盖 | [详情](#test-handoff-2026-04-30-rss-unattended) |
@@ -69,7 +69,7 @@
 
 <a id="test-handoff-2026-05-05-pikpak-storage-adaptation"></a>
 
-### [P1][待联调][存储源/PikPak] 2026-05-05 PikPak 存储源、VFS 写操作、上传与原生离线下载联调测试
+### [P1][阻塞][存储源/PikPak] 2026-05-05 PikPak 存储源、VFS 写操作、上传与原生离线下载联调测试
 
 #### 测试目标
 
@@ -118,12 +118,18 @@
 
 #### 阻塞 / 备注
 
-- 当前前端静态验证已通过，但尚未连接真实 PikPak 账号完成端到端 smoke，因此状态保持 `待联调`。
+- 当前前端静态验证已通过，但尚未连接真实 PikPak 账号完成端到端 smoke；2026-05-05 发现下方阻塞项后状态调整为 `阻塞`。
 - 前端暂不计算 PikPak GCID；上传会继续传普通 MD5，后端应回退 `server_chunk`。如需覆盖 `direct_parts`，可用后端 fixture 或后续 GCID 前端实现专项测试。
+- 2026-05-05 `main@16c65c6` 实测阻塞：
+  - 无可用真实 PikPak 账号 / refresh_token，使用测试账号创建 PikPak 源时稳定返回 `422 CLOUD_CAPTCHA_REQUIRED`，因此本轮未覆盖真实 PikPak VFS 正向写操作、上传到 PikPak、`pikpak_native` 完成后文件可见、PikPak WebDAV 读写等正向链路。
+  - 前端：operator 账号进入存储源页会请求 `GET /api/v1/system/config` 并得到 `403`，同时已暴露 WebDAV 的源卡片显示“全局 WebDAV 当前未启用”，与实际 `/dav/{slug}` 可访问不一致。2026-05-05 已前端修复：无 `system.config.read` 时不再请求系统配置，WebDAV 全局状态未知时展示中性说明，待重新部署回归确认。
+  - 后端：`POST /api/v1/sources` 创建 local WebDAV 源时传入 `webdav_read_only=false`，返回和持久化结果仍为 `webdav_read_only=true`；随后用 `PUT /api/v1/sources/:id` 同样参数可改为 `false`，且 WebDAV `PUT` 可成功。
 
 #### 交接记录
 
 - 2026-05-05：前端实现完成并更新 `backend/FRONTEND_HANDOFF.md`；静态验证通过：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`。等待真实 PikPak/WebDAV 环境联调。
+- 2026-05-05：测试负责人清理测试机后从 `main@16c65c6` 部署完整前后端。环境：前端 `http://10.0.0.95:15183`，后端 `http://127.0.0.1:18183`，下载器 Aria2/qBittorrent，RSS/Webhook fixture 为 `http://yunxia-rss-feed:8000/feed.xml`、`/hook`、`/fail`，只读本地硬盘 fixture 挂载到 `/hostdisk`。已覆盖：初始化/登录；存储源页 PikPak 表单字段、PikPak dummy 创建错误提示；local WebDAV 暴露卡片、`PROPFIND` 与写入 smoke；文件页本地硬盘原有文件可见、只读批量删除错误详情和删除确认回收站文案；本地上传 `server_chunk`；普通 HTTP 离线下载成功/失败/取消原因；RSS 源刷新、订阅模板和 preview matched/missing/excluded；admin/operator/user 权限 UI smoke。远程检查通过：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`；后端 PikPak/Task/Upload 定向 `go test` 通过。因上方阻塞项，本项状态调整为 `阻塞`。
+- 2026-05-05：前端修复 operator 存储源页 WebDAV 状态误报：`/api/v1/system/config` query 按 `system.config.read` capability 启用；无权限账号不再触发 403，也不再把未知全局状态显示为“未启用”。静态回归增加到 `node scripts/check-vfs-integration.mjs`，等待测试环境回归。
 
 <a id="test-handoff-2026-05-03-frontend-ux-polish"></a>
 

@@ -935,6 +935,7 @@ export function SourcesPage() {
   const canDelete = useHasCapability('source.delete')
   const canTest = useHasCapability('source.test')
   const canReadSecrets = useHasCapability('source.secret.read')
+  const canReadSystemConfig = useHasCapability('system.config.read')
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -947,10 +948,11 @@ export function SourcesPage() {
     queryFn: () => sourceApi.list({ page: 1, page_size: 100, view: 'admin' }),
   })
 
-  const { data: systemConfig } = useQuery({
+  const { data: systemConfig, isLoading: systemConfigLoading } = useQuery({
     queryKey: ['system-config'],
     queryFn: () => systemApi.getConfig(),
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && canReadSystemConfig,
+    retry: false,
   })
 
   const copyWebDAVUrl = async (url: string) => {
@@ -1045,7 +1047,10 @@ export function SourcesPage() {
               const webDAVUrl = source.is_webdav_exposed && source.webdav_slug
                 ? buildSourceWebDAVUrl(systemConfig?.webdav_prefix, source.webdav_slug)
                 : ''
-              const isWebDAVUsable = Boolean(systemConfig?.webdav_enabled && webDAVUrl)
+              const hasKnownGlobalWebDAVStatus = canReadSystemConfig && Boolean(systemConfig)
+              const isWebDAVUsable = Boolean(
+                webDAVUrl && (!hasKnownGlobalWebDAVStatus || systemConfig?.webdav_enabled)
+              )
 
               return (
                 <div
@@ -1145,8 +1150,16 @@ export function SourcesPage() {
                           <Copy className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                      {!systemConfig?.webdav_enabled && (
+                      {canReadSystemConfig && systemConfigLoading && !systemConfig && (
+                        <p className="text-[11px] text-muted-foreground">正在确认全局 WebDAV 状态...</p>
+                      )}
+                      {canReadSystemConfig && systemConfig?.webdav_enabled === false && (
                         <p className="text-[11px] text-muted-foreground">全局 WebDAV 当前未启用</p>
+                      )}
+                      {!canReadSystemConfig && (
+                        <p className="text-[11px] text-muted-foreground">
+                          当前账号无系统配置读取权限，无法确认全局 WebDAV 开关；地址按默认 /dav 前缀展示。
+                        </p>
                       )}
                     </div>
                   )}

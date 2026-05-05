@@ -188,6 +188,21 @@ assertIncludes(
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
+  "useHasCapability('system.config.read')",
+  '存储源页读取全局 WebDAV 配置前必须先判断 system.config.read，operator 只具备 source.read 时不能触发 /system/config 403。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'enabled: isAuthenticated && canReadSystemConfig',
+  '存储源页的 system-config query 必须按 system.config.read capability 启用，不能仅按登录态启用。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  '当前账号无系统配置读取权限，无法确认全局 WebDAV 开关',
+  '无 system.config.read 的账号查看 WebDAV 源时应展示未知状态说明，不能误提示全局 WebDAV 未启用。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
   'copyWebDAVUrl',
   '存储源卡片需要提供复制 WebDAV 地址的入口。',
 )

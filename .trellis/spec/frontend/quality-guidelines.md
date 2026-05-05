@@ -74,6 +74,12 @@ update `web/FRONTEND_TEST_HANDOFF.md` in the same change:
 - Public share route `/s/:token` must stay unauthenticated and must not be proxied by Vite.
 - Protected pages need both sidebar filtering and `CapabilityRoute`.
 - Button-level actions should use capabilities/current directory permissions where relevant.
+- Pages that are visible with one capability but enrich data from a stricter
+  capability must gate the stricter query separately. Example: `/sources` is
+  visible with `source.read`, but `/api/v1/system/config` requires
+  `system.config.read`; operator users must not trigger a 403 just to render
+  WebDAV status, and unknown global WebDAV status must not be displayed as
+  "disabled".
 
 ### File/VFS regression discipline
 
