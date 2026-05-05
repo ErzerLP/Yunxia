@@ -250,6 +250,8 @@ func main() {
 		systemConfigRepo,
 		userRepo,
 		aclAuthorizer,
+		fileSvc,
+		uploadSvc,
 		hasher,
 		auditRecorder,
 		appLog.Component(rootLogger, "http.webdav"),

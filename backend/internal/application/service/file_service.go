@@ -133,6 +133,38 @@ func (s *FileService) List(ctx context.Context, query appdto.FileListQuery) (*ap
 	}, pageValue(query.Page), pageSizeValue(query.PageSize), total, totalPages, nil
 }
 
+// Stat 返回单个文件或目录条目。
+func (s *FileService) Stat(ctx context.Context, sourceID uint, filePath string) (*appdto.FileItem, error) {
+	source, err := s.getSource(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizePath(ctx, source.ID, filePath, ACLActionRead); err != nil {
+		return nil, err
+	}
+	if source.DriverType != "local" {
+		return s.statWithDriver(ctx, source, filePath)
+	}
+
+	virtualPath, err := normalizeVirtualPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	_, physicalPath, err := resolvePhysicalPath(source, virtualPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(physicalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrFileNotFound
+		}
+		return nil, err
+	}
+	item := buildFileItem(source.ID, virtualPath, info)
+	return &item, nil
+}
+
 // Search 按文件名搜索。
 func (s *FileService) Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error) {
 	source, err := s.getSource(ctx, query.SourceID)
@@ -1269,6 +1301,36 @@ func (s *FileService) listWithDriver(ctx context.Context, source *entity.Storage
 		CurrentPath:     virtualPath,
 		CurrentSourceID: source.ID,
 	}, pageValue(query.Page), pageSizeValue(query.PageSize), total, totalPages, nil
+}
+
+func (s *FileService) statWithDriver(ctx context.Context, source *entity.StorageSource, filePath string) (*appdto.FileItem, error) {
+	driver, err := s.getFileDriver(source.DriverType)
+	if err != nil {
+		return nil, err
+	}
+
+	virtualPath, err := normalizeVirtualPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	entry, err := driver.Stat(ctx, source, virtualPath)
+	if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return nil, ErrFileNotFound
+		case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+			return nil, ErrFileIsDirectory
+		}
+		return nil, err
+	}
+
+	capabilities, err := s.driverCapabilities(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	item := buildStorageEntryItem(source.ID, *entry)
+	applyFileItemCapabilities(&item, capabilities)
+	return &item, nil
 }
 
 func (s *FileService) searchWithDriver(ctx context.Context, source *entity.StorageSource, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error) {

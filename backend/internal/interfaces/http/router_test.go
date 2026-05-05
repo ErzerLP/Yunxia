@@ -650,6 +650,8 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		configRepo,
 		userRepo,
 		aclAuthorizer,
+		fileSvc,
+		uploadSvc,
 		hasher,
 		auditRecorder,
 		appLog.Component(rootLogger, "http.webdav"),

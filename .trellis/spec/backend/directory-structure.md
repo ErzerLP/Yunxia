@@ -193,6 +193,12 @@ type DriverBundle struct {
 - `CapacityDriver` is preferred for source capacity/used bytes. If it returns
   `nil` or `UsedBytes == nil`, system stats may fall back to recursive
   `FileDriver` only when `RecursiveStatsFallback` is explicitly true.
+- WebDAV must not be hard-coded to local physical paths. Local sources may use
+  `webdav.Dir`, but non-local sources exposed via `is_webdav_exposed=true`
+  should route through FileService/UploadService and registered drivers:
+  `PROPFIND` uses list/stat, `GET/HEAD` returns provider redirect,
+  `MKCOL/DELETE/COPY/MOVE` use file service mutations, and `PUT` imports a
+  backend temp file through `ImportDriver`.
 
 ### 4. Validation & Error Matrix
 
@@ -258,6 +264,9 @@ tests that assert:
   `server_chunk` when the driver returns unsupported but an import driver
   exists. Fast-upload plans return `is_fast_upload=true` without creating an
   upload session.
+- WebDAV non-local tests cover `PROPFIND`, `GET/HEAD` redirect, write methods
+  delegating to FileService/UploadService, read-only source rejection, and no
+  direct dependency on provider-specific clients from the HTTP handler.
 - Native-download driver tests cover create/status/cancel mapping, provider
   target folder resolution, no local staging/import for native PikPak targets,
   `downloader_type=pikpak_native`, and unsupported pause/resume returning a

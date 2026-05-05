@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -12,11 +14,13 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/webdav"
 
 	appaudit "yunxia/internal/application/audit"
+	appdto "yunxia/internal/application/dto"
 	appsvc "yunxia/internal/application/service"
 	"yunxia/internal/domain/entity"
 	"yunxia/internal/domain/permission"
@@ -33,13 +37,30 @@ type localWebDAVConfig struct {
 	BasePath string `json:"base_path"`
 }
 
-// WebDAVHandler 负责 local 存储源的 WebDAV 暴露。
+type webDAVFileService interface {
+	List(ctx context.Context, query appdto.FileListQuery) (*appdto.FileListResponse, int, int, int, int, error)
+	Stat(ctx context.Context, sourceID uint, filePath string) (*appdto.FileItem, error)
+	Mkdir(ctx context.Context, req appdto.MkdirRequest) (*appdto.FileItem, error)
+	Rename(ctx context.Context, req appdto.RenameRequest) (string, string, *appdto.FileItem, error)
+	Move(ctx context.Context, req appdto.MoveCopyRequest) (string, string, error)
+	Copy(ctx context.Context, req appdto.MoveCopyRequest) (string, string, error)
+	Delete(ctx context.Context, req appdto.DeleteFileRequest) (time.Time, error)
+	ResolveDownloadRedirect(ctx context.Context, sourceID uint, filePath, disposition string) (string, error)
+}
+
+type webDAVUploadService interface {
+	ImportLocalFile(ctx context.Context, sourceID uint, parentPath string, filename string, localPath string) (*appdto.FileItem, error)
+}
+
+// WebDAVHandler 负责存储源的 WebDAV 暴露。
 type WebDAVHandler struct {
 	prefix           string
 	sourceRepo       domainrepo.SourceRepository
 	systemConfigRepo domainrepo.SystemConfigRepository
 	userRepo         domainrepo.UserRepository
 	aclAuthorizer    *appsvc.ACLAuthorizer
+	fileService      webDAVFileService
+	uploadService    webDAVUploadService
 	hasher           passwordComparer
 	lockSystem       webdav.LockSystem
 	auditRecorder    *appaudit.Recorder
@@ -53,6 +74,8 @@ func NewWebDAVHandler(
 	systemConfigRepo domainrepo.SystemConfigRepository,
 	userRepo domainrepo.UserRepository,
 	aclAuthorizer *appsvc.ACLAuthorizer,
+	fileService webDAVFileService,
+	uploadService webDAVUploadService,
 	hasher passwordComparer,
 	auditRecorder *appaudit.Recorder,
 	logger *slog.Logger,
@@ -66,6 +89,8 @@ func NewWebDAVHandler(
 		systemConfigRepo: systemConfigRepo,
 		userRepo:         userRepo,
 		aclAuthorizer:    aclAuthorizer,
+		fileService:      fileService,
+		uploadService:    uploadService,
 		hasher:           hasher,
 		lockSystem:       webdav.NewMemLS(),
 		auditRecorder:    auditRecorder,
@@ -103,7 +128,7 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if !source.IsEnabled || !source.IsWebDAVExposed || source.DriverType != "local" {
+	if !source.IsEnabled || !source.IsWebDAVExposed {
 		http.NotFound(c.Writer, c.Request)
 		return
 	}
@@ -111,12 +136,6 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 	user, authErr := h.authenticate(c.Request)
 	if authErr != nil {
 		challengeWebDAV(c.Writer)
-		return
-	}
-
-	rootDir, err := resolveLocalWebDAVRoot(source)
-	if err != nil {
-		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -152,6 +171,17 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 		return
 	}
 
+	if source.DriverType != "local" {
+		h.serveDriverWebDAV(c, req, source, webdavPath)
+		return
+	}
+
+	rootDir, err := resolveLocalWebDAVRoot(source)
+	if err != nil {
+		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	var fileSystem webdav.FileSystem = webdav.Dir(rootDir)
 	if source.WebDAVReadOnly {
 		fileSystem = readOnlyWebDAVFileSystem{delegate: fileSystem}
@@ -161,6 +191,263 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 		FileSystem: fileSystem,
 		LockSystem: h.lockSystem,
 	}).ServeHTTP(c.Writer, req)
+}
+
+func (h *WebDAVHandler) serveDriverWebDAV(c *gin.Context, req *http.Request, source *entity.StorageSource, webdavPath string) {
+	if h.fileService == nil {
+		http.Error(c.Writer, "webdav storage driver unavailable", http.StatusNotImplemented)
+		return
+	}
+
+	switch strings.ToUpper(req.Method) {
+	case http.MethodOptions:
+		writeWebDAVOptions(c.Writer)
+	case "PROPFIND":
+		h.handleDriverPropfind(c.Writer, req, source, webdavPath)
+	case http.MethodHead:
+		h.handleDriverDownload(c.Writer, req, source, webdavPath, true)
+	case http.MethodGet:
+		h.handleDriverDownload(c.Writer, req, source, webdavPath, false)
+	case "MKCOL":
+		if !h.ensureWebDAVWritable(c.Writer, source) {
+			return
+		}
+		h.handleDriverMKCOL(c.Writer, req, source, webdavPath)
+	case http.MethodPut:
+		if !h.ensureWebDAVWritable(c.Writer, source) {
+			return
+		}
+		h.handleDriverPUT(c.Writer, req, source, webdavPath)
+	case http.MethodDelete:
+		if !h.ensureWebDAVWritable(c.Writer, source) {
+			return
+		}
+		h.handleDriverDELETE(c.Writer, req, source, webdavPath)
+	case "COPY":
+		if !h.ensureWebDAVWritable(c.Writer, source) {
+			return
+		}
+		h.handleDriverCopyMove(c.Writer, req, source, webdavPath, false)
+	case "MOVE":
+		if !h.ensureWebDAVWritable(c.Writer, source) {
+			return
+		}
+		h.handleDriverCopyMove(c.Writer, req, source, webdavPath, true)
+	default:
+		http.Error(c.Writer, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *WebDAVHandler) ensureWebDAVWritable(writer http.ResponseWriter, source *entity.StorageSource) bool {
+	if source != nil && source.WebDAVReadOnly {
+		http.Error(writer, "webdav source is read only", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func (h *WebDAVHandler) handleDriverPropfind(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
+	item, err := h.driverWebDAVItem(req.Context(), source, webdavPath)
+	if err != nil {
+		http.Error(writer, "not found", webDAVStatusFromError(err))
+		return
+	}
+
+	items := []appdto.FileItem{*item}
+	depth := strings.TrimSpace(req.Header.Get("Depth"))
+	if item.IsDir && depth != "0" {
+		resp, _, _, _, _, err := h.fileService.List(req.Context(), appdto.FileListQuery{
+			SourceID:  source.ID,
+			Path:      webdavPath,
+			Page:      1,
+			PageSize:  10000,
+			SortBy:    "name",
+			SortOrder: "asc",
+		})
+		if err != nil {
+			http.Error(writer, "not found", webDAVStatusFromError(err))
+			return
+		}
+		items = append(items, resp.Items...)
+	}
+	writeWebDAVMultiStatus(writer, h.prefix, source.WebDAVSlug, items)
+}
+
+func (h *WebDAVHandler) driverWebDAVItem(ctx context.Context, source *entity.StorageSource, webdavPath string) (*appdto.FileItem, error) {
+	if webdavPath == "/" {
+		return &appdto.FileItem{
+			Name:       source.WebDAVSlug,
+			Path:       "/",
+			SourceID:   source.ID,
+			IsDir:      true,
+			ModifiedAt: time.Now().UTC().Format(time.RFC3339),
+			CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		}, nil
+	}
+	return h.fileService.Stat(ctx, source.ID, webdavPath)
+}
+
+func (h *WebDAVHandler) handleDriverDownload(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string, headOnly bool) {
+	redirectURL, err := h.fileService.ResolveDownloadRedirect(req.Context(), source.ID, webdavPath, "inline")
+	if err != nil {
+		http.Error(writer, "not found", webDAVStatusFromError(err))
+		return
+	}
+	if redirectURL == "" {
+		http.Error(writer, "download unavailable", http.StatusNotImplemented)
+		return
+	}
+	writer.Header().Set("Location", redirectURL)
+	if headOnly {
+		writer.WriteHeader(http.StatusFound)
+		return
+	}
+	http.Redirect(writer, req, redirectURL, http.StatusFound)
+}
+
+func (h *WebDAVHandler) handleDriverMKCOL(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
+	parentPath, name, err := splitWebDAVTarget(webdavPath)
+	if err != nil {
+		http.Error(writer, "bad request", http.StatusBadRequest)
+		return
+	}
+	if _, err := h.fileService.Mkdir(req.Context(), appdto.MkdirRequest{
+		SourceID:   source.ID,
+		ParentPath: parentPath,
+		Name:       name,
+	}); err != nil {
+		http.Error(writer, "webdav mkdir failed", webDAVStatusFromError(err))
+		return
+	}
+	writer.WriteHeader(http.StatusCreated)
+}
+
+func (h *WebDAVHandler) handleDriverPUT(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
+	if h.uploadService == nil {
+		http.Error(writer, "webdav upload unavailable", http.StatusNotImplemented)
+		return
+	}
+	parentPath, name, err := splitWebDAVTarget(webdavPath)
+	if err != nil {
+		http.Error(writer, "bad request", http.StatusBadRequest)
+		return
+	}
+	tmp, err := os.CreateTemp("", "yunxia-webdav-upload-*")
+	if err != nil {
+		http.Error(writer, "internal error", http.StatusInternalServerError)
+		return
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := io.Copy(tmp, req.Body); err != nil {
+		_ = tmp.Close()
+		http.Error(writer, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		http.Error(writer, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := h.uploadService.ImportLocalFile(req.Context(), source.ID, parentPath, name, tmpPath); err != nil {
+		http.Error(writer, "webdav put failed", webDAVStatusFromError(err))
+		return
+	}
+	writer.WriteHeader(http.StatusCreated)
+}
+
+func (h *WebDAVHandler) handleDriverDELETE(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
+	if _, err := h.fileService.Delete(req.Context(), appdto.DeleteFileRequest{
+		SourceID:   source.ID,
+		Path:       webdavPath,
+		DeleteMode: "trash",
+	}); err != nil {
+		http.Error(writer, "webdav delete failed", webDAVStatusFromError(err))
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string, move bool) {
+	destinationPath, err := h.normalizedDriverDestinationPath(req, source)
+	if err != nil {
+		http.Error(writer, "bad destination", http.StatusBadRequest)
+		return
+	}
+	if webdavPath == "/" || destinationPath == "/" {
+		http.Error(writer, "bad request", http.StatusBadRequest)
+		return
+	}
+	destinationParent := path.Dir(destinationPath)
+	if destinationParent == "." {
+		destinationParent = "/"
+	}
+	destinationName := path.Base(destinationPath)
+	sourceName := path.Base(webdavPath)
+
+	var newPath string
+	if move {
+		_, movedPath, err := h.fileService.Move(req.Context(), appdto.MoveCopyRequest{
+			SourceID:   source.ID,
+			Path:       webdavPath,
+			TargetPath: destinationParent,
+		})
+		if err != nil {
+			http.Error(writer, "webdav move failed", webDAVStatusFromError(err))
+			return
+		}
+		newPath = movedPath
+	} else {
+		_, copiedPath, err := h.fileService.Copy(req.Context(), appdto.MoveCopyRequest{
+			SourceID:   source.ID,
+			Path:       webdavPath,
+			TargetPath: destinationParent,
+		})
+		if err != nil {
+			http.Error(writer, "webdav copy failed", webDAVStatusFromError(err))
+			return
+		}
+		newPath = copiedPath
+	}
+
+	if destinationName != sourceName {
+		_, renamedPath, _, err := h.fileService.Rename(req.Context(), appdto.RenameRequest{
+			SourceID: source.ID,
+			Path:     newPath,
+			NewName:  destinationName,
+		})
+		if err != nil {
+			http.Error(writer, "webdav rename failed", webDAVStatusFromError(err))
+			return
+		}
+		newPath = renamedPath
+	}
+	if newPath != destinationPath {
+		writer.Header().Set("Content-Location", h.webDAVExternalHref(source.WebDAVSlug, newPath))
+	}
+	if move {
+		writer.WriteHeader(http.StatusCreated)
+		return
+	}
+	writer.WriteHeader(http.StatusCreated)
+}
+
+func (h *WebDAVHandler) normalizedDriverDestinationPath(req *http.Request, source *entity.StorageSource) (string, error) {
+	raw := strings.TrimSpace(req.Header.Get("Destination"))
+	if raw == "" {
+		return "", os.ErrInvalid
+	}
+	destinationPath, err := normalizeWebDAVDestinationPath(raw)
+	if err != nil {
+		return "", err
+	}
+	externalPrefix := strings.TrimRight(h.prefix, "/")
+	if externalPrefix == "" {
+		externalPrefix = "/dav"
+	}
+	if destinationPath == externalPrefix || strings.HasPrefix(destinationPath, externalPrefix+"/") {
+		return "", os.ErrInvalid
+	}
+	return destinationPath, nil
 }
 
 func (h *WebDAVHandler) recordWriteAudit(c *gin.Context, source *entity.StorageSource, action string, requestPath string, destinationPath string) {
@@ -319,6 +606,128 @@ func cloneRequest(req *http.Request) *http.Request {
 		cloned.URL = &urlCopy
 	}
 	return cloned
+}
+
+func splitWebDAVTarget(webdavPath string) (string, string, error) {
+	webdavPath, err := normalizeWebDAVRequestPath(webdavPath)
+	if err != nil {
+		return "", "", err
+	}
+	if webdavPath == "/" {
+		return "", "", os.ErrInvalid
+	}
+	parentPath := path.Dir(webdavPath)
+	if parentPath == "." {
+		parentPath = "/"
+	}
+	name := path.Base(webdavPath)
+	if name == "." || name == "/" || strings.TrimSpace(name) == "" {
+		return "", "", os.ErrInvalid
+	}
+	return parentPath, name, nil
+}
+
+func writeWebDAVOptions(writer http.ResponseWriter) {
+	writer.Header().Set("Allow", "OPTIONS, HEAD, GET, PUT, DELETE, PROPFIND, MKCOL, COPY, MOVE")
+	writer.Header().Set("DAV", "1, 2")
+	writer.Header().Set("MS-Author-Via", "DAV")
+	writer.WriteHeader(http.StatusOK)
+}
+
+func writeWebDAVMultiStatus(writer http.ResponseWriter, prefix string, slug string, items []appdto.FileItem) {
+	writer.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	writer.WriteHeader(http.StatusMultiStatus)
+	var builder strings.Builder
+	builder.WriteString(`<?xml version="1.0" encoding="utf-8"?>`)
+	builder.WriteString(`<D:multistatus xmlns:D="DAV:">`)
+	for _, item := range items {
+		href := webDAVExternalHref(prefix, slug, item.Path)
+		builder.WriteString(`<D:response>`)
+		builder.WriteString(`<D:href>`)
+		writeXMLEscaped(&builder, href)
+		builder.WriteString(`</D:href>`)
+		builder.WriteString(`<D:propstat><D:prop>`)
+		builder.WriteString(`<D:displayname>`)
+		writeXMLEscaped(&builder, item.Name)
+		builder.WriteString(`</D:displayname>`)
+		builder.WriteString(`<D:resourcetype>`)
+		if item.IsDir {
+			builder.WriteString(`<D:collection/>`)
+		}
+		builder.WriteString(`</D:resourcetype>`)
+		if !item.IsDir {
+			builder.WriteString(`<D:getcontentlength>`)
+			builder.WriteString(fmt.Sprintf("%d", item.Size))
+			builder.WriteString(`</D:getcontentlength>`)
+		}
+		builder.WriteString(`<D:getlastmodified>`)
+		writeXMLEscaped(&builder, webDAVHTTPTime(item.ModifiedAt))
+		builder.WriteString(`</D:getlastmodified>`)
+		builder.WriteString(`<D:status>HTTP/1.1 200 OK</D:status>`)
+		builder.WriteString(`</D:prop></D:propstat>`)
+		builder.WriteString(`</D:response>`)
+	}
+	builder.WriteString(`</D:multistatus>`)
+	_, _ = writer.Write([]byte(builder.String()))
+}
+
+func (h *WebDAVHandler) webDAVExternalHref(slug string, innerPath string) string {
+	return webDAVExternalHref(h.prefix, slug, innerPath)
+}
+
+func webDAVExternalHref(prefix string, slug string, innerPath string) string {
+	if innerPath == "" {
+		innerPath = "/"
+	}
+	if !strings.HasPrefix(innerPath, "/") {
+		innerPath = "/" + innerPath
+	}
+	base := strings.TrimRight(prefix, "/")
+	if base == "" {
+		base = "/dav"
+	}
+	rawPath := base + "/" + slug
+	if innerPath != "/" {
+		rawPath += innerPath
+	}
+	escaped := (&url.URL{Path: rawPath}).EscapedPath()
+	if innerPath == "/" && !strings.HasSuffix(escaped, "/") {
+		escaped += "/"
+	}
+	return escaped
+}
+
+func writeXMLEscaped(builder *strings.Builder, value string) {
+	_ = xml.EscapeText(builder, []byte(value))
+}
+
+func webDAVHTTPTime(value string) string {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.UTC().Format(http.TimeFormat)
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC().Format(http.TimeFormat)
+	}
+	return time.Now().UTC().Format(http.TimeFormat)
+}
+
+func webDAVStatusFromError(err error) int {
+	switch {
+	case errors.Is(err, appsvc.ErrACLDenied), errors.Is(err, appsvc.ErrSourceReadOnly):
+		return http.StatusForbidden
+	case errors.Is(err, appsvc.ErrFileNotFound), errors.Is(err, os.ErrNotExist):
+		return http.StatusNotFound
+	case errors.Is(err, appsvc.ErrFileAlreadyExists), errors.Is(err, appsvc.ErrNameConflict):
+		return http.StatusConflict
+	case errors.Is(err, appsvc.ErrPathInvalid), errors.Is(err, appsvc.ErrFileNameInvalid), errors.Is(err, os.ErrInvalid):
+		return http.StatusBadRequest
+	case errors.Is(err, appsvc.ErrFileIsDirectory):
+		return http.StatusConflict
+	case errors.Is(err, appsvc.ErrSourceOperationUnsupported), errors.Is(err, appsvc.ErrSourceDriverUnsupported):
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func challengeWebDAV(writer http.ResponseWriter) {

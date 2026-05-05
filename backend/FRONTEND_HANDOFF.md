@@ -863,6 +863,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 - [ ] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
 - [ ] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
 - [ ] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
+- [ ] WebDAV 暴露不再只限 local；PikPak/S3 等非 local 源设置 `is_webdav_exposed=true` 后可通过 `/dav/{webdav_slug}` 访问，但前端只需要展示开关与 slug，不需要实现 WebDAV 客户端。
 
 #### 背景 / 变更摘要
 
@@ -908,3 +909,4 @@ type PikPakSecretPatch = {
 - `delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。
+- WebDAV 非 local 适配：`PROPFIND` 通过文件服务列目录，`GET/HEAD` 302 到 provider 临时下载链接，`PUT` 通过后端临时文件导入目标源；跨 WebDAV source 的 `COPY/MOVE` 暂不支持。

@@ -343,6 +343,53 @@ func (s *UploadService) initWithImportDriver(ctx context.Context, userID uint, t
 	}, nil
 }
 
+// ImportLocalFile 将后端可见的本地文件导入非 local 存储源。
+func (s *UploadService) ImportLocalFile(ctx context.Context, sourceID uint, parentPath string, filename string, localPath string) (*appdto.FileItem, error) {
+	if err := validateFileName(filename); err != nil {
+		return nil, err
+	}
+	source, err := s.sourceRepo.FindByID(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if source.DriverType == "local" {
+		return nil, ErrSourceOperationUnsupported
+	}
+	parentPath, err = normalizeVirtualPath(parentPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizePath(ctx, source.ID, parentPath, ACLActionWrite); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, ErrFileIsDirectory
+	}
+	driver, err := s.getImportDriver(source.DriverType)
+	if err != nil {
+		if errors.Is(err, ErrSourceDriverUnsupported) {
+			return nil, ErrSourceOperationUnsupported
+		}
+		return nil, err
+	}
+	targetPath := joinVirtualPath(parentPath, filename)
+	if err := driver.ImportFile(ctx, source, targetPath, localPath); err != nil {
+		return nil, normalizeImportDriverError(err)
+	}
+	item := buildStorageEntryItem(source.ID, StorageEntry{
+		Name:       filename,
+		Path:       targetPath,
+		IsDir:      false,
+		Size:       info.Size(),
+		ModifiedAt: time.Now(),
+	})
+	return &item, nil
+}
+
 // UploadChunk 接收单个 chunk。
 func (s *UploadService) UploadChunk(ctx context.Context, uploadID string, index int, data []byte) (*appdto.UploadChunkResponse, error) {
 	session, err := s.uploadRepo.FindByID(ctx, uploadID)

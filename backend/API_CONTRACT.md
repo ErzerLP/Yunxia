@@ -28,7 +28,7 @@
 | 分享 | `/api/v1/shares*`、`/s/:token` | 分享管理、公开分享访问 | 分享管理页、公开分享页 |
 | 审计 | `/api/v1/audit/logs*` | 审计列表、审计详情 | 审计日志页 |
 | 统一虚拟目录 V2 | `/api/v2/fs*` | 基于虚拟路径的文件列表、搜索、写操作、下载 | **新文件管理页推荐优先使用** |
-| WebDAV | `{webdav_prefix}` 默认 `/dav` | WebDAV 客户端访问 local 源 | 前端主要展示配置，不直接走 JSON API |
+| WebDAV | `{webdav_prefix}` 默认 `/dav` | WebDAV 客户端访问已暴露的 local/S3/PikPak 等存储源 | 前端主要展示配置，不直接走 JSON API |
 
 ### 0.2 新文件管理页推荐接口
 
@@ -1210,10 +1210,16 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 约束：
 
 - 使用 Basic Auth
-- 仅对 `is_webdav_exposed=true` 的 local 源开放
+- 对 `is_webdav_exposed=true` 的存储源开放；local 继续使用物理文件系统适配，非 local 源通过 FileService/UploadService/driver 能力适配
 - 需要 HTTPS 语义；反向代理场景应传 `X-Forwarded-Proto: https`
 - 普通用户仍受 ACL 约束
 - `webdav_read_only=true` 时写方法会被拒绝
+- 非 local 源能力边界：
+  - `PROPFIND` 走 `FileService.List/Stat`，返回 WebDAV `207 Multi-Status`
+  - `GET` / `HEAD` 走 provider presigned URL，返回 `302 Location`
+  - `MKCOL` / `DELETE` / `COPY` / `MOVE` 走对应文件服务写操作
+  - `PUT` 先把请求体写入后端临时文件，再通过 `UploadService.ImportLocalFile -> ImportDriver` 导入目标源；因此仅适用于已注册 `ImportDriver` 的非 local 源（当前 S3/PikPak 可用）
+  - 非 local `COPY` / `MOVE` 的 `Destination` 必须仍在同一个 WebDAV source slug 下；跨 WebDAV source 移动/复制当前不支持
 - 写方法当前会写入审计：
   - `PUT -> file.put`
   - `MKCOL -> file.mkcol`
