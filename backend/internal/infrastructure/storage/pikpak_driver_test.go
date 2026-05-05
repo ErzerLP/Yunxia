@@ -90,6 +90,47 @@ func TestPikPakDriverListStatDownloadSearchAndCapacity(t *testing.T) {
 	}
 }
 
+func TestPikPakDriverPersistsRuntimeSessionConfig(t *testing.T) {
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {},
+		},
+	}
+	var persisted []string
+	driver := NewPikPakDriver(
+		WithPikPakAPIClient(client),
+		WithPikPakRuntimeConfigWriter(func(_ context.Context, source *entity.StorageSource, configJSON string) error {
+			if source == nil || source.ID != 10 {
+				t.Fatalf("unexpected source passed to runtime writer = %+v", source)
+			}
+			persisted = append(persisted, configJSON)
+			return nil
+		}),
+	)
+	source := newTestPikPakSource(t)
+
+	if err := driver.Test(context.Background(), source); err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+	if len(persisted) == 0 {
+		t.Fatalf("expected runtime config writer to be called")
+	}
+	cfg, err := ParsePikPakConfigJSON(persisted[len(persisted)-1])
+	if err != nil {
+		t.Fatalf("ParsePikPakConfigJSON(persisted) error = %v", err)
+	}
+	if cfg.RefreshToken != "refresh-1" || cfg.CaptchaToken != "captcha-1" || cfg.DeviceID != "device-0" {
+		t.Fatalf("unexpected persisted runtime config = %+v", cfg)
+	}
+	sourceCfg, err := ParsePikPakConfigJSON(source.ConfigJSON)
+	if err != nil {
+		t.Fatalf("ParsePikPakConfigJSON(source) error = %v", err)
+	}
+	if sourceCfg.RefreshToken != cfg.RefreshToken || sourceCfg.CaptchaToken != cfg.CaptchaToken || sourceCfg.DeviceID != cfg.DeviceID {
+		t.Fatalf("source ConfigJSON should mirror persisted runtime config, source=%+v persisted=%+v", sourceCfg, cfg)
+	}
+}
+
 func TestPikPakDriverWriteOperationsSuccess(t *testing.T) {
 	client := &fakePikPakClient{
 		filesByParent: map[string][]PikPakFile{

@@ -172,6 +172,10 @@ type DriverBundle struct {
   config, captcha, not-found, or name-conflict errors. Retry logs must use
   sanitized method/host/path/status/cause fields and must not include request
   bodies, passwords, tokens, OSS secrets, or download URLs.
+- Runtime credential refresh for third-party drivers must update the in-memory
+  source config and, when available, persist refresh_token/captcha/device_id
+  through an injected minimal writer. Keep repository access outside the driver
+  internals; wire persistence from `cmd/server/main.go`.
 - If a driver delete operation maps to a provider recycle-bin operation (for
   example PikPak `batchTrash`), expose that through capabilities and document
   that `delete_mode=trash` does not create a Yunxia `.trash` item; do not label

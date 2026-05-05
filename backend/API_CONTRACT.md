@@ -464,7 +464,7 @@ PikPak 字段说明：
 - `config.download_strategy` 当前仅支持 `redirect`，后端鉴权后由 `/files/download` 或 `/api/v2/fs/download` 302 到 PikPak 临时下载链接
 - `secret_patch.username/password/refresh_token/captcha_token/device_id` 均按敏感字段处理；更新时省略字段会保留旧值，传 `null` 会清空该字段
 - `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`
-- token/captcha/device_id 运行态刷新后会更新当前请求内的 source 配置；持久化写回仓储属于后续增强点，create/update 的探测阶段会随实体保存
+- token/captcha/device_id 运行态刷新后会更新当前 source 配置并通过 source repository 持久化写回；服务重启后可继续使用最新 refresh/captcha/device 信息
 - PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required 等用户可修正错误不会重试，最终仍按稳定错误码返回
 - 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
 - PikPak 上传现在同时支持两条后端路径：前端在 `/upload/init.file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 时，后端优先创建 provider OSS 直传计划；未传 GCID 或传普通 MD5/空值时，后端自动回退为 `server_chunk -> ImportFile`

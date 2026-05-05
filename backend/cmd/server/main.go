@@ -15,6 +15,7 @@ import (
 
 	appaudit "yunxia/internal/application/audit"
 	appsvc "yunxia/internal/application/service"
+	"yunxia/internal/domain/entity"
 	appcfg "yunxia/internal/infrastructure/config"
 	"yunxia/internal/infrastructure/downloader"
 	infraNotification "yunxia/internal/infrastructure/notification"
@@ -93,7 +94,17 @@ func main() {
 		)
 	}
 	s3Driver := infraStorage.NewS3Driver(infraStorage.NewS3ClientFactory())
-	pikPakDriver := infraStorage.NewPikPakDriver()
+	pikPakDriver := infraStorage.NewPikPakDriver(infraStorage.WithPikPakRuntimeConfigWriter(func(ctx context.Context, source *entity.StorageSource, configJSON string) error {
+		if source == nil {
+			return nil
+		}
+		current, err := sourceRepo.FindByID(ctx, source.ID)
+		if err != nil {
+			return err
+		}
+		current.ConfigJSON = configJSON
+		return sourceRepo.Update(ctx, current)
+	}))
 	storageDrivers := appsvc.NewStorageDriverRegistry(
 		appsvc.DriverBundle{
 			Type:        "local",

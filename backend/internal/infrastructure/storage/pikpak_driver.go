@@ -55,7 +55,11 @@ func NewPikPakDriver(options ...PikPakDriverOption) *PikPakDriver {
 func WithPikPakAPIClient(client PikPakAPIClient) PikPakDriverOption {
 	return func(d *PikPakDriver) {
 		if client != nil {
-			d.sessions = NewPikPakSessionManager(client)
+			var writer func(context.Context, *entity.StorageSource, string) error
+			if d.sessions != nil {
+				writer = d.sessions.runtimeConfigWriter
+			}
+			d.sessions = NewPikPakSessionManager(client, WithPikPakSessionRuntimeConfigWriter(writer))
 		}
 	}
 }
@@ -64,8 +68,21 @@ func WithPikPakAPIClient(client PikPakAPIClient) PikPakDriverOption {
 func WithPikPakSessionManager(manager *PikPakSessionManager) PikPakDriverOption {
 	return func(d *PikPakDriver) {
 		if manager != nil {
+			if d.sessions != nil && manager.runtimeConfigWriter == nil {
+				manager.runtimeConfigWriter = d.sessions.runtimeConfigWriter
+			}
 			d.sessions = manager
 		}
+	}
+}
+
+// WithPikPakRuntimeConfigWriter 注入运行态 refresh_token/captcha/device_id 持久化回写函数。
+func WithPikPakRuntimeConfigWriter(writer func(context.Context, *entity.StorageSource, string) error) PikPakDriverOption {
+	return func(d *PikPakDriver) {
+		if d.sessions == nil {
+			d.sessions = NewPikPakSessionManager(nil)
+		}
+		d.sessions.runtimeConfigWriter = writer
 	}
 }
 

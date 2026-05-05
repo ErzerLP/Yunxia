@@ -24,20 +24,35 @@ type pikPakSessionState struct {
 
 // PikPakSessionManager 维护 source 级别的 PikPak 运行态 token/captcha。
 type PikPakSessionManager struct {
-	client PikPakAPIClient
-	mu     sync.Mutex
-	states map[string]*pikPakSessionState
+	client              PikPakAPIClient
+	runtimeConfigWriter func(context.Context, *entity.StorageSource, string) error
+	mu                  sync.Mutex
+	states              map[string]*pikPakSessionState
+}
+
+// PikPakSessionManagerOption 定义 session manager 可选项。
+type PikPakSessionManagerOption func(*PikPakSessionManager)
+
+// WithPikPakSessionRuntimeConfigWriter 设置运行态 token/captcha 持久化回写函数。
+func WithPikPakSessionRuntimeConfigWriter(writer func(context.Context, *entity.StorageSource, string) error) PikPakSessionManagerOption {
+	return func(m *PikPakSessionManager) {
+		m.runtimeConfigWriter = writer
+	}
 }
 
 // NewPikPakSessionManager 创建 SessionManager。
-func NewPikPakSessionManager(client PikPakAPIClient) *PikPakSessionManager {
+func NewPikPakSessionManager(client PikPakAPIClient, options ...PikPakSessionManagerOption) *PikPakSessionManager {
 	if client == nil {
 		client = NewPikPakHTTPClient()
 	}
-	return &PikPakSessionManager{
+	manager := &PikPakSessionManager{
 		client: client,
 		states: make(map[string]*pikPakSessionState),
 	}
+	for _, option := range options {
+		option(manager)
+	}
+	return manager
 }
 
 func (m *PikPakSessionManager) withSession(ctx context.Context, source *entity.StorageSource, fn func(PikPakSession, PikPakConfig) error) error {
@@ -82,7 +97,9 @@ func (m *PikPakSessionManager) ensureSession(ctx context.Context, source *entity
 	if state.AccessToken != "" {
 		session := pikPakSessionFromState(cfg, state)
 		m.mu.Unlock()
-		m.writeBackRuntimeConfig(source, cfg, state)
+		if err := m.writeBackRuntimeConfig(ctx, source, cfg, state); err != nil {
+			return PikPakSession{}, PikPakConfig{}, err
+		}
 		return session, cfg, nil
 	}
 	m.mu.Unlock()
@@ -150,7 +167,9 @@ func (m *PikPakSessionManager) refreshDriveCaptcha(ctx context.Context, source *
 	state.CaptchaToken = captcha.Token
 	session := pikPakSessionFromState(cfg, state)
 	m.mu.Unlock()
-	m.writeBackRuntimeConfig(source, cfg, state)
+	if err := m.writeBackRuntimeConfig(ctx, source, cfg, state); err != nil {
+		return PikPakSession{}, PikPakConfig{}, err
+	}
 	return session, cfg, nil
 }
 
@@ -173,7 +192,9 @@ func (m *PikPakSessionManager) authenticate(ctx context.Context, source *entity.
 			if err := m.refreshDriveCaptchaAfterAuth(ctx, cfg, state); err != nil {
 				return err
 			}
-			m.writeBackRuntimeConfig(source, cfg, state)
+			if err := m.writeBackRuntimeConfig(ctx, source, cfg, state); err != nil {
+				return err
+			}
 			return nil
 		}
 		if !errors.Is(err, domainstorage.ErrCloudTokenInvalid) && !errors.Is(err, domainstorage.ErrCloudAuthFailed) {
@@ -203,7 +224,9 @@ func (m *PikPakSessionManager) authenticate(ctx context.Context, source *entity.
 	if err := m.refreshDriveCaptchaAfterAuth(ctx, cfg, state); err != nil {
 		return err
 	}
-	m.writeBackRuntimeConfig(source, cfg, state)
+	if err := m.writeBackRuntimeConfig(ctx, source, cfg, state); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -235,20 +258,22 @@ func (m *PikPakSessionManager) applyAuthToken(state *pikPakSessionState, token *
 	}
 }
 
-func (m *PikPakSessionManager) writeBackRuntimeConfig(source *entity.StorageSource, cfg PikPakConfig, state *pikPakSessionState) {
+func (m *PikPakSessionManager) writeBackRuntimeConfig(ctx context.Context, source *entity.StorageSource, cfg PikPakConfig, state *pikPakSessionState) error {
 	if source == nil || state == nil {
-		return
+		return nil
 	}
 	cfg.RefreshToken = state.RefreshToken
 	cfg.CaptchaToken = state.CaptchaToken
 	cfg.DeviceID = state.DeviceID
 	raw, err := cfg.Marshal()
 	if err != nil {
-		return
+		return err
 	}
-	// TODO: 后续阶段通过注入最小 repository 接口持久化 refresh_token/captcha/device_id。
-	// 阶段 B 先更新当前 source 实例，create/update 会随实体保存，运行态请求使用内存 session。
 	source.ConfigJSON = raw
+	if m.runtimeConfigWriter != nil {
+		return m.runtimeConfigWriter(ctx, source, raw)
+	}
+	return nil
 }
 
 func parsePikPakSourceConfig(source *entity.StorageSource) (PikPakConfig, error) {
