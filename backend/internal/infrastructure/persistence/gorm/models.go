@@ -49,9 +49,9 @@ type StorageSourceModel struct {
 	Name            string `gorm:"uniqueIndex;size:128;not null"`
 	DriverType      string `gorm:"size:32;not null"`
 	Status          string `gorm:"size:32;not null"`
-	IsEnabled       bool   `gorm:"not null;default:true"`
+	IsEnabled       bool   `gorm:"not null"`
 	IsWebDAVExposed bool   `gorm:"not null;default:false"`
-	WebDAVReadOnly  bool   `gorm:"not null;default:true"`
+	WebDAVReadOnly  bool   `gorm:"not null"`
 	WebDAVSlug      string `gorm:"uniqueIndex;size:128;not null"`
 	MountPath       string `gorm:"uniqueIndex;size:512;not null"`
 	RootPath        string `gorm:"size:512;not null"`

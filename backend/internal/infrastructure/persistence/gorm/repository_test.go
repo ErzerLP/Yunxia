@@ -55,6 +55,43 @@ func TestSystemConfigRepositoryUpsertAndGet(t *testing.T) {
 	}
 }
 
+func TestSourceRepositoryCreatePersistsExplicitFalseFlags(t *testing.T) {
+	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "source.db"))
+	defer cleanup()
+
+	repo := NewSourceRepository(db)
+	now := time.Date(2026, 5, 5, 18, 0, 0, 0, time.UTC)
+	source := &entity.StorageSource{
+		Name:            "local dav writable",
+		DriverType:      "local",
+		Status:          "online",
+		IsEnabled:       false,
+		IsWebDAVExposed: true,
+		WebDAVReadOnly:  false,
+		WebDAVSlug:      "local-dav-writable",
+		MountPath:       "/local-dav-writable",
+		RootPath:        "/",
+		ConfigJSON:      `{"base_path":"D:\\tmp\\yunxia-source-test"}`,
+		LastCheckedAt:   &now,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := repo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if source.IsEnabled || source.WebDAVReadOnly {
+		t.Fatalf("created source did not preserve explicit false flags: %#v", source)
+	}
+
+	got, err := repo.FindByID(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if got.IsEnabled || got.WebDAVReadOnly {
+		t.Fatalf("stored source did not preserve explicit false flags: %#v", got)
+	}
+}
+
 func TestRefreshTokenRepositoryCreateFindAndRevoke(t *testing.T) {
 	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "token.db"))
 	defer cleanup()

@@ -1598,6 +1598,44 @@ func TestSourceServiceS3CodecCreateTestDetailAndSecretRetention(t *testing.T) {
 	}
 }
 
+func TestSourceServiceCreatePersistsExplicitWebDAVReadOnlyFalse(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	configRepo := gorm.NewSystemConfigRepository(db)
+	svc := NewSourceService(sourceRepo, configRepo)
+	basePath := t.TempDir()
+
+	created, err := svc.Create(context.Background(), appdto.SourceUpsertRequest{
+		Name:            "WebDAV 可写本地源",
+		DriverType:      "local",
+		IsEnabled:       true,
+		IsWebDAVExposed: true,
+		WebDAVReadOnly:  false,
+		MountPath:       "/dav-writable",
+		RootPath:        "/",
+		Config: map[string]any{
+			"base_path": basePath,
+		},
+		SecretPatch: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !created.IsWebDAVExposed || created.WebDAVReadOnly {
+		t.Fatalf("expected created view to preserve webdav_read_only=false, got %+v", created)
+	}
+
+	stored, err := sourceRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !stored.IsWebDAVExposed || stored.WebDAVReadOnly {
+		t.Fatalf("expected persisted source to preserve webdav_read_only=false, got %+v", stored)
+	}
+}
+
 func TestStorageDriverRegistryOptionsWireS3AndKeepStatsFallbackExplicit(t *testing.T) {
 	importer := &recordingTaskImportDriver{}
 	fileDriver := &storageFileDriverStub{}
