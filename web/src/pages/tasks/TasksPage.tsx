@@ -18,7 +18,7 @@ import {
   Link as LinkIcon,
   HardDrive,
 } from 'lucide-react'
-import { cn, formatBytes, formatDate, formatDuration, formatSpeed } from '@/utils'
+import { cn, formatBytes, formatDate, formatDuration, formatSpeed, getApiErrorMessage } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import type { DownloadTask } from '@/types/api'
@@ -44,6 +44,7 @@ const STATUS_BADGE_CLASSES: Record<DownloadTask['status'], string> = {
 const DOWNLOADER_LABELS: Record<NonNullable<DownloadTask['downloader_type']>, string> = {
   aria2: 'Aria2',
   qbittorrent: 'qBittorrent',
+  pikpak_native: 'PikPak 原生离线',
 }
 
 function toOptionalTaskId(value: string | null) {
@@ -98,6 +99,10 @@ function getTaskIssueMessage(task: DownloadTask) {
 
 function getCompletedTaskRefreshKey(task: DownloadTask) {
   return `${task.id}:${task.finished_at ?? task.updated_at}`
+}
+
+function canPauseOrResumeTask(task: DownloadTask) {
+  return task.downloader_type !== 'pikpak_native'
 }
 
 function invalidateCompletedTaskFileQueries(queryClient: QueryClient) {
@@ -255,6 +260,7 @@ export function TasksPage() {
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const { isAuthenticated, isLoading: authLoading } = useAuthStore()
+  const { addToast } = useUIStore()
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const refreshedCompletedTasksRef = useRef<Set<string>>(new Set())
   const highlightedTaskId = toOptionalTaskId(searchParams.get('task_id'))
@@ -305,8 +311,8 @@ export function TasksPage() {
     try {
       await taskApi.pause(id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      addToast(getApiErrorMessage(err, '暂停任务失败'), 'error')
     }
   }
 
@@ -314,8 +320,8 @@ export function TasksPage() {
     try {
       await taskApi.resume(id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      addToast(getApiErrorMessage(err, '继续任务失败'), 'error')
     }
   }
 
@@ -323,8 +329,8 @@ export function TasksPage() {
     try {
       await taskApi.cancel(id)
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      addToast(getApiErrorMessage(err, '取消任务失败'), 'error')
     }
   }
 
@@ -400,7 +406,7 @@ export function TasksPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    {task.status === 'running' && (
+                    {task.status === 'running' && canPauseOrResumeTask(task) && (
                       <button
                         onClick={() => handlePause(task.id)}
                         className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
@@ -409,7 +415,7 @@ export function TasksPage() {
                         <Pause className="w-4 h-4" />
                       </button>
                     )}
-                    {(task.status === 'paused' || task.status === 'failed') && (
+                    {(task.status === 'paused' || task.status === 'failed') && canPauseOrResumeTask(task) && (
                       <button
                         onClick={() => handleResume(task.id)}
                         className="p-1.5 rounded-md hover:bg-accent text-muted-foreground"
@@ -479,6 +485,9 @@ export function TasksPage() {
                   <span>保存至: {getTaskSavePathLabel(task)}</span>
                   {task.target_filename && (
                     <span>计划命名: {task.target_filename}</span>
+                  )}
+                  {task.downloader_type === 'pikpak_native' && (
+                    <span>PikPak 原生任务暂不支持暂停/恢复，可取消</span>
                   )}
                   <span>创建于: {formatDate(task.created_at)}</span>
                   {task.status === 'completed' && task.finished_at && (

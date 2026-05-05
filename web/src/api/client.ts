@@ -4,6 +4,20 @@ import type { ApiResponse, ApiError } from '@/types/api'
 
 const API_BASE_URL = '/api/v1'
 
+export class ApiRequestError extends Error {
+  code: string
+  details?: Record<string, unknown>
+  status?: number
+
+  constructor(message: string, options: { code?: string; details?: Record<string, unknown>; status?: number } = {}) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.code = options.code ?? 'UNKNOWN_ERROR'
+    this.details = options.details
+    this.status = options.status
+  }
+}
+
 function extractErrorMessage(error: AxiosError<ApiError>): string {
   const data = error.response?.data
   if (data && !data.success && data.message) {
@@ -63,7 +77,12 @@ class ApiClient {
         }
 
         const message = extractErrorMessage(error)
-        return Promise.reject(new Error(message))
+        const data = error.response?.data
+        return Promise.reject(new ApiRequestError(message, {
+          code: data?.code,
+          details: data?.error?.details,
+          status: error.response?.status,
+        }))
       }
     )
   }

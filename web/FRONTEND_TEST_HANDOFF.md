@@ -56,7 +56,8 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
-| 阻塞 | 2026-05-03 | 前端体验完善 | 文件页/VFS、离线下载页、RSS/追番页 | P1 | `/api/v2/fs`、`/api/v1/tasks`、`/api/v1/rss/items` | VFS 批量选择/批量删除、单项文件操作失败提示、任务失败/取消原因、RSS 条目匹配说明展示；2026-05-04 仍有批量失败原因、任务终态回写等阻塞 | [详情](#test-handoff-2026-05-03-frontend-ux-polish) |
+| 待联调 | 2026-05-05 | 存储源/PikPak | 存储源管理页、文件页/VFS、上传弹窗、离线下载页、RSS/追番目标目录、WebDAV 配置 | P1 | `/api/v1/sources*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks`、`/dav/{slug}` | PikPak 源创建/编辑/secret 掩码，PikPak VFS 写操作/删除回收站文案，上传 server/direct 分支，`pikpak_native` 任务展示与取消，非 local WebDAV 暴露 | [详情](#test-handoff-2026-05-05-pikpak-storage-adaptation) |
+| 已通过 | 2026-05-03 | 前端体验完善 | 文件页/VFS、离线下载页、RSS/追番页 | P1 | `/api/v2/fs`、`/api/v1/tasks`、`/api/v1/rss/items` | VFS 批量选择/批量删除、单项文件操作失败提示、任务失败/取消原因、RSS 条目匹配说明展示；2026-05-04 `main@23dbcd7` 回归通过 | [详情](#test-handoff-2026-05-03-frontend-ux-polish) |
 | 已通过 | 2026-05-03 | RSS/通知增强 | RSS/追番页、任务页、设置页/通知区块 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-*`、`/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/export`、`/api/v1/notifications/*` | 后端修复后已完成完整回归；订阅复制显式禁用、RSS 关联任务取消回写 `needs_attention` 和待处理通知均已通过 | [详情](#test-handoff-2026-05-03-rss-notification-handoff) |
 | 已通过 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 测试完成反馈确认：刷新全部、规则预览、重试/重处理、`needs_attention`、自动重试/完成回写展示均已覆盖 | [详情](#test-handoff-2026-04-30-rss-unattended) |
 | 已通过 | 2026-04-29 | RSS 订阅 | RSS/追番页、任务页、文件页/VFS | P1 | `/api/v1/rss/*`、`/api/v1/tasks`、`/api/v2/fs*` | 测试完成反馈确认：RSS 源/订阅 CRUD、条目、qBittorrent 入队、任务跳转、VFS 目标目录可见均已覆盖 | [详情](#test-handoff-2026-04-29-rss-mvp) |
@@ -66,9 +67,67 @@
 
 ## 测试记录 / 交接记录
 
+<a id="test-handoff-2026-05-05-pikpak-storage-adaptation"></a>
+
+### [P1][待联调][存储源/PikPak] 2026-05-05 PikPak 存储源、VFS 写操作、上传与原生离线下载联调测试
+
+#### 测试目标
+
+确认前端已能消费 2026-05-04 后端 PikPak handoff：管理员可在存储源管理页创建/编辑 PikPak 源并处理 secret；文件/VFS、上传、离线任务、RSS 目标目录和 WebDAV 暴露都以统一虚拟目录口径工作。
+
+#### 前置条件
+
+- 后端已包含 `backend/FRONTEND_HANDOFF.md#handoff-2026-05-04-pikpak-source-readonly` 对应实现。
+- 准备可用 PikPak 账号或 refresh_token；如触发风控，需要可取得 `captcha_token`。
+- 使用具备 `source.read/create/update/test`、文件/VFS 读写删、`task.read_all`、`rss.manage` 的管理员或等效账号；另准备无 `source.secret.read` 的账号验证 secret 掩码。
+
+#### 测试 checklist
+
+- [ ] 存储源管理页创建 `driver_type=pikpak` 源：`root_path=/`，可填写 `root_folder_id/platform/disable_media_link/cache_ttl_seconds/download_strategy` 和 secret 字段。
+- [ ] 编辑 PikPak 源时未改 secret 不会覆盖；勾选清空会提交 `null`；有 `source.secret.read` 才展示明文 secret，否则展示掩码/未配置。
+- [ ] PikPak/S3/local 均可配置 WebDAV 暴露和只读开关；卡片展示 slug、可复制 `/dav/{slug}` 地址。
+- [ ] 文件页进入 PikPak 挂载目录后，mkdir/rename/move/copy/delete 按后端权限执行；删除确认文案为移入回收站，不提示永久删除。
+- [ ] 上传到 PikPak 挂载目录：未实现 GCID 时走 `server_chunk` fallback；若后端返回 `direct_parts`，前端按 instruction PUT 后 finish。
+- [ ] 新建离线下载任务目标目录选择 PikPak 挂载路径，任务卡片展示 `PikPak 原生离线`；暂停/恢复入口不误导，取消可用。
+- [ ] RSS 订阅目标目录可填 PikPak 挂载路径，入队后任务/文件页目标路径可追踪。
+- [ ] 云存储错误码（`CLOUD_AUTH_FAILED`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`SOURCE_OPERATION_UNSUPPORTED` 等）在页面/toast 中为用户可理解提示。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望 |
+|---|---|---|
+| 1 | 管理员打开存储源管理页，新增 PikPak 源并测试连接 | 表单字段完整；成功后卡片显示挂载路径、Root Folder ID、平台、secret 掩码 |
+| 2 | 用无 `source.secret.read` 账号查看同一源 | 不显示 secret 明文，仅显示掩码/未配置 |
+| 3 | 在文件页进入 PikPak 挂载目录执行新建、重命名、复制/移动、删除 | 成功路径刷新列表；失败时弹窗/toast 有具体原因；删除是回收站语义 |
+| 4 | 上传小文件到 PikPak 目录 | 上传完成后 VFS 列表刷新可见；若 direct_parts 返回，浏览器直传后 finish 成功 |
+| 5 | 新建离线下载任务，目标目录填 PikPak 路径 | 任务显示 `PikPak 原生离线`，完成后刷新文件页可见新文件，取消可用 |
+| 6 | 开启 PikPak 源 WebDAV 暴露并复制地址，用 WebDAV 客户端读写 smoke | `/dav/{slug}` 可访问；只读开关打开后写方法被拒绝 |
+
+#### 预期结果
+
+- 前端不再把非 local 源当成只读或不支持 WebDAV。
+- PikPak secret 只按 capability 展示，编辑不会误覆盖未修改 secret。
+- 文件、上传、任务和 RSS 目标路径都继续使用统一虚拟目录口径。
+
+#### 回归范围
+
+- 本地源创建/编辑、`base_path` 展示、WebDAV URL 复制。
+- S3 源已有列表/下载/上传直传路径不回退。
+- `/files` 仍是唯一文件入口，VFS access-url 下载/预览流程不回退。
+- 离线下载 completed 后文件/VFS 缓存失效刷新不回退。
+
+#### 阻塞 / 备注
+
+- 当前前端静态验证已通过，但尚未连接真实 PikPak 账号完成端到端 smoke，因此状态保持 `待联调`。
+- 前端暂不计算 PikPak GCID；上传会继续传普通 MD5，后端应回退 `server_chunk`。如需覆盖 `direct_parts`，可用后端 fixture 或后续 GCID 前端实现专项测试。
+
+#### 交接记录
+
+- 2026-05-05：前端实现完成并更新 `backend/FRONTEND_HANDOFF.md`；静态验证通过：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`。等待真实 PikPak/WebDAV 环境联调。
+
 <a id="test-handoff-2026-05-03-frontend-ux-polish"></a>
 
-### [P1][阻塞][前端体验完善] 2026-05-03 VFS 批量操作、任务失败原因与 RSS 匹配说明回归测试
+### [P1][已通过][前端体验完善] 2026-05-03 VFS 批量操作、任务失败原因与 RSS 匹配说明回归测试
 
 #### 测试目标
 
@@ -85,10 +144,10 @@
 
 - [x] 文件页列表视图可勾选单项、全选当前目录，并显示已选择数量。
 - [x] 文件页网格视图可勾选单项；选择状态下点击卡片不会误打开文件/进入目录。
-- [ ] 批量删除执行前有确认；完成后展示成功/失败数量，失败项有可读原因。
+- [x] 批量删除执行前有确认；完成后展示成功/失败数量，失败项有可读原因。
 - [x] 单项删除、移动、复制失败时不再静默失败，弹窗内和 toast 都能看到错误。
 - [x] 离线下载页 failed / canceled 任务展示失败原因或取消原因；无后端原因时有 fallback 文案。
-- [ ] RSS 条目展示匹配说明：命中关键词/正则、排除项状态，unsupported/ignored/new 有可读解释。
+- [x] RSS 条目展示匹配说明：命中关键词/正则、排除项状态，unsupported/ignored/new 有可读解释。
 - [x] 文件/VFS 列表刷新、预览、下载、分享、重命名等既有操作不回退。
 
 #### 测试步骤与期望结果
@@ -125,12 +184,14 @@
   - 普通 HTTP 下载任务已把 `small.txt` 导入目标 VFS 目录，但任务列表随后显示为 `failed`，错误为 staging 目录不存在。
   - 用户取消的 Aria2 任务原因会从 `download canceled by user` 被刷新成 `download canceled by downloader`；下载已完成后再取消会出现 `aria2 rpc status 400`。
   - 只读本地挂载上的删除/复制/移动失败返回 `500 INTERNAL_ERROR`，前端会展示容器路径级错误信息。
+- 2026-05-04 `main@23dbcd7` 回归：上述阻塞项均已通过端到端验证，本项关闭为 `已通过`。
 
 #### 交接记录
 
 - 2026-05-03：前端实现和静态验证完成，等待真实环境联调。已通过：`cd web && npm run lint`、`cd web && npm run build`、`cd web && node scripts/check-vfs-integration.mjs`。
 - 2026-05-04：测试负责人在测试机 `test` 清理旧环境后，从 `main@1279157` 部署完整前后端。环境：前端 `http://10.0.0.95:15183`，后端 `http://127.0.0.1:18183`，下载器为 Aria2/qBittorrent，RSS/Webhook fixture 为 `http://yunxia-rss-feed:8000/feed.xml`、`/hook`、`/fail`，只读本地硬盘 fixture 挂载到 `/hostdisk`。已覆盖：初始化/登录；`/vfs` 跳转 `/files`；本地硬盘原有文件、中文目录、空格目录可见；VFS 列表/网格选择、批量删除成功与失败、单项复制失败提示；离线下载成功/失败/取消原因；RSS 源刷新、订阅模板、preview、条目匹配说明、订阅复制禁用、批量状态/批量忽略部分失败、导出/dry-run 导入；通知 Webhook 成功/失败测试；admin/operator/user 权限 UI smoke。远程前端检查通过：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`；后端 RSS/Task/Notification 定向 `go test` 通过。因上方阻塞项，本项状态调整为 `阻塞`。
 - 2026-05-04（前端补丁）：已修复两个前端可处理阻塞点：VFS 批量删除部分失败时保留页面内失败详情并在 toast 展示首个失败项原因；RSS 条目在当前订阅筛选或已匹配订阅下展示具体缺失关键词 / 命中排除项。前端静态验证通过：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`。其余任务终态回写、只读挂载错误码等仍按上方阻塞记录跟进。
+- 2026-05-04：后端修复后重新清理测试机并从 `main@23dbcd7` 部署完整前后端。环境：前端 `http://10.0.0.95:15183`，后端 `http://127.0.0.1:18183`，RSS/Webhook fixture 为 `http://yunxia-rss-feed:8000/feed.xml`、`/hook`、`/fail`，只读本地硬盘 fixture 挂载到 `/hostdisk`。API 回归 `/tmp/yunxia_e2e_api_23dbcd7.py` 通过：`SUMMARY 33 passed, 0 failed`。浏览器联动覆盖：`/vfs` 跳转 `/files`、本地硬盘原有文件可见、VFS 列表/网格选择和批量删除成功路径、只读批量/单项删除失败详情、单项复制失败详情、离线下载 completed/failed/canceled 原因、RSS preview 与订阅筛选下匹配说明、通知 Webhook 成功/失败 toast、operator/user 权限 UI smoke。远程检查通过：`npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs`；后端 RSS/Task/Notification 定向 `go test` 通过。未发现新的阻塞问题，本项状态调整为 `已通过`。
 
 ---
 

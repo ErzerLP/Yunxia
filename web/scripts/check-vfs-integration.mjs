@@ -248,8 +248,8 @@ assertNotIncludes(
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
-  'LocalSourceBasePathRow',
-  '存储源卡片需要通过详情接口展示本地源 config.base_path。',
+  'SourceConfigRows',
+  '存储源卡片需要通过详情接口展示本地源 config.base_path 以及云存储源公开配置。',
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',

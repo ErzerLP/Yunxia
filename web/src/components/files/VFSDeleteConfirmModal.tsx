@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { X, Trash2, AlertTriangle } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { useUIStore } from '@/stores/uiStore'
-import { cn } from '@/utils'
+import { cn, getApiErrorMessage } from '@/utils'
 
 interface VFSDeleteConfirmModalProps {
   isOpen: boolean
@@ -21,12 +21,12 @@ export function VFSDeleteConfirmModal({ isOpen, onClose, path, fileName, onSucce
     setIsSubmitting(true)
     setError('')
     try {
-      await fileV2Api.delete({ path, delete_mode: 'permanent' })
-      addToast('文件已删除', 'success')
+      await fileV2Api.delete({ path, delete_mode: 'trash' })
+      addToast('文件已移入回收站', 'success')
       onSuccess?.()
       onClose()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '删除失败'
+      const msg = getApiErrorMessage(err, '删除失败')
       setError(msg)
       addToast(msg, 'error')
     } finally {
@@ -57,7 +57,9 @@ export function VFSDeleteConfirmModal({ isOpen, onClose, path, fileName, onSucce
               <p className="text-sm text-foreground">
                 确定要删除 <span className="font-medium">{fileName}</span> 吗？
               </p>
-              <p className="text-xs text-muted-foreground mt-1">此操作不可撤销，文件将被永久删除。</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                文件将移入对应存储源的回收站；PikPak 源会移入 PikPak 回收站，不会执行永久删除。
+              </p>
             </div>
           </div>
 

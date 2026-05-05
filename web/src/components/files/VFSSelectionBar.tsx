@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Loader2, Trash2, X } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { useUIStore } from '@/stores/uiStore'
+import { getApiErrorMessage } from '@/utils'
 import type { VFSItem } from '@/types/api'
 
 interface VFSSelectionBarProps {
@@ -11,7 +12,7 @@ interface VFSSelectionBarProps {
 }
 
 function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : '操作失败'
+  return getApiErrorMessage(error, '操作失败')
 }
 
 export function VFSSelectionBar({ selectedItems, onClear, onRefresh }: VFSSelectionBarProps) {
@@ -21,7 +22,7 @@ export function VFSSelectionBar({ selectedItems, onClear, onRefresh }: VFSSelect
 
   const handleBatchDelete = async () => {
     if (selectedItems.length === 0 || isDeleting) return
-    const confirmed = confirm(`确定要永久删除已选择的 ${selectedItems.length} 项吗？此操作不可撤销。`)
+    const confirmed = confirm(`确定要删除已选择的 ${selectedItems.length} 项吗？文件会移入对应存储源回收站；PikPak 源会移入 PikPak 回收站。`)
     if (!confirmed) return
 
     setIsDeleting(true)
@@ -30,7 +31,7 @@ export function VFSSelectionBar({ selectedItems, onClear, onRefresh }: VFSSelect
       const results = await Promise.all(
         selectedItems.map(async (item) => {
           try {
-            await fileV2Api.delete({ path: item.path, delete_mode: 'permanent' })
+            await fileV2Api.delete({ path: item.path, delete_mode: 'trash' })
             return { item, success: true, error: '' }
           } catch (err: unknown) {
             return { item, success: false, error: getErrorMessage(err) }

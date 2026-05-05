@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { X, Folder, ArrowRight, Copy, FolderInput } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { useUIStore } from '@/stores/uiStore'
-import { cn } from '@/utils'
+import { cn, getApiErrorMessage } from '@/utils'
 
 interface VFSMoveCopyModalProps {
   isOpen: boolean
@@ -73,7 +73,7 @@ export function VFSMoveCopyModal({
       onSuccess?.()
       onClose()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : `${actionLabel}失败`
+      const msg = getApiErrorMessage(err, `${actionLabel}失败`)
       setError(msg)
       addToast(msg, 'error')
     } finally {

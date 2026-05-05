@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useUIStore } from '@/stores/uiStore'
 import { useFileStore } from '@/stores/fileStore'
 import { uploadApi } from '@/api/upload'
-import { computeFileHash, formatBytes } from '@/utils'
+import { computeFileHash, formatBytes, getApiErrorMessage } from '@/utils'
 import { cn } from '@/utils'
 import type { PartInstruction, UploadFinishRequest, UploadInitRequest } from '@/types/api'
 
@@ -199,7 +199,7 @@ export function UploadModal() {
       )
       refreshAfterUpload(finishRes.file.source_id)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '上传失败'
+      const msg = getApiErrorMessage(err, '上传失败')
       setFiles((prev) =>
         prev.map((f) => (f.id === item.id ? { ...f, status: 'error' as const, error: msg } : f))
       )

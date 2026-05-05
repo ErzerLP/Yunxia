@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { X, FolderPlus } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
 import { useUIStore } from '@/stores/uiStore'
-import { cn } from '@/utils'
+import { cn, getApiErrorMessage } from '@/utils'
 
 interface VFSMkdirModalProps {
   isOpen: boolean
@@ -33,8 +33,7 @@ export function VFSMkdirModal({ isOpen, onClose, parentPath, onSuccess }: VFSMkd
       onSuccess?.()
       onClose()
     } catch (err: unknown) {
-      console.error('mkdir error:', err)
-      const msg = err instanceof Error ? err.message : '创建失败'
+      const msg = getApiErrorMessage(err, '创建失败')
       setError(msg)
       addToast(msg, 'error')
     } finally {

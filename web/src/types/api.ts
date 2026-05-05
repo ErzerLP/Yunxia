@@ -107,7 +107,7 @@ export interface CurrentUserResponse {
 export interface StorageSource {
   id: number;
   name: string;
-  driver_type: 'local' | 's3' | 'onedrive';
+  driver_type: 'local' | 's3' | 'pikpak' | 'onedrive';
   status: 'online' | 'offline' | 'error';
   is_enabled: boolean;
   is_webdav_exposed: boolean;
@@ -328,9 +328,10 @@ export interface DownloadTask {
   id: number;
   type: 'download';
   status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'canceled';
-  downloader_type?: 'aria2' | 'qbittorrent';
+  downloader_type?: 'aria2' | 'qbittorrent' | 'pikpak_native';
   source_id: number;
   save_path: string;
+  target_virtual_parent_path?: string;
   display_name: string;
   source_url: string;
   progress: number;

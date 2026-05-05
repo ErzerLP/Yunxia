@@ -4,13 +4,31 @@ import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { sourceApi } from '@/api/source'
 import { systemApi } from '@/api/system'
-import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil, Link2, Copy, Lock, Unlock } from 'lucide-react'
-import { cn, formatBytes } from '@/utils'
+import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil, Link2, Copy, Lock, Unlock, Eye, EyeOff } from 'lucide-react'
+import { cn, formatBytes, getApiErrorMessage } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useHasCapability } from '@/hooks/useCapability'
-import type { StorageSource } from '@/types/api'
+import type { SourceDetailResponse, StorageSource, UpdateSourceRequest } from '@/types/api'
 import { buildSourceWebDAVUrl } from '@/utils/webdav'
+
+type SourceDriverType = 'local' | 's3' | 'pikpak'
+type PikPakPlatform = 'web' | 'android' | 'pc'
+type SecretField = 'username' | 'password' | 'refresh_token' | 'captcha_token' | 'device_id'
+
+const SOURCE_DRIVER_OPTIONS: Array<{ value: SourceDriverType; label: string }> = [
+  { value: 'local', label: '本地' },
+  { value: 's3', label: 'S3' },
+  { value: 'pikpak', label: 'PikPak' },
+]
+
+const PIKPAK_SECRET_FIELDS: Array<{ key: SecretField; label: string; autoComplete: string }> = [
+  { key: 'username', label: 'PikPak 账号', autoComplete: 'username' },
+  { key: 'password', label: 'PikPak 密码', autoComplete: 'new-password' },
+  { key: 'refresh_token', label: 'Refresh Token', autoComplete: 'off' },
+  { key: 'captcha_token', label: 'Captcha Token', autoComplete: 'off' },
+  { key: 'device_id', label: 'Device ID', autoComplete: 'off' },
+]
 
 function StatusBadge({ status }: { status: StorageSource['status'] }) {
   const config = {
@@ -57,21 +75,91 @@ function getLocalBasePath(config: Record<string, unknown> | undefined) {
   return typeof value === 'string' && value.trim() ? value : ''
 }
 
-function LocalSourceBasePathRow({ sourceId }: { sourceId: number }) {
-  const { data, isLoading } = useQuery({
-    queryKey: ['source-detail', sourceId],
-    queryFn: () => sourceApi.get(sourceId),
-  })
-  const basePath = getLocalBasePath(data?.config)
+function getConfigString(config: Record<string, unknown> | undefined, key: string, fallback = '') {
+  const value = config?.[key]
+  return typeof value === 'string' ? value : fallback
+}
 
-  return (
+function getConfigBool(config: Record<string, unknown> | undefined, key: string, fallback: boolean) {
+  const value = config?.[key]
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function getConfigNumber(config: Record<string, unknown> | undefined, key: string, fallback: number) {
+  const value = config?.[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return fallback
+}
+
+function getDriverLabel(driverType: string) {
+  if (driverType === 'pikpak') return 'PikPak'
+  if (driverType === 's3') return 'S3'
+  if (driverType === 'local') return '本地'
+  return driverType
+}
+
+function toPositiveInt(value: string, fallback: number) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
+}
+
+function getSecretDisplay(detail: SourceDetailResponse | undefined, field: SecretField, canReadSecrets: boolean) {
+  const visibleSecret = canReadSecrets ? getConfigString(detail?.config, field) : ''
+  if (visibleSecret) return visibleSecret
+  const mask = detail?.secret_fields[field]
+  if (!mask?.configured) return '未配置'
+  return mask.masked || '已配置'
+}
+
+function SourceConfigRows({ source, canReadSecrets }: { source: StorageSource; canReadSecrets: boolean }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['source-detail', source.id],
+    queryFn: () => sourceApi.get(source.id),
+  })
+
+  const row = (label: string, value: string | number | boolean | null | undefined) => (
     <div className="flex justify-between gap-3 text-sm">
-      <span className="shrink-0 text-muted-foreground">本地硬盘路径</span>
-      <span className="min-w-0 truncate text-right text-foreground" title={basePath || undefined}>
-        {basePath || (isLoading ? '加载中...' : '未配置')}
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-right text-foreground" title={typeof value === 'string' ? value : undefined}>
+        {value === true ? '是' : value === false ? '否' : value || (isLoading ? '加载中...' : '未配置')}
       </span>
     </div>
   )
+
+  if (source.driver_type === 'local') {
+    const basePath = getLocalBasePath(data?.config)
+    return <>{row('本地硬盘路径', basePath)}</>
+  }
+
+  if (source.driver_type === 'pikpak') {
+    return (
+      <>
+        {row('Root Folder ID', getConfigString(data?.config, 'root_folder_id') || '账号根目录')}
+        {row('平台', getConfigString(data?.config, 'platform', 'web'))}
+        {row('缓存 TTL', `${getConfigNumber(data?.config, 'cache_ttl_seconds', 300)} 秒`)}
+        <div className="rounded-md border border-border bg-muted/20 p-2 space-y-1 text-xs text-muted-foreground">
+          <div className="font-medium text-foreground flex items-center gap-1.5">
+            {canReadSecrets ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+            PikPak 敏感字段
+          </div>
+          {PIKPAK_SECRET_FIELDS.map((field) => (
+            <div key={field.key} className="flex justify-between gap-2">
+              <span>{field.label}</span>
+              <span className="font-mono text-foreground truncate" title={getSecretDisplay(data, field.key, canReadSecrets)}>
+                {getSecretDisplay(data, field.key, canReadSecrets)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </>
+    )
+  }
+
+  return null
 }
 
 function EditSourceModal({
@@ -83,31 +171,122 @@ function EditSourceModal({
   onSuccess: () => void
   source: StorageSource
 }) {
+  const { addToast } = useUIStore()
+  const canReadSecrets = useHasCapability('source.secret.read')
   const [name, setName] = useState(source.name)
   const [mountPath, setMountPath] = useState(source.mount_path)
   const [rootPath, setRootPath] = useState(source.root_path)
   const [isEnabled, setIsEnabled] = useState(source.is_enabled)
   const [isWebDAVExposed, setIsWebDAVExposed] = useState(source.is_webdav_exposed)
   const [webDAVReadOnly, setWebDAVReadOnly] = useState(source.webdav_read_only)
+  const [basePath, setBasePath] = useState('')
+  const [basePathTouched, setBasePathTouched] = useState(false)
+  const [pikPakRootFolderId, setPikPakRootFolderId] = useState('')
+  const [pikPakRootFolderIdTouched, setPikPakRootFolderIdTouched] = useState(false)
+  const [pikPakPlatform, setPikPakPlatform] = useState<PikPakPlatform>('web')
+  const [pikPakPlatformTouched, setPikPakPlatformTouched] = useState(false)
+  const [pikPakDisableMediaLink, setPikPakDisableMediaLink] = useState(true)
+  const [pikPakDisableMediaLinkTouched, setPikPakDisableMediaLinkTouched] = useState(false)
+  const [pikPakCacheTtlSeconds, setPikPakCacheTtlSeconds] = useState('300')
+  const [pikPakCacheTtlSecondsTouched, setPikPakCacheTtlSecondsTouched] = useState(false)
+  const [secretPatch, setSecretPatch] = useState<Partial<Record<SecretField, string>>>({})
+  const [secretClear, setSecretClear] = useState<Partial<Record<SecretField, boolean>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  const { data: detail, isLoading: detailLoading } = useQuery({
+    queryKey: ['source-detail', source.id],
+    queryFn: () => sourceApi.get(source.id),
+  })
+  const effectiveBasePath = basePathTouched ? basePath : getLocalBasePath(detail?.config)
+  const effectivePikPakRootFolderId = pikPakRootFolderIdTouched
+    ? pikPakRootFolderId
+    : getConfigString(detail?.config, 'root_folder_id')
+  const effectivePikPakPlatform = pikPakPlatformTouched
+    ? pikPakPlatform
+    : getConfigString(detail?.config, 'platform', 'web') as PikPakPlatform
+  const effectivePikPakDisableMediaLink = pikPakDisableMediaLinkTouched
+    ? pikPakDisableMediaLink
+    : getConfigBool(detail?.config, 'disable_media_link', true)
+  const effectivePikPakCacheTtlSeconds = pikPakCacheTtlSecondsTouched
+    ? pikPakCacheTtlSeconds
+    : String(getConfigNumber(detail?.config, 'cache_ttl_seconds', 300))
+
+  const updateSecretPatch = (field: SecretField, value: string) => {
+    setSecretPatch((current) => ({ ...current, [field]: value }))
+    setSecretClear((current) => ({ ...current, [field]: false }))
+  }
+
+  const buildPayload = (): UpdateSourceRequest => {
+    const payload: UpdateSourceRequest = {
+      name: name.trim(),
+      mount_path: mountPath.trim(),
+      root_path: source.driver_type === 'pikpak' ? '/' : (rootPath.trim() || '/'),
+      is_enabled: isEnabled,
+      is_webdav_exposed: isWebDAVExposed,
+      webdav_read_only: webDAVReadOnly,
+    }
+
+    if (source.driver_type === 'local') {
+      payload.config = { base_path: effectiveBasePath.trim() }
+    }
+
+    if (source.driver_type === 'pikpak') {
+      payload.config = {
+        root_folder_id: effectivePikPakRootFolderId.trim(),
+        platform: effectivePikPakPlatform,
+        disable_media_link: effectivePikPakDisableMediaLink,
+        cache_ttl_seconds: toPositiveInt(effectivePikPakCacheTtlSeconds, 300),
+        download_strategy: 'redirect',
+      }
+      const nextSecretPatch: Record<string, string | null> = {}
+      for (const field of PIKPAK_SECRET_FIELDS) {
+        if (secretClear[field.key]) {
+          nextSecretPatch[field.key] = null
+        } else if (secretPatch[field.key] !== undefined) {
+          nextSecretPatch[field.key] = secretPatch[field.key]?.trim() ?? ''
+        }
+      }
+      if (Object.keys(nextSecretPatch).length > 0) {
+        payload.secret_patch = nextSecretPatch
+      }
+    }
+
+    return payload
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
+    if (!mountPath.trim().startsWith('/')) {
+      const message = '挂载路径必须以 / 开头'
+      setError(message)
+      addToast(message, 'error')
+      return
+    }
+    if (source.driver_type !== 'pikpak' && !rootPath.trim().startsWith('/')) {
+      const message = '源内根路径必须以 / 开头'
+      setError(message)
+      addToast(message, 'error')
+      return
+    }
+    if (source.driver_type === 'local' && !effectiveBasePath.trim()) {
+      const message = '请填写本地硬盘路径 / base_path'
+      setError(message)
+      addToast(message, 'error')
+      return
+    }
     setIsSubmitting(true)
+    setError('')
     try {
-      await sourceApi.update(source.id, {
-        name: name.trim(),
-        mount_path: mountPath,
-        root_path: rootPath,
-        is_enabled: isEnabled,
-        is_webdav_exposed: source.driver_type === 'local' ? isWebDAVExposed : false,
-        webdav_read_only: source.driver_type === 'local' ? webDAVReadOnly : true,
-      })
+      await sourceApi.update(source.id, buildPayload())
+      addToast('存储源已更新', 'success')
       onSuccess()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const message = getApiErrorMessage(err, '更新存储源失败')
+      setError(message)
+      addToast(message, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -116,20 +295,25 @@ function EditSourceModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-card border border-border rounded-lg shadow-xl">
+      <div className="relative w-full max-w-xl bg-card border border-border rounded-lg shadow-xl flex flex-col max-h-[88vh]">
         <div className="flex items-center justify-between px-4 h-12 border-b border-border">
           <h3 className="font-medium text-foreground flex items-center gap-2">
             <Pencil className="w-4 h-4" />
             编辑存储源
           </h3>
-          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground">
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground" title="关闭">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+        <form onSubmit={handleSubmit} className="p-4 space-y-3 overflow-auto scrollbar-thin">
+          <div className="rounded-md border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+            驱动类型：<span className="text-foreground font-medium">{getDriverLabel(source.driver_type)}</span>。当前不支持编辑时切换驱动。
+          </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">名称</label>
+            <label htmlFor="source-edit-name" className="text-sm text-muted-foreground mb-1 block">名称</label>
             <input
+              id="source-edit-name"
+              name="name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -137,8 +321,10 @@ function EditSourceModal({
             />
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">挂载路径</label>
+            <label htmlFor="source-edit-mount-path" className="text-sm text-muted-foreground mb-1 block">挂载路径</label>
             <input
+              id="source-edit-mount-path"
+              name="mount_path"
               type="text"
               value={mountPath}
               onChange={(e) => setMountPath(e.target.value)}
@@ -146,36 +332,186 @@ function EditSourceModal({
             />
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">根路径</label>
+            <label htmlFor="source-edit-root-path" className="text-sm text-muted-foreground mb-1 block">源内根路径 / root_path</label>
             <input
+              id="source-edit-root-path"
+              name="root_path"
               type="text"
-              value={rootPath}
+              value={source.driver_type === 'pikpak' ? '/' : rootPath}
+              disabled={source.driver_type === 'pikpak'}
               onChange={(e) => setRootPath(e.target.value)}
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
+            {source.driver_type === 'pikpak' && (
+              <p className="mt-1 text-xs text-muted-foreground">PikPak 固定为 /；远端子目录通过 Root Folder ID 配置。</p>
+            )}
           </div>
+          {source.driver_type === 'local' && (
+            <div>
+              <label htmlFor="source-edit-base-path" className="text-sm text-muted-foreground mb-1 block">本地硬盘路径 / base_path</label>
+              <input
+                id="source-edit-base-path"
+                name="base_path"
+                type="text"
+                value={effectiveBasePath}
+                disabled={detailLoading}
+                onChange={(e) => {
+                  setBasePathTouched(true)
+                  setBasePath(e.target.value)
+                }}
+                className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          )}
+          {source.driver_type === 'pikpak' && (
+            <div className="rounded-md border border-border bg-muted/20 p-3 space-y-3">
+              <p className="text-sm font-medium text-foreground">PikPak 配置</p>
+              <div>
+                <label htmlFor="source-edit-pikpak-root-folder-id" className="text-sm text-muted-foreground mb-1 block">Root Folder ID</label>
+                <input
+                  id="source-edit-pikpak-root-folder-id"
+                  name="root_folder_id"
+                  type="text"
+                  value={effectivePikPakRootFolderId}
+                  disabled={detailLoading}
+                  onChange={(e) => {
+                    setPikPakRootFolderIdTouched(true)
+                    setPikPakRootFolderId(e.target.value)
+                  }}
+                  placeholder="留空表示账号根目录"
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="source-edit-pikpak-platform" className="text-sm text-muted-foreground mb-1 block">平台</label>
+                  <select
+                    id="source-edit-pikpak-platform"
+                    name="platform"
+                    value={effectivePikPakPlatform}
+                    disabled={detailLoading}
+                    onChange={(e) => {
+                      setPikPakPlatformTouched(true)
+                      setPikPakPlatform(e.target.value as PikPakPlatform)
+                    }}
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="web">web</option>
+                    <option value="android">android</option>
+                    <option value="pc">pc</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="source-edit-pikpak-cache-ttl" className="text-sm text-muted-foreground mb-1 block">缓存 TTL（秒）</label>
+                  <input
+                    id="source-edit-pikpak-cache-ttl"
+                    name="cache_ttl_seconds"
+                    type="number"
+                    min={1}
+                    max={86400}
+                    value={effectivePikPakCacheTtlSeconds}
+                    disabled={detailLoading}
+                    onChange={(e) => {
+                      setPikPakCacheTtlSecondsTouched(true)
+                      setPikPakCacheTtlSeconds(e.target.value)
+                    }}
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="source-edit-pikpak-download-strategy" className="text-sm text-muted-foreground mb-1 block">下载策略</label>
+                  <input
+                    id="source-edit-pikpak-download-strategy"
+                    name="download_strategy"
+                    type="text"
+                    value="redirect"
+                    disabled
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                  />
+                </div>
+              </div>
+              <label htmlFor="source-edit-pikpak-disable-media-link" className="flex items-start gap-2 text-sm text-foreground">
+                <input
+                  id="source-edit-pikpak-disable-media-link"
+                  name="disable_media_link"
+                  type="checkbox"
+                  checked={effectivePikPakDisableMediaLink}
+                  disabled={detailLoading}
+                  onChange={(e) => {
+                    setPikPakDisableMediaLinkTouched(true)
+                    setPikPakDisableMediaLink(e.target.checked)
+                  }}
+                  className="mt-0.5 rounded border-border"
+                />
+                <span>
+                  禁用媒体转码链接
+                  <span className="block text-xs text-muted-foreground">推荐开启：下载优先使用原始文件链接。</span>
+                </span>
+              </label>
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">敏感字段</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">留空表示不修改；勾选清空会向后端提交 null。</p>
+                </div>
+                {PIKPAK_SECRET_FIELDS.map((field) => (
+                  <div key={field.key} className="space-y-1.5">
+                    <label htmlFor={`source-edit-${field.key}`} className="text-sm text-muted-foreground mb-1 block">{field.label}</label>
+                    <input
+                      id={`source-edit-${field.key}`}
+                      name={field.key}
+                      type={field.key === 'password' ? 'password' : 'text'}
+                      value={secretPatch[field.key] ?? ''}
+                      disabled={Boolean(secretClear[field.key])}
+                      autoComplete={field.autoComplete}
+                      onChange={(e) => updateSecretPatch(field.key, e.target.value)}
+                      placeholder={`当前：${getSecretDisplay(detail, field.key, canReadSecrets)}`}
+                      className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                    />
+                    <label htmlFor={`source-edit-clear-${field.key}`} className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                      <input
+                        id={`source-edit-clear-${field.key}`}
+                        name={`clear_${field.key}`}
+                        type="checkbox"
+                        checked={Boolean(secretClear[field.key])}
+                        onChange={(e) => {
+                          setSecretClear((current) => ({ ...current, [field.key]: e.target.checked }))
+                          if (e.target.checked) {
+                            setSecretPatch((current) => ({ ...current, [field.key]: '' }))
+                          }
+                        }}
+                        className="rounded border-border"
+                      />
+                      清空该字段
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <input
               type="checkbox"
-              id="is_enabled"
+              id="source-edit-is-enabled"
+              name="is_enabled"
               checked={isEnabled}
               onChange={(e) => setIsEnabled(e.target.checked)}
               className="rounded border-border"
             />
-            <label htmlFor="is_enabled" className="text-sm text-foreground">启用</label>
+            <label htmlFor="source-edit-is-enabled" className="text-sm text-foreground">启用</label>
           </div>
           <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-medium text-foreground">WebDAV 暴露</p>
                 <p className="text-xs text-muted-foreground">
-                  {source.driver_type === 'local' ? '允许 WebDAV 客户端访问该本地源' : '仅本地存储源支持 WebDAV'}
+                  local/S3/PikPak 均可暴露；实际写入能力由后端驱动能力与只读开关决定。
                 </p>
               </div>
               <input
                 type="checkbox"
-                checked={source.driver_type === 'local' && isWebDAVExposed}
-                disabled={source.driver_type !== 'local'}
+                id="source-edit-webdav-exposed"
+                name="is_webdav_exposed"
+                checked={isWebDAVExposed}
                 onChange={(e) => setIsWebDAVExposed(e.target.checked)}
                 className="rounded border-border"
               />
@@ -183,15 +519,17 @@ function EditSourceModal({
             <label
               className={cn(
                 'flex items-center gap-2 text-sm',
-                source.driver_type === 'local' && isWebDAVExposed
+                isWebDAVExposed
                   ? 'text-foreground cursor-pointer'
                   : 'text-muted-foreground cursor-not-allowed'
               )}
             >
               <input
                 type="checkbox"
+                id="source-edit-webdav-read-only"
+                name="webdav_read_only"
                 checked={webDAVReadOnly}
-                disabled={source.driver_type !== 'local' || !isWebDAVExposed}
+                disabled={!isWebDAVExposed}
                 onChange={(e) => setWebDAVReadOnly(e.target.checked)}
                 className="rounded border-border"
               />
@@ -203,6 +541,12 @@ function EditSourceModal({
               </p>
             )}
           </div>
+          {error && (
+            <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -213,10 +557,10 @@ function EditSourceModal({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !name.trim()}
+              disabled={isSubmitting || detailLoading || !name.trim()}
               className={cn(
                 'px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors',
-                (isSubmitting || !name.trim()) && 'opacity-50 cursor-not-allowed'
+                (isSubmitting || detailLoading || !name.trim()) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isSubmitting ? '保存中...' : '保存'}
@@ -231,23 +575,54 @@ function EditSourceModal({
 function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const { addToast } = useUIStore()
   const [name, setName] = useState('')
-  const [driverType, setDriverType] = useState<'local' | 's3'>('local')
+  const [driverType, setDriverType] = useState<SourceDriverType>('local')
   const [basePath, setBasePath] = useState('/data')
   const [rootPath, setRootPath] = useState('/')
   const [mountPath, setMountPath] = useState('/')
   const [isWebDAVExposed, setIsWebDAVExposed] = useState(false)
   const [webDAVReadOnly, setWebDAVReadOnly] = useState(true)
+  const [pikPakRootFolderId, setPikPakRootFolderId] = useState('')
+  const [pikPakPlatform, setPikPakPlatform] = useState<PikPakPlatform>('web')
+  const [pikPakDisableMediaLink, setPikPakDisableMediaLink] = useState(true)
+  const [pikPakCacheTtlSeconds, setPikPakCacheTtlSeconds] = useState('300')
+  const [pikPakSecrets, setPikPakSecrets] = useState<Partial<Record<SecretField, string>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+
+  const updatePikPakSecret = (field: SecretField, value: string) => {
+    setPikPakSecrets((current) => ({ ...current, [field]: value }))
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!name.trim()) return
+    if (!mountPath.trim().startsWith('/')) {
+      const message = '挂载路径必须以 / 开头'
+      setCreateError(message)
+      addToast(message, 'error')
+      return
+    }
+    if (driverType !== 'pikpak' && !rootPath.trim().startsWith('/')) {
+      const message = '源内根路径必须以 / 开头'
+      setCreateError(message)
+      addToast(message, 'error')
+      return
+    }
     if (driverType === 'local' && !basePath.trim()) {
       const message = '请填写本地硬盘路径 / base_path'
       setCreateError(message)
       addToast(message, 'error')
       return
+    }
+    if (driverType === 'pikpak') {
+      const hasRefreshToken = Boolean(pikPakSecrets.refresh_token?.trim())
+      const hasUsernamePassword = Boolean(pikPakSecrets.username?.trim() && pikPakSecrets.password?.trim())
+      if (!hasRefreshToken && !hasUsernamePassword) {
+        const message = '请填写 PikPak 账号密码，或提供 refresh_token'
+        setCreateError(message)
+        addToast(message, 'error')
+        return
+      }
     }
     setCreateError(null)
     setIsSubmitting(true)
@@ -256,13 +631,32 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
         name: name.trim(),
         driver_type: driverType,
         is_enabled: true,
-        is_webdav_exposed: driverType === 'local' ? isWebDAVExposed : false,
-        webdav_read_only: driverType === 'local' ? webDAVReadOnly : true,
-        mount_path: mountPath,
-        root_path: rootPath,
-        config: driverType === 'local' ? { base_path: basePath.trim() } : {},
-        secret_patch: {},
+        is_webdav_exposed: isWebDAVExposed,
+        webdav_read_only: webDAVReadOnly,
+        mount_path: mountPath.trim(),
+        root_path: driverType === 'pikpak' ? '/' : rootPath.trim(),
+        config: driverType === 'local'
+          ? { base_path: basePath.trim() }
+          : driverType === 'pikpak'
+            ? {
+                root_folder_id: pikPakRootFolderId.trim(),
+                platform: pikPakPlatform,
+                disable_media_link: pikPakDisableMediaLink,
+                cache_ttl_seconds: toPositiveInt(pikPakCacheTtlSeconds, 300),
+                download_strategy: 'redirect',
+              }
+            : {},
+        secret_patch: driverType === 'pikpak'
+          ? {
+              username: pikPakSecrets.username?.trim() ?? '',
+              password: pikPakSecrets.password?.trim() ?? '',
+              refresh_token: pikPakSecrets.refresh_token?.trim() ?? '',
+              captcha_token: pikPakSecrets.captcha_token?.trim() ?? '',
+              device_id: pikPakSecrets.device_id?.trim() ?? '',
+            }
+          : {},
       })
+      addToast('存储源创建成功', 'success')
       onSuccess()
       onClose()
     } catch (err: unknown) {
@@ -277,24 +671,26 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-card border border-border rounded-lg shadow-xl">
+      <div className="relative w-full max-w-xl bg-card border border-border rounded-lg shadow-xl flex flex-col max-h-[88vh]">
         <div className="flex items-center justify-between px-4 h-12 border-b border-border">
           <h3 className="font-medium text-foreground flex items-center gap-2">
             <Plus className="w-4 h-4" />
             添加存储源
           </h3>
-          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground">
+          <button type="button" onClick={onClose} className="p-1.5 rounded-md hover:bg-accent text-muted-foreground" title="关闭">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-4 space-y-3">
+        <form onSubmit={handleSubmit} className="p-4 space-y-3 overflow-auto scrollbar-thin">
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">名称</label>
+            <label htmlFor="source-create-name" className="text-sm text-muted-foreground mb-1 block">名称</label>
             <input
+              id="source-create-name"
+              name="name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="例如：本地存储"
+              placeholder={driverType === 'pikpak' ? '例如：PikPak 媒体库' : '例如：本地存储'}
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-xs text-muted-foreground">
@@ -304,37 +700,41 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
           <div>
             <label className="text-sm text-muted-foreground mb-1 block">驱动类型</label>
             <div className="flex gap-2">
-              {(['local', 's3'] as const).map((t) => (
+              {SOURCE_DRIVER_OPTIONS.map((option) => (
                 <button
-                  key={t}
+                  key={option.value}
                   type="button"
-                  onClick={() => setDriverType(t)}
+                  onClick={() => setDriverType(option.value)}
                   className={cn(
                     'flex-1 px-3 py-2 rounded-md border text-sm transition-colors',
-                    driverType === t
+                    driverType === option.value
                       ? 'border-primary bg-primary/5 text-primary'
                       : 'border-border text-muted-foreground hover:border-primary/30'
                   )}
                 >
-                  {t === 'local' ? '本地' : 'S3'}
+                  {option.label}
                 </button>
               ))}
             </div>
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">挂载路径</label>
+            <label htmlFor="source-create-mount-path" className="text-sm text-muted-foreground mb-1 block">挂载路径</label>
             <input
+              id="source-create-mount-path"
+              name="mount_path"
               type="text"
               value={mountPath}
               onChange={(e) => setMountPath(e.target.value)}
-              placeholder="/local"
+              placeholder={driverType === 'pikpak' ? '/pikpak' : '/local'}
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
           {driverType === 'local' && (
             <div>
-              <label className="text-sm text-muted-foreground mb-1 block">本地硬盘路径 / base_path</label>
+              <label htmlFor="source-create-base-path" className="text-sm text-muted-foreground mb-1 block">本地硬盘路径 / base_path</label>
               <input
+                id="source-create-base-path"
+                name="base_path"
                 type="text"
                 value={basePath}
                 onChange={(e) => setBasePath(e.target.value)}
@@ -346,17 +746,111 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
               </p>
             </div>
           )}
+          {driverType === 'pikpak' && (
+            <div className="rounded-md border border-border bg-muted/20 p-3 space-y-3">
+              <p className="text-sm font-medium text-foreground">PikPak 配置</p>
+              <div>
+                <label htmlFor="source-create-pikpak-root-folder-id" className="text-sm text-muted-foreground mb-1 block">Root Folder ID</label>
+                <input
+                  id="source-create-pikpak-root-folder-id"
+                  name="root_folder_id"
+                  type="text"
+                  value={pikPakRootFolderId}
+                  onChange={(e) => setPikPakRootFolderId(e.target.value)}
+                  placeholder="留空表示账号根目录"
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="source-create-pikpak-platform" className="text-sm text-muted-foreground mb-1 block">平台</label>
+                  <select
+                    id="source-create-pikpak-platform"
+                    name="platform"
+                    value={pikPakPlatform}
+                    onChange={(e) => setPikPakPlatform(e.target.value as PikPakPlatform)}
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="web">web</option>
+                    <option value="android">android</option>
+                    <option value="pc">pc</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="source-create-pikpak-cache-ttl" className="text-sm text-muted-foreground mb-1 block">缓存 TTL（秒）</label>
+                  <input
+                    id="source-create-pikpak-cache-ttl"
+                    name="cache_ttl_seconds"
+                    type="number"
+                    min={1}
+                    max={86400}
+                    value={pikPakCacheTtlSeconds}
+                    onChange={(e) => setPikPakCacheTtlSeconds(e.target.value)}
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="source-create-pikpak-download-strategy" className="text-sm text-muted-foreground mb-1 block">下载策略</label>
+                  <input
+                    id="source-create-pikpak-download-strategy"
+                    name="download_strategy"
+                    type="text"
+                    value="redirect"
+                    disabled
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
+                  />
+                </div>
+              </div>
+              <label htmlFor="source-create-pikpak-disable-media-link" className="flex items-start gap-2 text-sm text-foreground">
+                <input
+                  id="source-create-pikpak-disable-media-link"
+                  name="disable_media_link"
+                  type="checkbox"
+                  checked={pikPakDisableMediaLink}
+                  onChange={(e) => setPikPakDisableMediaLink(e.target.checked)}
+                  className="mt-0.5 rounded border-border"
+                />
+                <span>
+                  禁用媒体转码链接
+                  <span className="block text-xs text-muted-foreground">推荐开启：下载优先使用原始文件链接。</span>
+                </span>
+              </label>
+              <div className="space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">敏感字段</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">首次创建可填写账号密码；已有 refresh_token 时可只填 token。</p>
+                </div>
+                {PIKPAK_SECRET_FIELDS.map((field) => (
+                  <div key={field.key}>
+                    <label htmlFor={`source-create-${field.key}`} className="text-sm text-muted-foreground mb-1 block">{field.label}</label>
+                    <input
+                      id={`source-create-${field.key}`}
+                      name={field.key}
+                      type={field.key === 'password' ? 'password' : 'text'}
+                      value={pikPakSecrets[field.key] ?? ''}
+                      autoComplete={field.autoComplete}
+                      onChange={(e) => updatePikPakSecret(field.key, e.target.value)}
+                      className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">源内根路径 / root_path</label>
+            <label htmlFor="source-create-root-path" className="text-sm text-muted-foreground mb-1 block">源内根路径 / root_path</label>
             <input
+              id="source-create-root-path"
+              name="root_path"
               type="text"
-              value={rootPath}
+              value={driverType === 'pikpak' ? '/' : rootPath}
+              disabled={driverType === 'pikpak'}
               onChange={(e) => setRootPath(e.target.value)}
               placeholder="/"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              通常保持为 /；这不是本地硬盘路径。
+              {driverType === 'pikpak' ? 'PikPak 固定为 /；远端子目录请填写 Root Folder ID。' : '通常保持为 /；这不是本地硬盘路径。'}
             </p>
           </div>
           <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
@@ -364,13 +858,14 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
               <div>
                 <p className="text-sm font-medium text-foreground">WebDAV 暴露</p>
                 <p className="text-xs text-muted-foreground">
-                  {driverType === 'local' ? '创建后可通过 WebDAV 客户端访问' : 'S3 暂不支持 WebDAV 暴露'}
+                  local/S3/PikPak 均可暴露；实际写入能力由后端驱动能力与只读开关决定。
                 </p>
               </div>
               <input
                 type="checkbox"
-                checked={driverType === 'local' && isWebDAVExposed}
-                disabled={driverType !== 'local'}
+                id="source-create-webdav-exposed"
+                name="is_webdav_exposed"
+                checked={isWebDAVExposed}
                 onChange={(e) => setIsWebDAVExposed(e.target.checked)}
                 className="rounded border-border"
               />
@@ -378,15 +873,17 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
             <label
               className={cn(
                 'flex items-center gap-2 text-sm',
-                driverType === 'local' && isWebDAVExposed
+                isWebDAVExposed
                   ? 'text-foreground cursor-pointer'
                   : 'text-muted-foreground cursor-not-allowed'
               )}
             >
               <input
                 type="checkbox"
+                id="source-create-webdav-read-only"
+                name="webdav_read_only"
                 checked={webDAVReadOnly}
-                disabled={driverType !== 'local' || !isWebDAVExposed}
+                disabled={!isWebDAVExposed}
                 onChange={(e) => setWebDAVReadOnly(e.target.checked)}
                 className="rounded border-border"
               />
@@ -437,6 +934,7 @@ export function SourcesPage() {
   const canUpdate = useHasCapability('source.update')
   const canDelete = useHasCapability('source.delete')
   const canTest = useHasCapability('source.test')
+  const canReadSecrets = useHasCapability('source.secret.read')
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -480,8 +978,10 @@ export function SourcesPage() {
     try {
       await sourceApi.testById(id)
       queryClient.invalidateQueries({ queryKey: ['sources'] })
-    } catch {
-      // ignore
+      queryClient.invalidateQueries({ queryKey: ['source-detail', id] })
+      addToast('存储源连接测试完成', 'success')
+    } catch (err: unknown) {
+      addToast(getApiErrorMessage(err, '测试存储源失败'), 'error')
     }
   }
 
@@ -493,8 +993,10 @@ export function SourcesPage() {
         setCurrentSource(null)
       }
       queryClient.invalidateQueries({ queryKey: ['sources'] })
-    } catch {
-      // ignore
+      queryClient.invalidateQueries({ queryKey: ['source-detail'] })
+      addToast('存储源已删除', 'success')
+    } catch (err: unknown) {
+      addToast(getApiErrorMessage(err, '删除存储源失败'), 'error')
     }
   }
 
@@ -582,7 +1084,7 @@ export function SourcesPage() {
                       {source.root_path}
                     </span>
                   </div>
-                  {source.driver_type === 'local' && <LocalSourceBasePathRow sourceId={source.id} />}
+                  <SourceConfigRows source={source} canReadSecrets={canReadSecrets} />
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">容量</span>
                     <span className="text-foreground">
@@ -714,14 +1216,20 @@ export function SourcesPage() {
       {createModalOpen && (
         <CreateSourceModal
           onClose={() => setCreateModalOpen(false)}
-          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['sources'] })
+            queryClient.invalidateQueries({ queryKey: ['source-detail'] })
+          }}
         />
       )}
       {editTarget && (
         <EditSourceModal
           key={editTarget.id}
           onClose={() => setEditTarget(null)}
-          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['sources'] })}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['sources'] })
+            queryClient.invalidateQueries({ queryKey: ['source-detail', editTarget.id] })
+          }}
           source={editTarget}
         />
       )}

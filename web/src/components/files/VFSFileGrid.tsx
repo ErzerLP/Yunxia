@@ -44,7 +44,7 @@ function FileIcon({ item, className }: { item: VFSItem; className?: string }) {
 }
 
 export function VFSFileGrid() {
-  const { currentVirtualPath, vfsItems, setVfsItems, setCurrentPermissions, setLoading, toggleSelection, clearSelection, selectedFiles, navigateVirtualTo } = useFileStore()
+  const { currentVirtualPath, currentPermissions, vfsItems, setVfsItems, setCurrentPermissions, setLoading, toggleSelection, clearSelection, selectedFiles, navigateVirtualTo } = useFileStore()
   const { openPreview, addToast } = useUIStore()
   const queryClient = useQueryClient()
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; item: VFSItem } | null>(null)
@@ -81,6 +81,7 @@ export function VFSFileGrid() {
 
   const displayedVfsItems = data?.items ?? vfsItems
   const selectedVfsItems = displayedVfsItems.filter((item) => selectedFiles.has(item.path))
+  const canWriteCurrentDirectory = currentPermissions === null || currentPermissions?.write === true
 
   const handleClick = (item: VFSItem) => {
     if (selectedFiles.size > 0) {
@@ -247,11 +248,11 @@ export function VFSFileGrid() {
             mode: 'v2',
           }) : undefined}
           onDownload={contextMenu.item.entry_kind === 'file' ? () => handleDownload(contextMenu.item) : undefined}
-          onRename={() => handleRename(contextMenu.item)}
-          onCopy={() => handleCopy(contextMenu.item)}
-          onMove={() => handleMove(contextMenu.item)}
+          onRename={canWriteCurrentDirectory ? () => handleRename(contextMenu.item) : undefined}
+          onCopy={canWriteCurrentDirectory ? () => handleCopy(contextMenu.item) : undefined}
+          onMove={canWriteCurrentDirectory ? () => handleMove(contextMenu.item) : undefined}
           onShare={() => handleShare(contextMenu.item)}
-          onDelete={() => handleDelete(contextMenu.item)}
+          onDelete={contextMenu.item.can_delete ? () => handleDelete(contextMenu.item) : undefined}
         />
       )}
 

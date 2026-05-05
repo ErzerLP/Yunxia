@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { X, Pencil } from 'lucide-react'
 import { fileV2Api } from '@/api/fileV2'
-import { cn } from '@/utils'
+import { useUIStore } from '@/stores/uiStore'
+import { cn, getApiErrorMessage } from '@/utils'
 
 interface VFSRenameModalProps {
   isOpen: boolean
@@ -12,8 +13,10 @@ interface VFSRenameModalProps {
 }
 
 export function VFSRenameModal({ isOpen, onClose, path, currentName, onSuccess }: VFSRenameModalProps) {
+  const { addToast } = useUIStore()
   const [newName, setNewName] = useState(currentName)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -24,12 +27,16 @@ export function VFSRenameModal({ isOpen, onClose, path, currentName, onSuccess }
     }
 
     setIsSubmitting(true)
+    setError('')
     try {
       await fileV2Api.rename({ path, new_name: trimmed })
+      addToast('重命名成功', 'success')
       onSuccess?.()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const msg = getApiErrorMessage(err, '重命名失败')
+      setError(msg)
+      addToast(msg, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -60,6 +67,11 @@ export function VFSRenameModal({ isOpen, onClose, path, currentName, onSuccess }
             className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             placeholder="新名称"
           />
+          {error && (
+            <p className="mt-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive break-all">
+              {error}
+            </p>
+          )}
           <div className="flex justify-end gap-2 mt-4">
             <button
               type="button"

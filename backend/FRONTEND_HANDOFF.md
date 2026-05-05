@@ -42,7 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
-| 待适配 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页、上传入口、离线任务/RSS 目标选择 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
+| 待联调 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页、上传入口、离线任务/RSS 目标选择 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
 | 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
 | 待联调 | 2026-05-02 | RSS 导入导出 | RSS/追番页、设置/备份页 | P1 | `/api/v1/rss/export`、`/api/v1/rss/import` | [详情](#handoff-2026-05-02-rss-import-export) |
 | 待联调 | 2026-05-02 | RSS 订阅批量控制 | RSS/追番页、订阅列表 | P1 | `/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/subscriptions/batch-state` | [详情](#handoff-2026-05-02-rss-subscription-bulk-controls) |
@@ -845,25 +845,25 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 <a id="handoff-2026-05-04-pikpak-source-readonly"></a>
 
-### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览、文件写操作、上传导入、直传与原生离线下载
+### [P1][待联调][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览、文件写操作、上传导入、直传与原生离线下载
 
 #### 前端适配 checklist
 
-- [ ] 存储源创建/编辑表单新增 `driver_type="pikpak"` 选项。
-- [ ] 表单支持 PikPak public config：`root_folder_id`、`platform`、`disable_media_link`、`cache_ttl_seconds`、`download_strategy`。
-- [ ] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
-- [ ] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
-- [ ] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
-- [ ] 上传入口允许选择 PikPak 挂载目录；根据 `POST /api/v1/upload/init` 返回的 `transport.mode` 兼容 `server_chunk` 与 `direct_parts` 两种路径。
-- [ ] 如果前端能计算 PikPak GCID，可在 `file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 触发 PikPak OSS 直传；如果暂不实现 GCID，继续传普通 MD5/空值即可，后端会回退 `server_chunk`，不阻塞现有上传。
-- [ ] `transport.mode="direct_parts"` 时按 `part_instructions[0].method/url/headers/byte_range` 直接 PUT 到 OSS，完成后 `POST /api/v1/upload/finish` 传 `{index,etag}`。
-- [ ] 离线任务/RSS 目标目录允许选择 PikPak 挂载目录；目标解析到 PikPak source 时后端会优先使用 `downloader_type="pikpak_native"` 的 provider 原生离线下载，任务完成后文件可通过 VFS 列表刷新看到。
-- [ ] 任务页把 `DownloadTaskView.downloader_type` 枚举扩展为 `aria2 | qbittorrent | pikpak_native`；`pikpak_native` 暂停/恢复会返回 `SOURCE_OPERATION_UNSUPPORTED`，取消仍可用。
-- [ ] 不持久化、不日志输出 PikPak `direct_parts` 返回的临时 `Authorization` / `X-OSS-Security-Token` 上传 header。
-- [ ] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
-- [ ] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
-- [ ] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
-- [ ] WebDAV 暴露不再只限 local；PikPak/S3 等非 local 源设置 `is_webdav_exposed=true` 后可通过 `/dav/{webdav_slug}` 访问，但前端只需要展示开关与 slug，不需要实现 WebDAV 客户端。
+- [x] 存储源创建/编辑表单新增 `driver_type="pikpak"` 选项。
+- [x] 表单支持 PikPak public config：`root_folder_id`、`platform`、`disable_media_link`、`cache_ttl_seconds`、`download_strategy`。
+- [x] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
+- [x] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
+- [x] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
+- [x] 上传入口允许选择 PikPak 挂载目录；根据 `POST /api/v1/upload/init` 返回的 `transport.mode` 兼容 `server_chunk` 与 `direct_parts` 两种路径。
+- [x] 如果前端能计算 PikPak GCID，可在 `file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 触发 PikPak OSS 直传；如果暂不实现 GCID，继续传普通 MD5/空值即可，后端会回退 `server_chunk`，不阻塞现有上传。
+- [x] `transport.mode="direct_parts"` 时按 `part_instructions[0].method/url/headers/byte_range` 直接 PUT 到 OSS，完成后 `POST /api/v1/upload/finish` 传 `{index,etag}`。
+- [x] 离线任务/RSS 目标目录允许选择 PikPak 挂载目录；目标解析到 PikPak source 时后端会优先使用 `downloader_type="pikpak_native"` 的 provider 原生离线下载，任务完成后文件可通过 VFS 列表刷新看到。
+- [x] 任务页把 `DownloadTaskView.downloader_type` 枚举扩展为 `aria2 | qbittorrent | pikpak_native`；`pikpak_native` 暂停/恢复会返回 `SOURCE_OPERATION_UNSUPPORTED`，取消仍可用。
+- [x] 不持久化、不日志输出 PikPak `direct_parts` 返回的临时 `Authorization` / `X-OSS-Security-Token` 上传 header。
+- [x] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
+- [x] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
+- [x] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
+- [x] WebDAV 暴露不再只限 local；PikPak/S3 等非 local 源设置 `is_webdav_exposed=true` 后可通过 `/dav/{webdav_slug}` 访问，但前端只需要展示开关与 slug，不需要实现 WebDAV 客户端。
 
 #### 背景 / 变更摘要
 
@@ -910,3 +910,10 @@ type PikPakSecretPatch = {
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。
 - WebDAV 非 local 适配：`PROPFIND` 通过文件服务列目录，`GET/HEAD` 302 到 provider 临时下载链接，`PUT` 通过后端临时文件导入目标源；跨 WebDAV source 的 `COPY/MOVE` 暂不支持。
+
+#### 前端验证记录
+
+- 2026-05-05：前端已完成存储源管理、VFS 写操作错误提示、上传 direct/server 分支、任务 downloader 类型与 WebDAV 非 local 暴露 UI 适配；暂未连接真实 PikPak 账号完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass

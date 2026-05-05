@@ -263,6 +263,112 @@ tick implemented checklist items;
 append verification notes for lint/build and the remaining smoke gap.
 ```
 
+## Scenario: Cloud Storage / Source Driver Frontend Adaptation
+
+### 1. Scope / Trigger
+
+- Trigger: backend exposes or changes a storage driver such as `s3` or `pikpak`,
+  changes upload transport, WebDAV source exposure, VFS write semantics, or task
+  downloader types.
+- Goal: adapt the frontend without hard-coding local-only assumptions or leaking
+  secret/backend internals.
+
+### 2. Signatures
+
+- Source upsert: `POST/PUT /api/v1/sources*` with `driver_type`,
+  `config`, `secret_patch`, `is_webdav_exposed`, `webdav_read_only`,
+  `mount_path`, and `root_path`.
+- Source detail: `GET /api/v1/sources/:id` returns
+  `{source, config, secret_fields, last_checked_at}`.
+- Upload init: `POST /api/v1/upload/init` returns `transport.mode` as
+  `server_chunk` or `direct_parts`.
+- Tasks: `DownloadTask.downloader_type` can grow beyond local downloader names;
+  current known values include `aria2`, `qbittorrent`, and `pikpak_native`.
+- VFS write APIs: use `fileV2Api` and the backend-provided capability/ACL result,
+  especially `current_permissions` and item-level `can_delete`.
+
+### 3. Contracts
+
+- Keep API DTO fields in snake_case and mirror `backend/API_CONTRACT.md`.
+- Secret editing must be patch-based:
+  - omitted secret field means "keep existing"
+  - `null` means "clear this secret"
+  - non-empty string means "replace this secret"
+- Secret display must use `secret_fields` masks unless the user has
+  `source.secret.read`; never infer plaintext availability from driver type.
+- Non-local sources can be WebDAV-exposed when backend supports it. The frontend
+  only shows/copies the URL and read-only state; it does not implement a WebDAV
+  client.
+- Upload direct URLs/headers are short-lived transport instructions. Do not log,
+  persist, or store `Authorization`, `X-OSS-Security-Token`, or provider-specific
+  signing headers.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required frontend behavior |
+|---|---|
+| `CLOUD_AUTH_FAILED` / `CLOUD_TOKEN_INVALID` | Prompt the admin to check account/password/token |
+| `CLOUD_CAPTCHA_REQUIRED` | Explain captcha verification and token refill |
+| `CLOUD_RATE_LIMITED` | Ask user to retry later |
+| `CLOUD_PROVIDER_UNAVAILABLE` | Show provider temporarily unavailable |
+| `SOURCE_OPERATION_UNSUPPORTED` | Explain the unsupported operation, e.g. pause/resume/permanent delete |
+| `FILE_ALREADY_EXISTS` / `NAME_CONFLICT` | Tell the user to rename or choose another target |
+| `NO_BACKING_STORAGE` | Tell the user to enter a concrete mounted directory |
+
+### 5. Good/Base/Bad Cases
+
+- Good: PikPak create/edit form exposes public config, secret masks, `null`
+  clearing, WebDAV toggles, and VFS/task/upload flows all work through existing
+  API clients and shared error mapping.
+- Base: adding a new enum value only updates DTOs, labels, and unsupported-action
+  hints.
+- Bad: hiding all write actions for a driver because it is not `local`, submitting
+  empty secret strings on every edit, or directly showing raw database/provider
+  errors.
+
+### 6. Tests Required
+
+- Static: `npm run lint`, `npm run build`, and
+  `node scripts/check-vfs-integration.mjs` when touching VFS/upload/task/source
+  flows.
+- Handoff: update `backend/FRONTEND_HANDOFF.md` status/checklist/verification and
+  `web/FRONTEND_TEST_HANDOFF.md` tester-facing steps.
+- Runtime smoke when feasible:
+  - create/edit/test the source
+  - verify masked/plain secret display by capability
+  - perform VFS mkdir/rename/move/copy/delete
+  - upload through both supported `transport.mode` branches if fixtures allow
+  - create/cancel tasks and verify downloader labels/action availability
+  - copy WebDAV URL and smoke read/write behavior for the slug
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await sourceApi.update(id, {
+  config,
+  secret_patch: {
+    username: '',
+    password: '',
+    refresh_token: '',
+  },
+  is_webdav_exposed: source.driver_type === 'local' && isWebDAVExposed,
+})
+```
+
+#### Correct
+
+```tsx
+const secret_patch = buildSecretPatchFromTouchedFields()
+await sourceApi.update(id, {
+  config,
+  ...(Object.keys(secret_patch).length > 0 ? { secret_patch } : {}),
+  is_webdav_exposed: isWebDAVExposed,
+  webdav_read_only: webDAVReadOnly,
+})
+```
+
 ## Wrong vs Correct
 
 ### Wrong
