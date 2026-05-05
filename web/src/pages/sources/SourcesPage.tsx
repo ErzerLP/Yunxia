@@ -315,6 +315,7 @@ function EditSourceModal({
               id="source-edit-name"
               name="name"
               type="text"
+              autoComplete="off"
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
@@ -502,7 +503,7 @@ function EditSourceModal({
           <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium text-foreground">WebDAV 暴露</p>
+                <label htmlFor="source-edit-webdav-exposed" className="text-sm font-medium text-foreground">WebDAV 暴露</label>
                 <p className="text-xs text-muted-foreground">
                   local/S3/PikPak 均可暴露；实际写入能力由后端驱动能力与只读开关决定。
                 </p>
@@ -688,6 +689,7 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
               id="source-create-name"
               name="name"
               type="text"
+              autoComplete="off"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder={driverType === 'pikpak' ? '例如：PikPak 媒体库' : '例如：本地存储'}
@@ -698,12 +700,14 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
             </p>
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">驱动类型</label>
-            <div className="flex gap-2">
+            <p id="source-create-driver-type-label" className="text-sm text-muted-foreground mb-1 block">驱动类型</p>
+            <div className="flex gap-2" role="radiogroup" aria-labelledby="source-create-driver-type-label">
               {SOURCE_DRIVER_OPTIONS.map((option) => (
                 <button
                   key={option.value}
                   type="button"
+                  role="radio"
+                  aria-checked={driverType === option.value}
                   onClick={() => setDriverType(option.value)}
                   className={cn(
                     'flex-1 px-3 py-2 rounded-md border text-sm transition-colors',
@@ -856,7 +860,7 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
           <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium text-foreground">WebDAV 暴露</p>
+                <label htmlFor="source-create-webdav-exposed" className="text-sm font-medium text-foreground">WebDAV 暴露</label>
                 <p className="text-xs text-muted-foreground">
                   local/S3/PikPak 均可暴露；实际写入能力由后端驱动能力与只读开关决定。
                 </p>

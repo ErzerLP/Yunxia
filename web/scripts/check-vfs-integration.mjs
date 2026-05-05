@@ -256,6 +256,26 @@ assertIncludes(
   'WebDAV 访问标识冲突',
   '创建第二个本地源遇到 WebDAV slug 冲突时不能弹出 UNIQUE constraint 数据库原文。',
 )
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'autoComplete="off"',
+  '存储源新增/编辑名称输入框必须显式声明 autocomplete，避免浏览器表单可访问性提示。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'id="source-create-driver-type-label"',
+  '存储源新增弹窗驱动类型分组不能使用未关联的 label，应使用可访问的分组标题。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'role="radiogroup"',
+  '存储源新增弹窗驱动类型按钮组需要暴露为可访问的单选分组。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'htmlFor="source-create-webdav-exposed"',
+  '存储源新增弹窗 WebDAV 暴露复选框必须关联可见 label。',
+)
 assertNotIncludes(
   'src/pages/sources/SourcesPage.tsx',
   "const message = err instanceof Error ? err.message : '创建存储源失败'",
