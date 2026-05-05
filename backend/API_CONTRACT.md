@@ -375,7 +375,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - 通用：`name,driver_type,is_enabled,is_webdav_exposed,webdav_read_only,mount_path,root_path,sort_order`
 - local：`config.base_path`
 - s3：`config.endpoint,region,bucket,base_prefix,force_path_style` + `secret_patch.access_key/secret_key`
-- pikpak（阶段 E 文件写操作、后端暂存上传导入、PikPak 目标原生离线下载可用；浏览器直传暂不支持）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
+- pikpak（阶段 E 文件写操作、后端暂存上传导入、GCID 条件浏览器直传、PikPak 目标原生离线下载可用）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
 
 创建 local 源示例：
 
@@ -467,6 +467,7 @@ PikPak 字段说明：
 - token/captcha/device_id 运行态刷新后会更新当前请求内的 source 配置；持久化写回仓储属于后续增强点，create/update 的探测阶段会随实体保存
 - PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required 等用户可修正错误不会重试，最终仍按稳定错误码返回
 - 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
+- PikPak 上传现在同时支持两条后端路径：前端在 `/upload/init.file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 时，后端优先创建 provider OSS 直传计划；未传 GCID 或传普通 MD5/空值时，后端自动回退为 `server_chunk -> ImportFile`
 
 补充：
 
@@ -550,7 +551,10 @@ PikPak 字段说明：
   - `resolved_inner_parent_path`
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
-- PikPak 上传返回 `transport.mode=server_chunk`，由后端接收分片合并成本地 staging 文件，再调用 PikPak `ImportFile` 计算 GCID、创建 provider 上传任务，并在需要时上传到 OSS；不会返回 `part_instructions[]`
+- PikPak 上传会按 `file_hash` 自动分流：
+  - `file_hash="gcid:<40位hex>"` 或 `<40位hex>`：优先返回 `transport.mode="direct_parts"` 和一个 PikPak OSS `PUT` 直传说明
+  - 未传 GCID、传普通 MD5 或空值：回退为 `transport.mode="server_chunk"`，由后端接收分片合并成本地 staging 文件，再调用 PikPak `ImportFile`
+  - provider 秒传时 `/upload/init` 直接返回 `is_fast_upload=true`
 - 纯虚拟目录无落地存储时返回 `409 NO_BACKING_STORAGE`
 
 本地源上传调用顺序：
@@ -592,20 +596,83 @@ S3 finish Body 示例：
 }
 ```
 
-PikPak 上传调用顺序与本地源相同：
+PikPak 上传推荐调用顺序：
 
 1. `POST /api/v1/upload/init`
-   - `transport.mode="server_chunk"`
-   - `transport.driver_type="pikpak"`
-   - `part_instructions=[]`
-2. 前端按 `upload.chunk_size` 调 `PUT /api/v1/upload/chunk`
-3. `POST /api/v1/upload/finish`
-   - 后端合并 staging 文件后导入 PikPak
-   - PikPak 秒传成功时不触发 OSS 实体上传
-   - 需要实体上传时由后端使用 provider 返回的 OSS 临时参数上传，前端不接触 `access_key_secret`、`security_token`、`bucket/key`
-   - 目标父目录不存在时，PikPak 导入会按目标路径递归创建远端父目录；如果某段父路径已存在但不是目录，返回 `400 PATH_INVALID`
+   - 如果前端能计算 PikPak GCID，可把 `file_hash` 传为 `gcid:<40位hex>` 或 `<40位hex>`
+   - 如果前端暂不实现 GCID，继续传普通 MD5 或空值即可，后端会走 `server_chunk`
+2. 根据 `transport.mode` 分支：
+   - `server_chunk`：
+     1. `transport.driver_type="pikpak"`
+     2. `part_instructions=[]`
+     3. 前端按 `upload.chunk_size` 调 `PUT /api/v1/upload/chunk`
+     4. `POST /api/v1/upload/finish`
+        - 后端合并 staging 文件后导入 PikPak
+        - PikPak 秒传成功时不触发 OSS 实体上传
+        - 需要实体上传时由后端使用 provider 返回的 OSS 临时参数上传，前端不接触 `access_key_secret`、`security_token`、`bucket/key`
+   - `direct_parts`：
+     1. 当前 PikPak OSS 直传返回 1 条 `part_instructions[0]`
+     2. 前端按该 instruction 的 `method="PUT"`、`url`、`headers` 与 `byte_range` 直接上传整个文件
+     3. 上传成功后调用 `POST /api/v1/upload/finish`，Body 传入 OSS 返回的 ETag，例如：
 
-当前仍不支持浏览器直传 PikPak OSS；PikPak 源不会返回 S3 式 `direct_parts`。
+```json
+{
+  "upload_id": "upl_xxx",
+  "parts": [
+    { "index": 0, "etag": "\"etag-from-oss\"" }
+  ]
+}
+```
+
+PikPak `direct_parts` 响应示例：
+
+```json
+{
+  "is_fast_upload": false,
+  "upload": {
+    "upload_id": "upl_xxx",
+    "source_id": 3,
+    "path": "/Anime",
+    "filename": "episode.mkv",
+    "file_size": 734003200,
+    "file_hash": "gcid:0123456789abcdef0123456789abcdef01234567",
+    "chunk_size": 5242880,
+    "total_chunks": 1,
+    "uploaded_chunks": [],
+    "status": "uploading",
+    "is_fast_upload": false,
+    "expires_at": "2026-05-12T08:00:00Z"
+  },
+  "transport": {
+    "mode": "direct_parts",
+    "driver_type": "pikpak",
+    "concurrency": 3,
+    "retry_limit": 3
+  },
+  "part_instructions": [
+    {
+      "index": 0,
+      "method": "PUT",
+      "url": "https://<bucket>.<endpoint>/<key>",
+      "headers": {
+        "Authorization": "OSS <access_key_id>:<signature>",
+        "Date": "Tue, 05 May 2026 08:00:00 GMT",
+        "Content-Type": "video/x-matroska",
+        "X-OSS-Security-Token": "<temporary-token>"
+      },
+      "byte_range": { "start": 0, "end": 734003199 },
+      "expires_at": "2026-05-05T08:15:00Z"
+    }
+  ]
+}
+```
+
+注意：
+
+- PikPak `direct_parts` 返回的是短期 OSS PUT 上传凭据和签名 header，只用于当前文件上传；前端不要持久化、日志输出或复用其中的 `Authorization` / `X-OSS-Security-Token`。
+- PikPak direct 当前是单对象 PUT，不是 S3 multipart；`upload.total_chunks` 会等于 `part_instructions.length`，通常为 1。
+- PikPak 上传目标父目录不存在时，后端会按目标路径递归创建远端父目录；如果某段父路径已存在但不是目录，返回 `400 PATH_INVALID`。
+- 如果 provider 在 init 阶段秒传成功，响应为 `is_fast_upload=true` 且不返回 `upload/transport/part_instructions`。
 
 ### 3.8 trash（`/api/v1`）
 
@@ -1474,7 +1541,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
    - `POST /api/v1/upload/init`，传 `target_virtual_parent_path=<current_path>`
    - local：`PUT /api/v1/upload/chunk` 后 `POST /api/v1/upload/finish`
    - S3：按 `part_instructions` 直传后 `POST /api/v1/upload/finish`
-   - PikPak：走 `server_chunk`，前端分片上传到后端，finish 后由后端导入 PikPak；不会返回 `direct_parts`
+   - PikPak：优先按 `transport.mode` 分支；能提供 GCID 时可走 `direct_parts` OSS PUT，不能提供时走 `server_chunk` 后端导入
 5. 下载文件：
    - `POST /api/v2/fs/access-url`
    - 浏览器打开返回的 `url`

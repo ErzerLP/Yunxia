@@ -179,6 +179,11 @@ type DriverBundle struct {
 - `ImportDriver` imports a backend-visible local staging file into the target
   source path. It is used by offline downloads and by upload flows for drivers
   that cannot safely expose direct browser-upload instructions.
+- Third-party `UploadDriver` direct upload may require provider-specific
+  prerequisites, such as PikPak GCID in `MultipartUploadRequest.ContentHash`.
+  If the prerequisite is absent and an `ImportDriver` is also registered,
+  `UploadService` must fall back to `server_chunk -> ImportFile` instead of
+  failing the upload init request.
 - `NativeDownloadDriver` is an optimization for source targets that can create
   provider-side offline download tasks directly, e.g. PikPak URL tasks. It must
   be registered through `DriverBundle`, and TaskService must keep the generic
@@ -221,6 +226,11 @@ type DriverBundle struct {
   staging/import because the provider writes directly into the target folder.
   Non-PikPak targets and unsupported native links continue through the generic
   downloader staging path.
+- Good: a direct-upload-capable PikPak phase registers both `Upload` and
+  `Import`; `UploadDriver` returns `direct_parts` only when the frontend
+  supplied a valid GCID via `file_hash`, returns a fast-upload entry when the
+  provider seconds the file, and returns unsupported for missing/invalid GCID
+  so `UploadService` can fall back to stable backend `server_chunk` import.
 - Base: S3 registers `Config`, `Probe`, `File`, `Upload`, `Import`, and sets
   `RecursiveStatsFallback=true` to preserve existing recursive stats behavior.
 - Bad: adding `if driverType == "pikpak"` branches in `SourceService`,
@@ -235,13 +245,19 @@ tests that assert:
 - Source create/test/detail uses the codec, masks secrets by default, and shows
   secrets only with `source.secret.read`.
 - The registry wires every intended capability into Source/File/VFS/Trash/
-  Upload/Task/Share/System services and omits unsupported capabilities (for
-  example writable-but-not-import-capable drivers omit Import, while PikPak
-  import-capable stage registers Import but still omits Upload/direct parts).
+  Upload/Task/Share/System services and omits unsupported capabilities. PikPak
+  direct-upload stages must register both `Upload` and `Import` so GCID uploads
+  can use `direct_parts` while non-GCID uploads still use `server_chunk`.
 - Existing S3 direct-upload behavior still returns `transport.mode=direct_parts`.
 - Import-only non-local drivers return `transport.mode=server_chunk`, do not
   return direct part instructions, and call `ImportFile` on finish. Task
   completion must also call `ImportFile` and clean the staging directory.
+- Direct-upload-capable non-local drivers return `transport.mode=direct_parts`,
+  persist driver state in the upload session, pass `ContentHash` through to the
+  driver, call `CompleteMultipartUpload` on finish, and fall back to
+  `server_chunk` when the driver returns unsupported but an import driver
+  exists. Fast-upload plans return `is_fast_upload=true` without creating an
+  upload session.
 - Native-download driver tests cover create/status/cancel mapping, provider
   target folder resolution, no local staging/import for native PikPak targets,
   `downloader_type=pikpak_native`, and unsupported pause/resume returning a
@@ -278,10 +294,11 @@ drivers := NewStorageDriverRegistry(DriverBundle{
     Config:       NewPikPakSourceConfigCodec(),
     Probe:        pikpak,
     File:         pikpak,
+    Upload:       pikpak,
     Import:       pikpak,
     NativeDownload: pikpak,
     Capacity:     pikpak,
-    Capabilities: pikpak, // still no Upload/direct-parts registration.
+    Capabilities: pikpak,
 })
 
 sourceOpts := append(baseSourceOpts, drivers.SourceServiceOptions()...)

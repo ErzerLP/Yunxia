@@ -1754,6 +1754,251 @@ func TestUploadServiceUsesImportDriverForServerChunkNonLocalDriver(t *testing.T)
 	}
 }
 
+func TestUploadServiceUsesDirectUploadDriverForNonLocalDriver(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	source := &entity.StorageSource{
+		Name:       "直传源",
+		DriverType: "cloud-direct",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/direct",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	expiresAt := time.Date(2026, 5, 5, 8, 0, 0, 0, time.UTC)
+	driver := &recordingUploadDriver{
+		initPlan: &MultipartUploadPlan{
+			State: MultipartUploadState{
+				RemoteUploadID: "remote-upload-1",
+				ObjectKey:      "object-key",
+				VirtualPath:    "/uploads/movie.mkv",
+				FileSize:       int64(len("hello-world")),
+			},
+			PartInstructions: []MultipartUploadPartInstruction{
+				{
+					Index:     0,
+					Method:    "PUT",
+					URL:       "https://upload.example.test/object-key",
+					Headers:   map[string]string{"Content-Type": "video/x-matroska"},
+					ByteStart: 0,
+					ByteEnd:   int64(len("hello-world")) - 1,
+					ExpiresAt: expiresAt,
+				},
+			},
+		},
+		completeEntry: &StorageEntry{
+			Name:       "movie.mkv",
+			Path:       "/uploads/movie.mkv",
+			Size:       int64(len("hello-world")),
+			ModifiedAt: expiresAt,
+		},
+	}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(sourceRepo, uploadRepo, options, WithUploadDriver("cloud-direct", driver))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/uploads",
+		Filename: "movie.mkv",
+		FileSize: int64(len("hello-world")),
+		FileHash: "gcid:0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if len(driver.initCalls) != 1 {
+		t.Fatalf("expected one direct upload init call, got %+v", driver.initCalls)
+	}
+	initCall := driver.initCalls[0]
+	if initCall.VirtualPath != "/uploads" || initCall.Filename != "movie.mkv" ||
+		initCall.ContentHash != "gcid:0123456789abcdef0123456789abcdef01234567" ||
+		initCall.FileSize != int64(len("hello-world")) {
+		t.Fatalf("unexpected direct upload init request = %+v", initCall)
+	}
+	if initResp.Transport == nil || initResp.Transport.Mode != "direct_parts" || initResp.Transport.DriverType != "cloud-direct" {
+		t.Fatalf("unexpected direct upload transport = %+v", initResp.Transport)
+	}
+	if initResp.Upload == nil || initResp.Upload.TotalChunks != 1 {
+		t.Fatalf("expected one persisted direct upload session chunk, got %+v", initResp.Upload)
+	}
+	if len(initResp.PartInstructions) != 1 ||
+		initResp.PartInstructions[0].Method != "PUT" ||
+		initResp.PartInstructions[0].URL != "https://upload.example.test/object-key" {
+		t.Fatalf("unexpected direct part instructions = %+v", initResp.PartInstructions)
+	}
+
+	finishResp, err := svc.Finish(ctx, appdto.UploadFinishRequest{
+		UploadID: initResp.Upload.UploadID,
+		Parts:    []appdto.UploadPartETag{{Index: 0, ETag: "etag-1"}},
+	})
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if finishResp.File.Path != "/uploads/movie.mkv" || finishResp.File.Size != int64(len("hello-world")) {
+		t.Fatalf("unexpected direct upload finish file = %+v", finishResp.File)
+	}
+	if len(driver.completeCalls) != 1 {
+		t.Fatalf("expected one direct complete call, got %+v", driver.completeCalls)
+	}
+	completeCall := driver.completeCalls[0]
+	if completeCall.state.RemoteUploadID != "remote-upload-1" ||
+		completeCall.state.VirtualPath != "/uploads/movie.mkv" ||
+		len(completeCall.parts) != 1 ||
+		completeCall.parts[0].ETag != "etag-1" {
+		t.Fatalf("unexpected direct complete call = %+v", completeCall)
+	}
+	if _, err := uploadRepo.FindByID(context.Background(), initResp.Upload.UploadID); !errors.Is(err, domainrepo.ErrNotFound) {
+		t.Fatalf("expected upload session to be deleted after direct finish, err=%v", err)
+	}
+}
+
+func TestUploadServiceFallsBackToImportDriverWhenDirectUploadUnsupported(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	source := &entity.StorageSource{
+		Name:       "混合上传源",
+		DriverType: "cloud-hybrid",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/hybrid",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	uploadDriver := &recordingUploadDriver{initErr: ErrSourceOperationUnsupported}
+	importer := &recordingTaskImportDriver{}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadDriver("cloud-hybrid", uploadDriver),
+		WithUploadImportDriver("cloud-hybrid", importer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/fallback",
+		Filename: "fallback.txt",
+		FileSize: int64(len("hello-world")),
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if len(uploadDriver.initCalls) != 1 {
+		t.Fatalf("expected direct init to be attempted before fallback, got %+v", uploadDriver.initCalls)
+	}
+	if initResp.Transport == nil || initResp.Transport.Mode != "server_chunk" || initResp.Transport.DriverType != "cloud-hybrid" {
+		t.Fatalf("unexpected fallback transport = %+v", initResp.Transport)
+	}
+	if len(initResp.PartInstructions) != 0 {
+		t.Fatalf("fallback server_chunk should not return direct part instructions")
+	}
+
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 0, []byte("hello")); err != nil {
+		t.Fatalf("UploadChunk(0) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 1, []byte("-worl")); err != nil {
+		t.Fatalf("UploadChunk(1) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 2, []byte("d")); err != nil {
+		t.Fatalf("UploadChunk(2) error = %v", err)
+	}
+
+	finishResp, err := svc.Finish(ctx, appdto.UploadFinishRequest{UploadID: initResp.Upload.UploadID})
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if finishResp.File.Path != "/fallback/fallback.txt" || finishResp.File.Size != int64(len("hello-world")) {
+		t.Fatalf("unexpected fallback finish file = %+v", finishResp.File)
+	}
+	if len(importer.calls) != 1 {
+		t.Fatalf("expected one fallback import call, got %+v", importer.calls)
+	}
+	call := importer.calls[0]
+	if call.sourceID != source.ID || call.targetPath != "/fallback/fallback.txt" || string(call.content) != "hello-world" {
+		t.Fatalf("unexpected fallback import call = %+v", call)
+	}
+}
+
+func TestUploadServiceReturnsFastUploadWhenDriverCompletesOnInit(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	source := &entity.StorageSource{
+		Name:       "秒传源",
+		DriverType: "cloud-fast",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/fast",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	driver := &recordingUploadDriver{
+		initPlan: &MultipartUploadPlan{
+			CompletedEntry: &StorageEntry{
+				Name:       "instant.bin",
+				Path:       "/instant.bin",
+				Size:       4,
+				ModifiedAt: time.Date(2026, 5, 5, 8, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(sourceRepo, uploadRepo, options, WithUploadDriver("cloud-fast", driver))
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/",
+		Filename: "instant.bin",
+		FileSize: 4,
+		FileHash: "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if !initResp.IsFastUpload || initResp.Upload != nil || initResp.Transport != nil {
+		t.Fatalf("expected fast upload response without persisted session, got %+v", initResp)
+	}
+	if initResp.File == nil || initResp.File.Path != "/instant.bin" || initResp.File.SourceID != source.ID {
+		t.Fatalf("unexpected fast upload file = %+v", initResp.File)
+	}
+	if len(driver.completeCalls) != 0 {
+		t.Fatalf("fast upload should not call CompleteMultipartUpload, got %+v", driver.completeCalls)
+	}
+}
+
 func TestSystemStatsUsesCapacityDriverBeforeRecursiveFileStats(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -2279,6 +2524,48 @@ func (*uploadDriverStub) InitMultipartUpload(context.Context, *entity.StorageSou
 
 func (*uploadDriverStub) CompleteMultipartUpload(context.Context, *entity.StorageSource, MultipartUploadState, []CompletedUploadPart) (*StorageEntry, error) {
 	return &StorageEntry{Name: "uploaded.bin", Path: "/uploaded.bin", ModifiedAt: time.Now()}, nil
+}
+
+type recordingUploadCompleteCall struct {
+	sourceID uint
+	state    MultipartUploadState
+	parts    []CompletedUploadPart
+}
+
+type recordingUploadDriver struct {
+	initPlan      *MultipartUploadPlan
+	initErr       error
+	completeEntry *StorageEntry
+	completeErr   error
+	initCalls     []MultipartUploadRequest
+	completeCalls []recordingUploadCompleteCall
+}
+
+func (d *recordingUploadDriver) InitMultipartUpload(_ context.Context, _ *entity.StorageSource, req MultipartUploadRequest) (*MultipartUploadPlan, error) {
+	d.initCalls = append(d.initCalls, req)
+	if d.initErr != nil {
+		return nil, d.initErr
+	}
+	if d.initPlan != nil {
+		return d.initPlan, nil
+	}
+	return &MultipartUploadPlan{}, nil
+}
+
+func (d *recordingUploadDriver) CompleteMultipartUpload(_ context.Context, source *entity.StorageSource, state MultipartUploadState, parts []CompletedUploadPart) (*StorageEntry, error) {
+	copiedParts := append([]CompletedUploadPart(nil), parts...)
+	d.completeCalls = append(d.completeCalls, recordingUploadCompleteCall{
+		sourceID: source.ID,
+		state:    state,
+		parts:    copiedParts,
+	})
+	if d.completeErr != nil {
+		return nil, d.completeErr
+	}
+	if d.completeEntry != nil {
+		return d.completeEntry, nil
+	}
+	return &StorageEntry{Name: path.Base(state.VirtualPath), Path: state.VirtualPath, Size: state.FileSize, ModifiedAt: time.Now()}, nil
 }
 
 type capacityDriverStub struct {

@@ -845,7 +845,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 <a id="handoff-2026-05-04-pikpak-source-readonly"></a>
 
-### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览、文件写操作、上传导入与原生离线下载
+### [P1][待适配][存储源/PikPak] 2026-05-04 PikPak source、VFS 浏览、文件写操作、上传导入、直传与原生离线下载
 
 #### 前端适配 checklist
 
@@ -854,17 +854,19 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 - [ ] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
 - [ ] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
 - [ ] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
-- [ ] 上传入口允许选择 PikPak 挂载目录；`POST /api/v1/upload/init` 会返回 `transport.mode="server_chunk"`、`transport.driver_type="pikpak"`、`part_instructions=[]`，前端沿用后端分片上传流程。
+- [ ] 上传入口允许选择 PikPak 挂载目录；根据 `POST /api/v1/upload/init` 返回的 `transport.mode` 兼容 `server_chunk` 与 `direct_parts` 两种路径。
+- [ ] 如果前端能计算 PikPak GCID，可在 `file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 触发 PikPak OSS 直传；如果暂不实现 GCID，继续传普通 MD5/空值即可，后端会回退 `server_chunk`，不阻塞现有上传。
+- [ ] `transport.mode="direct_parts"` 时按 `part_instructions[0].method/url/headers/byte_range` 直接 PUT 到 OSS，完成后 `POST /api/v1/upload/finish` 传 `{index,etag}`。
 - [ ] 离线任务/RSS 目标目录允许选择 PikPak 挂载目录；目标解析到 PikPak source 时后端会优先使用 `downloader_type="pikpak_native"` 的 provider 原生离线下载，任务完成后文件可通过 VFS 列表刷新看到。
 - [ ] 任务页把 `DownloadTaskView.downloader_type` 枚举扩展为 `aria2 | qbittorrent | pikpak_native`；`pikpak_native` 暂停/恢复会返回 `SOURCE_OPERATION_UNSUPPORTED`，取消仍可用。
-- [ ] 不实现/不展示浏览器直传 PikPak OSS；PikPak 不会返回 S3 式 `direct_parts`。
+- [ ] 不持久化、不日志输出 PikPak `direct_parts` 返回的临时 `Authorization` / `X-OSS-Security-Token` 上传 header。
 - [ ] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
 - [ ] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
 - [ ] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
 
 #### 背景 / 变更摘要
 
-后端新增 `driver_type="pikpak"` 的基础 source 管理与 FileDriver。当前已支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download、文件写操作 `mkdir` / `rename` / `move` / `copy` / `delete`，后端 staging 上传导入，以及目标为 PikPak source 时的 provider 原生离线下载。
+后端新增 `driver_type="pikpak"` 的基础 source 管理与 FileDriver。当前已支持 source test/create/update/detail/delete、VFS/list/search/stat/access-url/download、文件写操作 `mkdir` / `rename` / `move` / `copy` / `delete`，后端 staging 上传导入，GCID 条件 PikPak OSS 浏览器直传，以及目标为 PikPak source 时的 provider 原生离线下载。
 
 #### 接口与字段
 
@@ -896,7 +898,9 @@ type PikPakSecretPatch = {
 - PikPak 文件写入口已可调用；列表项 `can_delete` 由后端按 driver capability + ACL 计算。
 - `cache_ttl_seconds` 是后端路径/id 缓存 TTL；前端无需自行缓存 provider file id，写操作后重新请求列表即可看到后端失效后的结果。
 - PikPak 删除调用 provider `batchTrash`，语义是移入 PikPak 回收站；后端不会为该操作创建 Yunxia `.trash` 记录。
-- 上传到 PikPak 使用后端 staging：前端不需要处理 GCID、OSS 参数、`access_key_secret`、`security_token`、`bucket/key`。
+- 上传到 PikPak 默认可继续使用后端 staging；前端不实现 GCID 时不需要处理 OSS 参数、`access_key_secret`、`security_token`、`bucket/key`。
+- 上传到 PikPak 若传入 GCID 并返回 `direct_parts`，前端只按后端给出的短期 OSS PUT URL/header 上传；不要自行拼 OSS 签名，也不要持久化或日志输出临时上传 header。
+- PikPak provider 秒传会在 `/upload/init` 直接返回 `is_fast_upload=true`，此时不需要上传分片也不需要调用 `/upload/finish`。
 - PikPak 上传目标父目录不存在时，后端会在 provider 侧递归创建父目录；如果路径中的父级已存在但不是目录，会返回 `PATH_INVALID`。
 - PikPak 离线任务目标目录不存在时，原生离线下载路径也会由后端递归创建 provider 侧父目录；`target_filename` 非空时会作为 provider 任务名并做同名冲突预检查。
 - 非 PikPak 目标仍使用原有 staging 下载与导入策略；PikPak 原生离线下载不要求前端改创建任务入参，只需要识别任务返回的 `downloader_type="pikpak_native"`。
