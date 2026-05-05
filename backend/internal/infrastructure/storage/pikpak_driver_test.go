@@ -291,13 +291,94 @@ func TestPikPakDriverImportFileConflictRecursiveParentAndProviderError(t *testin
 	}
 }
 
-func TestPikPakDriverCapabilitiesExposeStageDImportOnlyUpload(t *testing.T) {
+func TestPikPakDriverCapabilitiesExposeDirectAndServerUpload(t *testing.T) {
 	caps, err := NewPikPakDriver(WithPikPakAPIClient(&fakePikPakClient{})).Capabilities(context.Background(), newTestPikPakSource(t))
 	if err != nil {
 		t.Fatalf("Capabilities() error = %v", err)
 	}
-	if !caps.CanImportFile || !caps.CanServerUpload || !caps.CanNativeDownload || caps.CanDirectUpload {
-		t.Fatalf("expected stage E native download and import/server upload without direct upload, got %+v", caps)
+	if !caps.CanImportFile || !caps.CanServerUpload || !caps.CanNativeDownload || !caps.CanDirectUpload {
+		t.Fatalf("expected stage E native download plus direct/server upload, got %+v", caps)
+	}
+}
+
+func TestPikPakDriverDirectUploadPlanAndComplete(t *testing.T) {
+	expiresAt := "2026-05-05T10:30:00Z"
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {
+				{ID: "folder-uploads", Name: "Uploads", Kind: "drive#folder"},
+			},
+			"folder-uploads": {},
+		},
+		createUploadResponse: &PikPakCreateUploadFileResponse{
+			Resumable: &PikPakResumableUpload{Params: PikPakOSSUploadParams{
+				AccessKeyID:     "ak",
+				AccessKeySecret: "secret",
+				Bucket:          "bucket",
+				Endpoint:        "https://oss.example.com",
+				Expiration:      expiresAt,
+				Key:             "objects/movie.mkv",
+				SecurityToken:   "token",
+			}},
+		},
+	}
+	driver := NewPikPakDriver(
+		WithPikPakAPIClient(client),
+		WithPikPakOSSInstructionNow(func() time.Time {
+			return time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
+		}),
+	)
+	source := newTestPikPakSource(t)
+
+	plan, err := driver.InitMultipartUpload(context.Background(), source, domainstorage.MultipartUploadRequest{
+		VirtualPath: "/Uploads",
+		Filename:    "movie.mkv",
+		ContentType: "video/x-matroska",
+		ContentHash: "gcid:0123456789abcdef0123456789abcdef01234567",
+		FileSize:    1234,
+	})
+	if err != nil {
+		t.Fatalf("InitMultipartUpload() error = %v", err)
+	}
+	if len(client.createUploadCalls) != 1 {
+		t.Fatalf("expected one create upload call, got %+v", client.createUploadCalls)
+	}
+	call := client.createUploadCalls[0]
+	if call.ParentID != "folder-uploads" || call.Name != "movie.mkv" || call.Hash != "0123456789ABCDEF0123456789ABCDEF01234567" || call.Size != 1234 {
+		t.Fatalf("unexpected create upload call = %+v", call)
+	}
+	if plan.CompletedEntry != nil || len(plan.PartInstructions) != 1 {
+		t.Fatalf("expected one direct OSS instruction, got %+v", plan)
+	}
+	instruction := plan.PartInstructions[0]
+	if instruction.Method != http.MethodPut || instruction.URL != "https://bucket.oss.example.com/objects/movie.mkv" {
+		t.Fatalf("unexpected direct instruction = %+v", instruction)
+	}
+	if instruction.ByteStart != 0 || instruction.ByteEnd != 1233 || instruction.ExpiresAt.Format(time.RFC3339) != expiresAt {
+		t.Fatalf("unexpected direct instruction range/expiration = %+v", instruction)
+	}
+	if instruction.Headers["Content-Type"] != "video/x-matroska" || instruction.Headers["X-Oss-Security-Token"] != "token" || !strings.HasPrefix(instruction.Headers["Authorization"], "OSS ak:") {
+		t.Fatalf("unexpected direct headers = %+v", instruction.Headers)
+	}
+
+	entry, err := driver.CompleteMultipartUpload(context.Background(), source, plan.State, []domainstorage.CompletedUploadPart{{Index: 0, ETag: "etag"}})
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload() error = %v", err)
+	}
+	if entry.Path != "/Uploads/movie.mkv" || entry.Name != "movie.mkv" || entry.Size != 1234 {
+		t.Fatalf("unexpected completed entry = %+v", entry)
+	}
+}
+
+func TestPikPakDriverDirectUploadWithoutGCIDReturnsUnsupported(t *testing.T) {
+	driver := NewPikPakDriver(WithPikPakAPIClient(&fakePikPakClient{}))
+	_, err := driver.InitMultipartUpload(context.Background(), newTestPikPakSource(t), domainstorage.MultipartUploadRequest{
+		VirtualPath: "/",
+		Filename:    "movie.mkv",
+		FileSize:    1234,
+	})
+	if !errors.Is(err, domainstorage.ErrOperationUnsupported) {
+		t.Fatalf("expected direct upload without GCID to be unsupported, got %v", err)
 	}
 }
 

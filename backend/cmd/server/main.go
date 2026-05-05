@@ -116,6 +116,7 @@ func main() {
 			Config:         appsvc.NewPikPakSourceConfigCodec(),
 			Probe:          pikPakDriver,
 			File:           pikPakDriver,
+			Upload:         pikPakDriver,
 			Import:         pikPakDriver,
 			NativeDownload: pikPakDriver,
 			Capacity:       pikPakDriver,

@@ -123,6 +123,7 @@ type MultipartUploadRequest struct {
 	VirtualPath string
 	Filename    string
 	ContentType string
+	ContentHash string
 	FileSize    int64
 	PartSize    int64
 	TotalParts  int
@@ -132,6 +133,7 @@ type MultipartUploadRequest struct {
 // MultipartUploadPlan 表示驱动生成的 multipart 计划。
 type MultipartUploadPlan struct {
 	State            MultipartUploadState
+	CompletedEntry   *StorageEntry
 	PartInstructions []MultipartUploadPartInstruction
 }
 
@@ -140,6 +142,7 @@ type MultipartUploadState struct {
 	RemoteUploadID string `json:"remote_upload_id"`
 	ObjectKey      string `json:"object_key"`
 	VirtualPath    string `json:"virtual_path"`
+	FileSize       int64  `json:"file_size,omitempty"`
 }
 
 // MultipartUploadPartInstruction 表示单个 part 的上传说明。

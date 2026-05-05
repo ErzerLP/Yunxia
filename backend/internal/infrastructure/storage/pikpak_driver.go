@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"net/http"
 	"os"
 	"path"
 	"strconv"
@@ -21,12 +22,13 @@ const (
 
 // PikPakDriver 提供 PikPak 存储源文件能力。
 type PikPakDriver struct {
-	sessions         *PikPakSessionManager
-	searchMaxDepth   int
-	searchMaxEntries int
-	uploadHasher     PikPakUploadHashCalculator
-	ossUploader      PikPakOSSUploader
-	pathCache        *PikPakPathCache
+	sessions          *PikPakSessionManager
+	searchMaxDepth    int
+	searchMaxEntries  int
+	uploadHasher      PikPakUploadHashCalculator
+	ossUploader       PikPakOSSUploader
+	ossInstructionNow func() time.Time
+	pathCache         *PikPakPathCache
 }
 
 // PikPakDriverOption 定义 PikPak driver 可选配置。
@@ -35,12 +37,13 @@ type PikPakDriverOption func(*PikPakDriver)
 // NewPikPakDriver 创建 PikPak driver。
 func NewPikPakDriver(options ...PikPakDriverOption) *PikPakDriver {
 	driver := &PikPakDriver{
-		sessions:         NewPikPakSessionManager(nil),
-		searchMaxDepth:   defaultPikPakSearchMaxDepth,
-		searchMaxEntries: defaultPikPakSearchMaxEntries,
-		uploadHasher:     PikPakGCIDUploadHashCalculator{},
-		ossUploader:      NewPikPakHTTPOSSUploader(),
-		pathCache:        NewPikPakPathCache(),
+		sessions:          NewPikPakSessionManager(nil),
+		searchMaxDepth:    defaultPikPakSearchMaxDepth,
+		searchMaxEntries:  defaultPikPakSearchMaxEntries,
+		uploadHasher:      PikPakGCIDUploadHashCalculator{},
+		ossUploader:       NewPikPakHTTPOSSUploader(),
+		ossInstructionNow: time.Now,
+		pathCache:         NewPikPakPathCache(),
 	}
 	for _, option := range options {
 		option(driver)
@@ -92,6 +95,15 @@ func WithPikPakOSSUploader(uploader PikPakOSSUploader) PikPakDriverOption {
 	return func(d *PikPakDriver) {
 		if uploader != nil {
 			d.ossUploader = uploader
+		}
+	}
+}
+
+// WithPikPakOSSInstructionNow 覆盖直传 OSS 签名时间，便于测试。
+func WithPikPakOSSInstructionNow(now func() time.Time) PikPakDriverOption {
+	return func(d *PikPakDriver) {
+		if now != nil {
+			d.ossInstructionNow = now
 		}
 	}
 }
@@ -251,7 +263,7 @@ func (d *PikPakDriver) Capacity(ctx context.Context, source *entity.StorageSourc
 	return info, err
 }
 
-// Capabilities 描述 PikPak 阶段 D 文件写入与后端 staging 上传导入能力。
+// Capabilities 描述 PikPak 文件、上传、原生离线下载等 provider 能力。
 func (d *PikPakDriver) Capabilities(context.Context, *entity.StorageSource) (domainstorage.StorageCapabilities, error) {
 	return domainstorage.StorageCapabilities{
 		CanList:           true,
@@ -266,8 +278,104 @@ func (d *PikPakDriver) Capabilities(context.Context, *entity.StorageSource) (dom
 		CanProviderTrash:  true,
 		CanImportFile:     true,
 		CanServerUpload:   true,
-		CanDirectUpload:   false,
+		CanDirectUpload:   true,
 		CanNativeDownload: true,
+	}, nil
+}
+
+// InitMultipartUpload 为已提供 GCID 的浏览器直传创建 PikPak OSS 上传计划。
+func (d *PikPakDriver) InitMultipartUpload(ctx context.Context, source *entity.StorageSource, req domainstorage.MultipartUploadRequest) (*domainstorage.MultipartUploadPlan, error) {
+	targetDirPath, err := normalizeVirtualPath(req.VirtualPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePikPakFileName(req.Filename); err != nil {
+		return nil, err
+	}
+	uploadHash := normalizePikPakDirectUploadHash(req.ContentHash)
+	if uploadHash == "" {
+		return nil, domainstorage.ErrOperationUnsupported
+	}
+	if req.FileSize <= 0 {
+		return nil, os.ErrInvalid
+	}
+	contentType := strings.TrimSpace(req.ContentType)
+	if contentType == "" {
+		contentType = contentTypeForPikPakImport(req.Filename)
+	}
+
+	var plan *domainstorage.MultipartUploadPlan
+	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+		parent, resolveErr := d.ensureFolderPathWithSession(ctx, source.ID, session, cfg, targetDirPath)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if err := d.ensureNoChildWithName(ctx, session, parent.ID, req.Filename); err != nil {
+			return err
+		}
+		upload, createErr := d.sessions.client.CreateUploadFile(ctx, session, PikPakCreateUploadFileRequest{
+			ParentID: parent.ID,
+			Name:     req.Filename,
+			Size:     req.FileSize,
+			Hash:     uploadHash,
+		})
+		if createErr != nil {
+			return createErr
+		}
+		targetPath := joinVirtualPath(targetDirPath, req.Filename)
+		if upload == nil || upload.Resumable == nil {
+			plan = &domainstorage.MultipartUploadPlan{
+				CompletedEntry: &domainstorage.StorageEntry{
+					Name:       req.Filename,
+					Path:       targetPath,
+					IsDir:      false,
+					Size:       req.FileSize,
+					ModifiedAt: time.Now(),
+				},
+			}
+			d.invalidatePikPakPathCache(source.ID, cfg)
+			return nil
+		}
+		instruction, instructionErr := d.pikPakDirectUploadInstruction(upload.Resumable.Params, contentType, req.FileSize)
+		if instructionErr != nil {
+			return instructionErr
+		}
+		plan = &domainstorage.MultipartUploadPlan{
+			State: domainstorage.MultipartUploadState{
+				RemoteUploadID: "pikpak_oss",
+				ObjectKey:      upload.Resumable.Params.Key,
+				VirtualPath:    targetPath,
+				FileSize:       req.FileSize,
+			},
+			PartInstructions: []domainstorage.MultipartUploadPartInstruction{instruction},
+		}
+		return nil
+	})
+	return plan, err
+}
+
+// CompleteMultipartUpload 完成 PikPak 浏览器直传。PikPak OSS 上传无需额外合并请求。
+func (d *PikPakDriver) CompleteMultipartUpload(ctx context.Context, source *entity.StorageSource, state domainstorage.MultipartUploadState, parts []domainstorage.CompletedUploadPart) (*domainstorage.StorageEntry, error) {
+	if strings.TrimSpace(state.VirtualPath) == "" || state.FileSize <= 0 || len(parts) == 0 {
+		return nil, os.ErrInvalid
+	}
+	virtualPath, err := normalizeVirtualPath(state.VirtualPath)
+	if err != nil {
+		return nil, err
+	}
+	err = d.sessions.withSession(ctx, source, func(_ PikPakSession, cfg PikPakConfig) error {
+		d.invalidatePikPakPathCache(source.ID, cfg)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &domainstorage.StorageEntry{
+		Name:       path.Base(virtualPath),
+		Path:       virtualPath,
+		IsDir:      false,
+		Size:       state.FileSize,
+		ModifiedAt: time.Now(),
 	}, nil
 }
 
@@ -844,6 +952,75 @@ func pikPakFileToStorageEntry(file PikPakFile, virtualPath string) domainstorage
 		ETag:       file.Hash,
 		ModifiedAt: modifiedAt,
 	}
+}
+
+func (d *PikPakDriver) pikPakDirectUploadInstruction(params PikPakOSSUploadParams, contentType string, fileSize int64) (domainstorage.MultipartUploadPartInstruction, error) {
+	if err := validatePikPakOSSParams(params); err != nil {
+		return domainstorage.MultipartUploadPartInstruction{}, err
+	}
+	now := time.Now
+	if d != nil && d.ossInstructionNow != nil {
+		now = d.ossInstructionNow
+	}
+	signedAt := now().UTC()
+	objectURL, canonicalResource, err := buildPikPakOSSObjectURL(params)
+	if err != nil {
+		return domainstorage.MultipartUploadPartInstruction{}, err
+	}
+	headers := http.Header{}
+	headers.Set("Content-Type", contentType)
+	headers.Set("Date", signedAt.Format(http.TimeFormat))
+	if params.SecurityToken != "" {
+		headers.Set("X-OSS-Security-Token", params.SecurityToken)
+	}
+	headers.Set("Authorization", buildPikPakOSSPutAuthorization(params, headers, canonicalResource))
+	return domainstorage.MultipartUploadPartInstruction{
+		Index:     0,
+		Method:    http.MethodPut,
+		URL:       objectURL,
+		Headers:   flattenPikPakUploadHeaders(headers),
+		ByteStart: 0,
+		ByteEnd:   fileSize - 1,
+		ExpiresAt: pikPakOSSInstructionExpiresAt(params.Expiration, signedAt),
+	}, nil
+}
+
+func flattenPikPakUploadHeaders(headers http.Header) map[string]string {
+	result := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if len(values) > 0 {
+			result[key] = values[0]
+		}
+	}
+	return result
+}
+
+func pikPakOSSInstructionExpiresAt(raw string, fallbackFrom time.Time) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			return parsed
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+			return parsed
+		}
+	}
+	return fallbackFrom.Add(15 * time.Minute)
+}
+
+func normalizePikPakDirectUploadHash(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	value = strings.TrimPrefix(value, "GCID:")
+	if len(value) != 40 {
+		return ""
+	}
+	for _, r := range value {
+		if r >= '0' && r <= '9' || r >= 'A' && r <= 'F' {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func pikPakOfflineTaskToNativeStatus(task *PikPakOfflineTask) *domainstorage.NativeDownloadStatus {

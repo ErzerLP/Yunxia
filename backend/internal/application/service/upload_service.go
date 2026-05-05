@@ -86,7 +86,13 @@ func (s *UploadService) Init(ctx context.Context, userID uint, req appdto.Upload
 	}
 	if target.source.DriverType != "local" {
 		if _, err := s.getUploadDriver(target.source.DriverType); err == nil {
-			return s.initWithUploadDriver(ctx, userID, target, req)
+			resp, err := s.initWithUploadDriver(ctx, userID, target, req)
+			if err == nil {
+				return resp, nil
+			}
+			if !errors.Is(err, ErrSourceOperationUnsupported) {
+				return nil, err
+			}
 		} else if !errors.Is(err, ErrSourceDriverUnsupported) {
 			return nil, err
 		}
@@ -208,6 +214,7 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 		VirtualPath: targetDir,
 		Filename:    req.Filename,
 		ContentType: detectContentType(req.Filename),
+		ContentHash: req.FileHash,
 		FileSize:    req.FileSize,
 		PartSize:    partSize,
 		TotalParts:  totalChunks,
@@ -215,6 +222,20 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 	})
 	if err != nil {
 		return nil, err
+	}
+	if plan.CompletedEntry != nil {
+		item := buildStorageEntryItem(target.source.ID, *plan.CompletedEntry)
+		return &appdto.UploadInitResponse{
+			IsFastUpload:     true,
+			File:             &item,
+			PartInstructions: []appdto.UploadPartInstruction{},
+		}, nil
+	}
+	if len(plan.PartInstructions) == 0 {
+		return nil, ErrSourceOperationUnsupported
+	}
+	if len(plan.PartInstructions) > 0 {
+		totalChunks = len(plan.PartInstructions)
 	}
 	stateJSON, err := json.Marshal(plan.State)
 	if err != nil {
