@@ -893,6 +893,7 @@ type PikPakSecretPatch = {
 
 - `root_path` 必须传 `/`；远端子目录挂载用 `config.root_folder_id`。
 - PikPak 文件写入口已可调用；列表项 `can_delete` 由后端按 driver capability + ACL 计算。
+- `cache_ttl_seconds` 是后端路径/id 缓存 TTL；前端无需自行缓存 provider file id，写操作后重新请求列表即可看到后端失效后的结果。
 - PikPak 删除调用 provider `batchTrash`，语义是移入 PikPak 回收站；后端不会为该操作创建 Yunxia `.trash` 记录。
 - 上传到 PikPak 使用后端 staging：前端不需要处理 GCID、OSS 参数、`access_key_secret`、`security_token`、`bucket/key`。
 - PikPak 上传目标父目录不存在时，后端会在 provider 侧递归创建父目录；如果路径中的父级已存在但不是目录，会返回 `PATH_INVALID`。

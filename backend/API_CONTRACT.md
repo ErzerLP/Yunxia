@@ -460,6 +460,7 @@ PikPak 字段说明：
 - `config.root_folder_id` 为空表示 PikPak 账号根目录；填写文件夹 ID 表示把该远端文件夹作为挂载根
 - `config.platform` 支持 `web` / `android` / `pc`，默认推荐 `web`
 - `config.disable_media_link=true` 时下载使用原始文件链接；`false` 时允许优先使用 provider 媒体链接
+- `config.cache_ttl_seconds` 控制 PikPak 路径/id 缓存 TTL；后端会在列表/路径解析时写入缓存，并在上传、离线导入、mkdir、rename、move、copy、delete 等写操作后失效该 source/root 缓存
 - `config.download_strategy` 当前仅支持 `redirect`，后端鉴权后由 `/files/download` 或 `/api/v2/fs/download` 302 到 PikPak 临时下载链接
 - `secret_patch.username/password/refresh_token/captcha_token/device_id` 均按敏感字段处理；更新时省略字段会保留旧值，传 `null` 会清空该字段
 - `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`

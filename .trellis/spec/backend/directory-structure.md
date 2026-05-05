@@ -155,6 +155,10 @@ type DriverBundle struct {
 - `FileDriver` paths are always source-internal virtual paths beginning with
   `/`; VFS is responsible for mapping mount path `/mount/...` to inner path
   `/...`.
+- Third-party path/id caches must be source-scoped and root-scoped. Cache keys
+  should include `source_id`, provider root id, and normalized inner path. Any
+  provider write/import operation must invalidate the affected source/root
+  cache at least conservatively; stale provider ids must not survive writes.
 - If a driver delete operation maps to a provider recycle-bin operation (for
   example PikPak `batchTrash`), expose that through capabilities and document
   that `delete_mode=trash` does not create a Yunxia `.trash` item; do not label
@@ -213,6 +217,8 @@ tests that assert:
 - Import-only non-local drivers return `transport.mode=server_chunk`, do not
   return direct part instructions, and call `ImportFile` on finish. Task
   completion must also call `ImportFile` and clean the staging directory.
+- Path cache tests cover both repeated reads avoiding redundant provider
+  resolution and write/import operations invalidating cached paths.
 - System stats use `CapacityDriver` before recursive `FileDriver`, and only use
   recursive fallback when explicitly enabled.
 

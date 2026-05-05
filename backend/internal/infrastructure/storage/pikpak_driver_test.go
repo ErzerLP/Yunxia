@@ -300,6 +300,46 @@ func TestPikPakDriverCapabilitiesExposeStageDImportOnlyUpload(t *testing.T) {
 	}
 }
 
+func TestPikPakDriverPathCacheAvoidsRepeatedResolveAndInvalidatesOnWrite(t *testing.T) {
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {
+				{ID: "folder-a", Name: "A", Kind: "drive#folder"},
+			},
+			"folder-a": {
+				{ID: "file-old", Name: "old.txt", Kind: "drive#file", Size: "3"},
+			},
+		},
+	}
+	driver := NewPikPakDriver(WithPikPakAPIClient(client))
+	source := newTestPikPakSource(t)
+
+	if _, err := driver.Stat(context.Background(), source, "/A/old.txt"); err != nil {
+		t.Fatalf("Stat(first) error = %v", err)
+	}
+	firstResolveCalls := len(client.listCalls)
+	if firstResolveCalls != 2 {
+		t.Fatalf("expected first resolve to list root and /A, got calls=%v", client.listCalls)
+	}
+	if _, err := driver.Stat(context.Background(), source, "/A/old.txt"); err != nil {
+		t.Fatalf("Stat(cached) error = %v", err)
+	}
+	if len(client.listCalls) != firstResolveCalls {
+		t.Fatalf("expected cached Stat to avoid extra ListFiles, calls=%v", client.listCalls)
+	}
+
+	if _, err := driver.Rename(context.Background(), source, "/A/old.txt", "renamed.txt"); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+	afterRenameCalls := len(client.listCalls)
+	if _, err := driver.Stat(context.Background(), source, "/A/renamed.txt"); err != nil {
+		t.Fatalf("Stat(after rename) error = %v", err)
+	}
+	if len(client.listCalls) <= afterRenameCalls {
+		t.Fatalf("expected write invalidation to force provider list after rename, calls=%v", client.listCalls)
+	}
+}
+
 func TestPikPakDriverWriteOperationsNameConflict(t *testing.T) {
 	client := &fakePikPakClient{
 		filesByParent: map[string][]PikPakFile{
@@ -567,6 +607,7 @@ type fakePikPakClient struct {
 	createUploadResponse *PikPakCreateUploadFileResponse
 	createUploadErr      error
 	createUploadCalls    []PikPakCreateUploadFileRequest
+	listCalls            []string
 	moves                []fakePikPakBatchCall
 	copies               []fakePikPakBatchCall
 	trashedIDs           []string
@@ -590,6 +631,7 @@ func (c *fakePikPakClient) RefreshCaptcha(context.Context, PikPakConfig, string,
 }
 
 func (c *fakePikPakClient) ListFiles(_ context.Context, _ PikPakSession, parentID string, _ string) (*PikPakListFilesResponse, error) {
+	c.listCalls = append(c.listCalls, parentID)
 	return &PikPakListFilesResponse{Files: c.filesByParent[parentID]}, nil
 }
 

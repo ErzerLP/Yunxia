@@ -26,6 +26,7 @@ type PikPakDriver struct {
 	searchMaxEntries int
 	uploadHasher     PikPakUploadHashCalculator
 	ossUploader      PikPakOSSUploader
+	pathCache        *PikPakPathCache
 }
 
 // PikPakDriverOption 定义 PikPak driver 可选配置。
@@ -39,6 +40,7 @@ func NewPikPakDriver(options ...PikPakDriverOption) *PikPakDriver {
 		searchMaxEntries: defaultPikPakSearchMaxEntries,
 		uploadHasher:     PikPakGCIDUploadHashCalculator{},
 		ossUploader:      NewPikPakHTTPOSSUploader(),
+		pathCache:        NewPikPakPathCache(),
 	}
 	for _, option := range options {
 		option(driver)
@@ -94,6 +96,15 @@ func WithPikPakOSSUploader(uploader PikPakOSSUploader) PikPakDriverOption {
 	}
 }
 
+// WithPikPakPathCache 注入路径缓存；传 nil 表示沿用默认缓存。
+func WithPikPakPathCache(cache *PikPakPathCache) PikPakDriverOption {
+	return func(d *PikPakDriver) {
+		if cache != nil {
+			d.pathCache = cache
+		}
+	}
+}
+
 // Test 做最小连通性检查：建立 session 后列根目录。
 func (d *PikPakDriver) Test(ctx context.Context, source *entity.StorageSource) error {
 	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
@@ -111,7 +122,7 @@ func (d *PikPakDriver) List(ctx context.Context, source *entity.StorageSource, v
 
 	var entries []domainstorage.StorageEntry
 	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		dir, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		dir, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, virtualPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -122,6 +133,7 @@ func (d *PikPakDriver) List(ctx context.Context, source *entity.StorageSource, v
 		if listErr != nil {
 			return listErr
 		}
+		d.cacheChildren(source.ID, cfg, virtualPath, files)
 		entries = make([]domainstorage.StorageEntry, 0, len(files))
 		for _, file := range files {
 			entries = append(entries, pikPakFileToStorageEntry(file, joinVirtualPath(virtualPath, file.Name)))
@@ -141,7 +153,7 @@ func (d *PikPakDriver) SearchByName(ctx context.Context, source *entity.StorageS
 
 	results := make([]domainstorage.StorageEntry, 0)
 	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		root, resolveErr := d.resolvePathWithSession(ctx, session, cfg, pathPrefix)
+		root, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, pathPrefix)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -173,7 +185,7 @@ func (d *PikPakDriver) Stat(ctx context.Context, source *entity.StorageSource, v
 
 	var entry *domainstorage.StorageEntry
 	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		file, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, virtualPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -193,7 +205,7 @@ func (d *PikPakDriver) PresignDownload(ctx context.Context, source *entity.Stora
 
 	var downloadURL string
 	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		file, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, virtualPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -288,7 +300,8 @@ func (d *PikPakDriver) ImportFile(ctx context.Context, source *entity.StorageSou
 		hasher = PikPakGCIDUploadHashCalculator{}
 	}
 	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		parent, resolveErr := d.ensureFolderPathWithSession(ctx, session, cfg, parentPath)
+		defer d.invalidatePikPakPathCache(source.ID, cfg)
+		parent, resolveErr := d.ensureFolderPathWithSession(ctx, source.ID, session, cfg, parentPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -322,29 +335,47 @@ func (d *PikPakDriver) ImportFile(ctx context.Context, source *entity.StorageSou
 	})
 }
 
-func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {
+func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, sourceID uint, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {
 	virtualPath, err := normalizeVirtualPath(virtualPath)
 	if err != nil {
 		return PikPakFile{}, err
+	}
+	if cached, ok := d.cachedPath(sourceID, cfg, virtualPath); ok {
+		if !cached.isFolder() {
+			return PikPakFile{}, os.ErrInvalid
+		}
+		return cached, nil
 	}
 	current := PikPakFile{
 		ID:   cfg.RootFolderID,
 		Name: "/",
 		Kind: "drive#folder",
 	}
+	d.cachePath(sourceID, cfg, "/", current)
 	if virtualPath == "/" {
 		return current, nil
 	}
 
 	segments := strings.Split(strings.TrimPrefix(virtualPath, "/"), "/")
+	parentPath := "/"
 	for _, segment := range segments {
 		if err := validatePikPakFileName(segment); err != nil {
 			return PikPakFile{}, err
+		}
+		currentPath := joinVirtualPath(parentPath, segment)
+		if cached, ok := d.cachedPath(sourceID, cfg, currentPath); ok {
+			if !cached.isFolder() {
+				return PikPakFile{}, os.ErrInvalid
+			}
+			current = cached
+			parentPath = currentPath
+			continue
 		}
 		files, listErr := d.listFilesAll(ctx, session, current.ID)
 		if listErr != nil {
 			return PikPakFile{}, listErr
 		}
+		d.cacheChildren(sourceID, cfg, parentPath, files)
 		var found *PikPakFile
 		for _, file := range files {
 			if file.Name == segment {
@@ -358,6 +389,7 @@ func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, session 
 				return PikPakFile{}, os.ErrInvalid
 			}
 			current = *found
+			parentPath = currentPath
 			continue
 		}
 		created, createErr := d.sessions.client.CreateFolder(ctx, session, current.ID, segment)
@@ -380,6 +412,8 @@ func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, session 
 			return PikPakFile{}, os.ErrInvalid
 		}
 		current = *created
+		d.cachePath(sourceID, cfg, currentPath, current)
+		parentPath = currentPath
 	}
 	return current, nil
 }
@@ -396,7 +430,8 @@ func (d *PikPakDriver) Mkdir(ctx context.Context, source *entity.StorageSource, 
 
 	var entry *domainstorage.StorageEntry
 	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		parent, resolveErr := d.resolvePathWithSession(ctx, session, cfg, parentPath)
+		defer d.invalidatePikPakPathCache(source.ID, cfg)
+		parent, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, parentPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -446,11 +481,12 @@ func (d *PikPakDriver) Rename(ctx context.Context, source *entity.StorageSource,
 	newPath := joinVirtualPath(parentPath, newName)
 	var entry *domainstorage.StorageEntry
 	err = d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		defer d.invalidatePikPakPathCache(source.ID, cfg)
+		file, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, virtualPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
-		parent, parentErr := d.resolvePathWithSession(ctx, session, cfg, parentPath)
+		parent, parentErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, parentPath)
 		if parentErr != nil {
 			return parentErr
 		}
@@ -498,7 +534,8 @@ func (d *PikPakDriver) Delete(ctx context.Context, source *entity.StorageSource,
 		return os.ErrInvalid
 	}
 	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		defer d.invalidatePikPakPathCache(source.ID, cfg)
+		file, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, virtualPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -519,11 +556,12 @@ func (d *PikPakDriver) moveOrCopy(ctx context.Context, source *entity.StorageSou
 		return os.ErrInvalid
 	}
 	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		file, resolveErr := d.resolvePathWithSession(ctx, session, cfg, virtualPath)
+		defer d.invalidatePikPakPathCache(source.ID, cfg)
+		file, resolveErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, virtualPath)
 		if resolveErr != nil {
 			return resolveErr
 		}
-		target, targetErr := d.resolvePathWithSession(ctx, session, cfg, targetPath)
+		target, targetErr := d.resolvePathWithSession(ctx, source.ID, session, cfg, targetPath)
 		if targetErr != nil {
 			return targetErr
 		}
@@ -570,26 +608,41 @@ func validatePikPakFileName(name string) error {
 	return nil
 }
 
-func (d *PikPakDriver) resolvePathWithSession(ctx context.Context, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {
+func (d *PikPakDriver) resolvePathWithSession(ctx context.Context, sourceID uint, session PikPakSession, cfg PikPakConfig, virtualPath string) (PikPakFile, error) {
 	virtualPath, err := normalizeVirtualPath(virtualPath)
 	if err != nil {
 		return PikPakFile{}, err
+	}
+	if cached, ok := d.cachedPath(sourceID, cfg, virtualPath); ok {
+		return cached, nil
 	}
 	current := PikPakFile{
 		ID:   cfg.RootFolderID,
 		Name: "/",
 		Kind: "drive#folder",
 	}
+	d.cachePath(sourceID, cfg, "/", current)
 	if virtualPath == "/" {
 		return current, nil
 	}
 
 	segments := strings.Split(strings.TrimPrefix(virtualPath, "/"), "/")
+	parentPath := "/"
 	for index, segment := range segments {
+		currentPath := joinVirtualPath(parentPath, segment)
+		if cached, ok := d.cachedPath(sourceID, cfg, currentPath); ok {
+			current = cached
+			if index < len(segments)-1 && !current.isFolder() {
+				return PikPakFile{}, os.ErrNotExist
+			}
+			parentPath = currentPath
+			continue
+		}
 		files, listErr := d.listFilesAll(ctx, session, current.ID)
 		if listErr != nil {
 			return PikPakFile{}, listErr
 		}
+		d.cacheChildren(sourceID, cfg, parentPath, files)
 		found := false
 		for _, file := range files {
 			if file.Name != segment {
@@ -605,8 +658,39 @@ func (d *PikPakDriver) resolvePathWithSession(ctx context.Context, session PikPa
 		if index < len(segments)-1 && !current.isFolder() {
 			return PikPakFile{}, os.ErrNotExist
 		}
+		parentPath = currentPath
 	}
 	return current, nil
+}
+
+func (d *PikPakDriver) cachedPath(sourceID uint, cfg PikPakConfig, virtualPath string) (PikPakFile, bool) {
+	if d == nil || d.pathCache == nil {
+		return PikPakFile{}, false
+	}
+	return d.pathCache.get(sourceID, cfg.RootFolderID, virtualPath)
+}
+
+func (d *PikPakDriver) cachePath(sourceID uint, cfg PikPakConfig, virtualPath string, file PikPakFile) {
+	if d == nil || d.pathCache == nil {
+		return
+	}
+	d.pathCache.set(sourceID, cfg.RootFolderID, virtualPath, file, time.Duration(cfg.CacheTTLSeconds)*time.Second)
+}
+
+func (d *PikPakDriver) cacheChildren(sourceID uint, cfg PikPakConfig, parentPath string, files []PikPakFile) {
+	for _, file := range files {
+		if file.Name == "" {
+			continue
+		}
+		d.cachePath(sourceID, cfg, joinVirtualPath(parentPath, file.Name), file)
+	}
+}
+
+func (d *PikPakDriver) invalidatePikPakPathCache(sourceID uint, cfg PikPakConfig) {
+	if d == nil || d.pathCache == nil {
+		return
+	}
+	d.pathCache.clearSource(sourceID, cfg.RootFolderID)
 }
 
 func (d *PikPakDriver) listFilesAll(ctx context.Context, session PikPakSession, parentID string) ([]PikPakFile, error) {
