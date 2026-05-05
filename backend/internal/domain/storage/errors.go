@@ -17,6 +17,8 @@ var (
 	ErrCloudCaptchaExpired = errors.New("cloud captcha expired")
 	// ErrCloudRateLimited 表示 provider 限流。
 	ErrCloudRateLimited = errors.New("cloud rate limited")
+	// ErrCloudRegionBlocked 表示 provider 因部署区域或网络出口限制拒绝访问。
+	ErrCloudRegionBlocked = errors.New("cloud region blocked")
 	// ErrCloudProviderUnavailable 表示 provider 临时不可用。
 	ErrCloudProviderUnavailable = errors.New("cloud provider unavailable")
 )

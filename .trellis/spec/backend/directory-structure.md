@@ -176,6 +176,17 @@ type DriverBundle struct {
   source config and, when available, persist refresh_token/captcha/device_id
   through an injected minimal writer. Keep repository access outside the driver
   internals; wire persistence from `cmd/server/main.go`.
+- Provider auth secrets must be preserved exactly when building stored config;
+  do not trim passwords or derive device identifiers from a normalized password.
+  Refresh-token-only configs still need a stable generated device id. PikPak
+  captcha/shield requests must carry the provider-compatible auth context:
+  platform user-agent, `X-Device-ID`, current `X-Captcha-Token` when present,
+  and Bearer authorization for post-login captcha refreshes.
+- Provider region/network-exit blocks must not be reported as credential
+  failures. Map explicit region-block provider payloads to
+  `ErrCloudRegionBlocked` / API `CLOUD_REGION_BLOCKED`, and allow PikPak to use
+  either backend environment proxy settings or per-source `config.proxy_url`
+  without storing proxy credentials in source config.
 - If a driver delete operation maps to a provider recycle-bin operation (for
   example PikPak `batchTrash`), expose that through capabilities and document
   that `delete_mode=trash` does not create a Yunxia `.trash` item; do not label
@@ -279,6 +290,11 @@ tests that assert:
   resolution and write/import operations invalidating cached paths.
 - Provider retry tests cover transient failures eventually succeeding, request
   bodies being recreated for retries, and auth/token errors not being retried.
+- PikPak auth tests cover exact password preservation, device_id derivation from
+  exact credentials, captcha/shield headers, and post-login captcha refresh with
+  Authorization before the first drive list/test request.
+- PikPak network-exit tests cover provider `AccessProhibited` / region-block
+  payloads mapping to `ErrCloudRegionBlocked`, plus `proxy_url` validation.
 - System stats use `CapacityDriver` before recursive `FileDriver`, and only use
   recursive fallback when explicitly enabled.
 

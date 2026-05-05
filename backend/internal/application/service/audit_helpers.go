@@ -230,6 +230,8 @@ func sourceErrorCode(err error) string {
 		return "CLOUD_CAPTCHA_REQUIRED"
 	case errors.Is(err, ErrCloudRateLimited):
 		return "CLOUD_RATE_LIMITED"
+	case errors.Is(err, ErrCloudRegionBlocked):
+		return "CLOUD_REGION_BLOCKED"
 	case errors.Is(err, ErrCloudProviderUnavailable):
 		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrSourceConnectionFailed):
@@ -325,6 +327,8 @@ func mapFileErrorCode(err error) string {
 		return "CLOUD_CAPTCHA_REQUIRED"
 	case errors.Is(err, ErrCloudRateLimited):
 		return "CLOUD_RATE_LIMITED"
+	case errors.Is(err, ErrCloudRegionBlocked):
+		return "CLOUD_REGION_BLOCKED"
 	case errors.Is(err, ErrCloudProviderUnavailable):
 		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrSourceReadOnly):
@@ -354,6 +358,8 @@ func taskErrorCode(err error) string {
 		return "CLOUD_CAPTCHA_REQUIRED"
 	case errors.Is(err, ErrCloudRateLimited):
 		return "CLOUD_RATE_LIMITED"
+	case errors.Is(err, ErrCloudRegionBlocked):
+		return "CLOUD_REGION_BLOCKED"
 	case errors.Is(err, ErrCloudProviderUnavailable):
 		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrTaskInvalidState):

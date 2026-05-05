@@ -60,6 +60,7 @@ Service sentinel errors live in files like `backend/internal/application/service
 - `ErrSourceDriverUnsupported`, `ErrConfigInvalid`, `ErrSourceNameConflict`, `ErrPathInvalid`
 - `ErrFileNotFound`, `ErrFileAlreadyExists`, `ErrUploadSessionNotFound`, `ErrUploadTooLarge`
 - `ErrACLDenied`, `ErrPermissionDenied`
+- `ErrCloudAuthFailed`, `ErrCloudTokenInvalid`, `ErrCloudCaptchaRequired`, `ErrCloudRateLimited`, `ErrCloudRegionBlocked`, `ErrCloudProviderUnavailable`
 - `ErrShareExpired`, `ErrSharePasswordRequired`, `ErrSharePasswordInvalid`
 - `ErrTaskInvalidState`, `ErrNoBackingStorage`, `ErrNameConflict`
 
@@ -94,6 +95,7 @@ Binding errors from `ShouldBindJSON` / `ShouldBindQuery` currently return `400 V
 | JWT missing/invalid | 401 | `AUTH_TOKEN_INVALID` / auth-specific code |
 | Invalid credentials | 401 | `AUTH_INVALID_CREDENTIALS` |
 | Missing capability | 403 | `CAPABILITY_DENIED` / `PERMISSION_DENIED` |
+| Provider/network exit is explicitly region-blocked | 451 | `CLOUD_REGION_BLOCKED` |
 | Repository not found | 404 | `<RESOURCE>_NOT_FOUND` |
 | User-correctable conflict | 409 | `*_CONFLICT` |
 | Unsupported driver/invalid config | 422 | `*_UNSUPPORTED` / `CONFIG_INVALID` |

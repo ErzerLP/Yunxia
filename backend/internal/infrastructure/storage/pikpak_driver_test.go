@@ -131,6 +131,133 @@ func TestPikPakDriverPersistsRuntimeSessionConfig(t *testing.T) {
 	}
 }
 
+func TestPikPakDriverTestUsesProviderCompatibleAuthContext(t *testing.T) {
+	const (
+		username = "user@example.com"
+		password = " pass-with-edge-space "
+	)
+	deviceID := GeneratePikPakDeviceID(username, password)
+	var seenActions []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAuthContextFailure := func(message string) {
+			t.Errorf("%s", message)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error_code":"invalid_token"}`))
+		}
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.EscapedPath() == "/v1/shield/captcha/init":
+			if got := r.Header.Get("X-Device-ID"); got != deviceID {
+				writeAuthContextFailure("captcha init missing provider-compatible X-Device-ID")
+				return
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("Decode captcha payload error = %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			action, _ := payload["action"].(string)
+			seenActions = append(seenActions, action)
+			if payload["device_id"] != deviceID {
+				writeAuthContextFailure("captcha init payload used unexpected device_id")
+				return
+			}
+			if action == pikPakDriveListCaptchaAction {
+				if got := r.Header.Get("Authorization"); got != "Bearer access-1" {
+					writeAuthContextFailure("post-login captcha init missing Authorization")
+					return
+				}
+				_, _ = w.Write([]byte(`{"captcha_token":"captcha-drive","expires_in":300}`))
+				return
+			}
+			if got := r.Header.Get("Authorization"); got != "" {
+				writeAuthContextFailure("pre-login captcha init should not send Authorization")
+				return
+			}
+			_, _ = w.Write([]byte(`{"captcha_token":"captcha-login","expires_in":300}`))
+		case r.Method == http.MethodPost && r.URL.EscapedPath() == "/v1/auth/signin":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("Decode login payload error = %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if payload["username"] != username || payload["password"] != password {
+				writeAuthContextFailure("login payload did not preserve exact credentials")
+				return
+			}
+			if payload["captcha_token"] != "captcha-login" {
+				writeAuthContextFailure("login payload used unexpected captcha token")
+				return
+			}
+			_, _ = w.Write([]byte(`{"access_token":"access-1","refresh_token":"refresh-1","sub":"user-id"}`))
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/drive/v1/files":
+			if got := r.Header.Get("Authorization"); got != "Bearer access-1" {
+				writeAuthContextFailure("drive list missing Authorization")
+				return
+			}
+			if got := r.Header.Get("X-Device-ID"); got != deviceID {
+				writeAuthContextFailure("drive list missing provider-compatible X-Device-ID")
+				return
+			}
+			if got := r.Header.Get("X-Captcha-Token"); got != "captcha-drive" {
+				writeAuthContextFailure("drive list used unexpected captcha token")
+				return
+			}
+			if got := r.URL.Query().Get("parent_id"); got != "root" {
+				t.Errorf("unexpected parent_id = %q", got)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"files":[]}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cfg := PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		Username:         username,
+		Password:         password,
+	}
+	raw, err := cfg.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		ID:         11,
+		Name:       "PikPak",
+		DriverType: PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	client := NewPikPakHTTPClient(
+		WithPikPakHTTPClient(server.Client()),
+		WithPikPakBaseURLs(server.URL, server.URL, server.URL),
+		WithPikPakRetryPolicy(1, 0),
+	)
+	driver := NewPikPakDriver(WithPikPakAPIClient(client))
+
+	if err := driver.Test(context.Background(), source); err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+	expectedActions := []string{"POST:/v1/auth/signin", pikPakDriveListCaptchaAction}
+	if !reflect.DeepEqual(seenActions, expectedActions) {
+		t.Fatalf("unexpected captcha actions = %v", seenActions)
+	}
+}
+
 func TestPikPakDriverWriteOperationsSuccess(t *testing.T) {
 	client := &fakePikPakClient{
 		filesByParent: map[string][]PikPakFile{
@@ -649,6 +776,17 @@ func TestPikPakHTTPErrorMappingFileNotFoundAndSanitizedProviderMessage(t *testin
 	if err := mapPikPakHTTPError(http.StatusBadRequest, []byte(`{"error":"invalid_grant"}`)); !errors.Is(err, domainstorage.ErrCloudTokenInvalid) {
 		t.Fatalf("expected provider invalid_grant to map to cloud token invalid, got %v", err)
 	}
+	regionErr := mapPikPakHTTPError(http.StatusBadRequest, []byte(`{"error":"invalid_grant","error_code":4126,"error_description":"AccessProhibited","details":{"reason":"PROHIBITED:CN","message":"Sorry, PikPak is not available in your region (Mainland China)"}}`))
+	if !errors.Is(regionErr, domainstorage.ErrCloudRegionBlocked) {
+		t.Fatalf("expected provider AccessProhibited to map to cloud region blocked, got %v", regionErr)
+	}
+	if strings.Contains(regionErr.Error(), "Mainland China") || strings.Contains(regionErr.Error(), "PROHIBITED") {
+		t.Fatalf("region blocked provider details leaked in error message: %v", regionErr)
+	}
+	regionErr = mapPikPakHTTPError(http.StatusForbidden, []byte(`{"error_description":"AccessProhibited","details":"Sorry, PikPak is not available in your region"}`))
+	if !errors.Is(regionErr, domainstorage.ErrCloudRegionBlocked) {
+		t.Fatalf("expected region-block payload without explicit error_code to map to cloud region blocked, got %v", regionErr)
+	}
 
 	err := mapPikPakHTTPError(http.StatusBadRequest, []byte(`{"error_code":"9999","error_description":"raw token secret should not leak"}`))
 	if !errors.Is(err, domainstorage.ErrCloudProviderUnavailable) {
@@ -910,7 +1048,7 @@ func (c *fakePikPakClient) Login(context.Context, PikPakConfig) (*PikPakAuthToke
 	return &PikPakAuthToken{AccessToken: "access-login", RefreshToken: "refresh-login", UserID: "user-id"}, nil
 }
 
-func (c *fakePikPakClient) RefreshCaptcha(context.Context, PikPakConfig, string, string) (*PikPakCaptchaToken, error) {
+func (c *fakePikPakClient) RefreshCaptcha(context.Context, PikPakConfig, string, string, string) (*PikPakCaptchaToken, error) {
 	return &PikPakCaptchaToken{Token: "captcha-1", ExpiresIn: 300}, nil
 }
 

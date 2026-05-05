@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend checklist for final review."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Verify storage driver registry/PikPak structure remains compliant."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Verify CLOUD_AUTH_FAILED/API behavior consistency."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify tests and gofmt expectations."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify secret-safe logging."}

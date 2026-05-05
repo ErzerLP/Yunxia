@@ -1,6 +1,10 @@
 package storage
 
-import "testing"
+import (
+	"crypto/md5"
+	"encoding/hex"
+	"testing"
+)
 
 func TestBuildPikPakConfigSecretRetentionAndPublicMask(t *testing.T) {
 	cfg, err := BuildPikPakConfig(map[string]any{
@@ -9,6 +13,7 @@ func TestBuildPikPakConfigSecretRetentionAndPublicMask(t *testing.T) {
 		"disable_media_link": true,
 		"cache_ttl_seconds":  float64(120),
 		"download_strategy":  "redirect",
+		"proxy_url":          " http://127.0.0.1:7890 ",
 	}, map[string]any{
 		"username":      "user@example.com",
 		"password":      "password-value",
@@ -18,7 +23,7 @@ func TestBuildPikPakConfigSecretRetentionAndPublicMask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPikPakConfig() error = %v", err)
 	}
-	if cfg.RootFolderID != "root-id" || cfg.Platform != "web" || cfg.CacheTTLSeconds != 120 {
+	if cfg.RootFolderID != "root-id" || cfg.Platform != "web" || cfg.CacheTTLSeconds != 120 || cfg.ProxyURL != "http://127.0.0.1:7890" {
 		t.Fatalf("unexpected public config = %+v", cfg)
 	}
 	if cfg.DeviceID == "" {
@@ -52,6 +57,24 @@ func TestBuildPikPakConfigSecretRetentionAndPublicMask(t *testing.T) {
 	if updated.Platform != "pc" || updated.DisableMediaLink {
 		t.Fatalf("expected public config update, got %+v", updated)
 	}
+	if updated.ProxyURL != cfg.ProxyURL {
+		t.Fatalf("expected omitted proxy_url to retain existing proxy config, got %+v", updated)
+	}
+
+	proxyCleared, err := BuildPikPakConfig(map[string]any{
+		"root_folder_id":     "",
+		"platform":           "pc",
+		"disable_media_link": false,
+		"cache_ttl_seconds":  300,
+		"download_strategy":  "redirect",
+		"proxy_url":          "",
+	}, nil, &updated)
+	if err != nil {
+		t.Fatalf("BuildPikPakConfig(clear proxy) error = %v", err)
+	}
+	if proxyCleared.ProxyURL != "" {
+		t.Fatalf("expected explicit empty proxy_url to clear proxy config, got %+v", proxyCleared)
+	}
 
 	cleared, err := BuildPikPakConfig(updated.PublicMap(), map[string]any{"password": nil, "captcha_token": nil}, &updated)
 	if err != nil {
@@ -62,11 +85,59 @@ func TestBuildPikPakConfigSecretRetentionAndPublicMask(t *testing.T) {
 	}
 }
 
+func TestBuildPikPakConfigPreservesPasswordWhitespaceForAuth(t *testing.T) {
+	cfg, err := BuildPikPakConfig(nil, map[string]any{
+		"username": "user@example.com",
+		"password": " pass-with-edge-space ",
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildPikPakConfig() error = %v", err)
+	}
+	if cfg.Password != " pass-with-edge-space " {
+		t.Fatalf("password must be preserved exactly for provider auth, got %q", cfg.Password)
+	}
+	sum := md5.Sum([]byte("user@example.com" + " pass-with-edge-space "))
+	expectedDeviceID := hex.EncodeToString(sum[:])
+	if cfg.DeviceID != expectedDeviceID {
+		t.Fatalf("device_id should be based on exact password, got %q want %q", cfg.DeviceID, expectedDeviceID)
+	}
+
+	refreshOnly, err := BuildPikPakConfig(nil, map[string]any{
+		"refresh_token": "refresh-token",
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildPikPakConfig(refresh only) error = %v", err)
+	}
+	if refreshOnly.DeviceID == "" {
+		t.Fatalf("refresh-token-only config should still get a stable provider device_id")
+	}
+}
+
 func TestParsePikPakConfigJSONRejectsInvalidPlatform(t *testing.T) {
 	_, err := BuildPikPakConfig(map[string]any{
 		"platform": "ios",
 	}, map[string]any{"refresh_token": "refresh"}, nil)
 	if err == nil {
 		t.Fatalf("expected invalid platform error")
+	}
+}
+
+func TestBuildPikPakConfigRejectsUnsafeProxyURL(t *testing.T) {
+	cases := []string{
+		"127.0.0.1:7890",
+		"socks5://127.0.0.1:7890",
+		"http://user:pass@127.0.0.1:7890",
+		"http://127.0.0.1:7890?token=secret",
+		"http://127.0.0.1:7890#frag",
+	}
+	for _, proxyURL := range cases {
+		t.Run(proxyURL, func(t *testing.T) {
+			_, err := BuildPikPakConfig(map[string]any{
+				"proxy_url": proxyURL,
+			}, map[string]any{"refresh_token": "refresh"}, nil)
+			if err == nil {
+				t.Fatalf("expected invalid proxy_url %q to be rejected", proxyURL)
+			}
+		})
 	}
 }

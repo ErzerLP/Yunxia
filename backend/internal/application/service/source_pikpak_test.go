@@ -897,7 +897,7 @@ func (c *sourceServiceFakePikPakClient) Login(context.Context, infraStorage.PikP
 	return &infraStorage.PikPakAuthToken{AccessToken: "access-login", RefreshToken: "refresh-login", UserID: "user-id"}, nil
 }
 
-func (c *sourceServiceFakePikPakClient) RefreshCaptcha(context.Context, infraStorage.PikPakConfig, string, string) (*infraStorage.PikPakCaptchaToken, error) {
+func (c *sourceServiceFakePikPakClient) RefreshCaptcha(context.Context, infraStorage.PikPakConfig, string, string, string) (*infraStorage.PikPakCaptchaToken, error) {
 	return &infraStorage.PikPakCaptchaToken{Token: "captcha-1", ExpiresIn: 300}, nil
 }
 

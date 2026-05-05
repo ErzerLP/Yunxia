@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -73,7 +74,7 @@ var (
 type PikPakAPIClient interface {
 	RefreshToken(ctx context.Context, cfg PikPakConfig) (*PikPakAuthToken, error)
 	Login(ctx context.Context, cfg PikPakConfig) (*PikPakAuthToken, error)
-	RefreshCaptcha(ctx context.Context, cfg PikPakConfig, action string, userID string) (*PikPakCaptchaToken, error)
+	RefreshCaptcha(ctx context.Context, cfg PikPakConfig, action string, userID string, accessToken string) (*PikPakCaptchaToken, error)
 	ListFiles(ctx context.Context, session PikPakSession, parentID string, pageToken string) (*PikPakListFilesResponse, error)
 	GetFile(ctx context.Context, session PikPakSession, fileID string, usage string) (*PikPakFile, error)
 	CreateFolder(ctx context.Context, session PikPakSession, parentID string, name string) (*PikPakFile, error)
@@ -96,6 +97,7 @@ type PikPakSession struct {
 	UserID       string
 	UserAgent    string
 	Platform     string
+	ProxyURL     string
 }
 
 // PikPakAuthToken 表示登录/刷新 token 响应。
@@ -220,9 +222,12 @@ type PikPakHTTPClientOption func(*PikPakHTTPClient)
 // PikPakHTTPClient 是 PikPak 原始 HTTP API 的最小实现。
 type PikPakHTTPClient struct {
 	httpClient       *http.Client
+	httpClientCustom bool
 	userBaseURL      string
 	driveBaseURL     string
 	aboutBaseURL     string
+	defaultProxyURL  string
+	proxyURLFromEnv  bool
 	maxAttempts      int
 	retryBaseDelay   time.Duration
 	sleepBeforeRetry func(context.Context, time.Duration) error
@@ -234,11 +239,13 @@ func NewPikPakHTTPClient(options ...PikPakHTTPClientOption) *PikPakHTTPClient {
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
-		userBaseURL:    DefaultPikPakUserBaseURL,
-		driveBaseURL:   DefaultPikPakDriveBaseURL,
-		aboutBaseURL:   DefaultPikPakAboutBaseURL,
-		maxAttempts:    3,
-		retryBaseDelay: 500 * time.Millisecond,
+		userBaseURL:     DefaultPikPakUserBaseURL,
+		driveBaseURL:    DefaultPikPakDriveBaseURL,
+		aboutBaseURL:    DefaultPikPakAboutBaseURL,
+		defaultProxyURL: strings.TrimSpace(os.Getenv("YUNXIA_PIKPAK_PROXY_URL")),
+		proxyURLFromEnv: strings.TrimSpace(os.Getenv("YUNXIA_PIKPAK_PROXY_URL")) != "",
+		maxAttempts:     3,
+		retryBaseDelay:  500 * time.Millisecond,
 		sleepBeforeRetry: func(ctx context.Context, delay time.Duration) error {
 			if delay <= 0 {
 				return nil
@@ -264,6 +271,7 @@ func WithPikPakHTTPClient(httpClient *http.Client) PikPakHTTPClientOption {
 	return func(c *PikPakHTTPClient) {
 		if httpClient != nil {
 			c.httpClient = httpClient
+			c.httpClientCustom = true
 		}
 	}
 }
@@ -304,12 +312,21 @@ func WithPikPakRetrySleeper(sleeper func(context.Context, time.Duration) error) 
 	}
 }
 
+// WithPikPakProxyURL 设置 PikPak 专用默认代理，优先于标准 HTTP_PROXY 环境变量。
+func WithPikPakProxyURL(proxyURL string) PikPakHTTPClientOption {
+	return func(c *PikPakHTTPClient) {
+		c.defaultProxyURL = strings.TrimSpace(proxyURL)
+		c.proxyURLFromEnv = false
+	}
+}
+
 // RefreshToken 使用 refresh token 换 access token。
 func (c *PikPakHTTPClient) RefreshToken(ctx context.Context, cfg PikPakConfig) (*PikPakAuthToken, error) {
 	platform, err := pikPakPlatform(cfg.Platform)
 	if err != nil {
 		return nil, err
 	}
+	userAgent := buildPikPakUserAgent(cfg, platform, "")
 	payload := map[string]any{
 		"client_id":     platform.ClientID,
 		"client_secret": platform.ClientSecret,
@@ -317,7 +334,7 @@ func (c *PikPakHTTPClient) RefreshToken(ctx context.Context, cfg PikPakConfig) (
 		"refresh_token": cfg.RefreshToken,
 	}
 	var resp pikPakAuthResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.userBaseURL+"/v1/auth/token", platform.UserAgent, nil, map[string]string{"client_id": platform.ClientID}, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPost, c.userBaseURL+"/v1/auth/token", cfg.ProxyURL, userAgent, nil, map[string]string{"client_id": platform.ClientID}, payload, &resp); err != nil {
 		return nil, err
 	}
 	return resp.toAuthToken(), nil
@@ -329,6 +346,7 @@ func (c *PikPakHTTPClient) Login(ctx context.Context, cfg PikPakConfig) (*PikPak
 	if err != nil {
 		return nil, err
 	}
+	userAgent := buildPikPakUserAgent(cfg, platform, "")
 	payload := map[string]any{
 		"captcha_token": cfg.CaptchaToken,
 		"client_id":     platform.ClientID,
@@ -337,18 +355,19 @@ func (c *PikPakHTTPClient) Login(ctx context.Context, cfg PikPakConfig) (*PikPak
 		"password":      cfg.Password,
 	}
 	var resp pikPakAuthResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.userBaseURL+"/v1/auth/signin", platform.UserAgent, nil, map[string]string{"client_id": platform.ClientID}, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPost, c.userBaseURL+"/v1/auth/signin", cfg.ProxyURL, userAgent, nil, map[string]string{"client_id": platform.ClientID}, payload, &resp); err != nil {
 		return nil, err
 	}
 	return resp.toAuthToken(), nil
 }
 
 // RefreshCaptcha 初始化或刷新 captcha token。
-func (c *PikPakHTTPClient) RefreshCaptcha(ctx context.Context, cfg PikPakConfig, action string, userID string) (*PikPakCaptchaToken, error) {
+func (c *PikPakHTTPClient) RefreshCaptcha(ctx context.Context, cfg PikPakConfig, action string, userID string, accessToken string) (*PikPakCaptchaToken, error) {
 	platform, err := pikPakPlatform(cfg.Platform)
 	if err != nil {
 		return nil, err
 	}
+	userAgent := buildPikPakUserAgent(cfg, platform, userID)
 	meta := buildPikPakCaptchaMeta(cfg, platform, userID)
 	payload := map[string]any{
 		"action":        action,
@@ -359,7 +378,7 @@ func (c *PikPakHTTPClient) RefreshCaptcha(ctx context.Context, cfg PikPakConfig,
 		"redirect_uri":  "xlaccsdk01://xbase.cloud/callback?state=harbor",
 	}
 	var resp pikPakCaptchaResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.userBaseURL+"/v1/shield/captcha/init", platform.UserAgent, nil, map[string]string{"client_id": platform.ClientID}, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPost, c.userBaseURL+"/v1/shield/captcha/init", cfg.ProxyURL, userAgent, pikPakCaptchaHeaders(cfg, accessToken), map[string]string{"client_id": platform.ClientID}, payload, &resp); err != nil {
 		return nil, err
 	}
 	if resp.URL != "" {
@@ -385,7 +404,7 @@ func (c *PikPakHTTPClient) ListFiles(ctx context.Context, session PikPakSession,
 		query["page_token"] = pageToken
 	}
 	var resp PikPakListFilesResponse
-	if err := c.doJSON(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/files", session.ProxyURL, session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -402,7 +421,7 @@ func (c *PikPakHTTPClient) GetFile(ctx context.Context, session PikPakSession, f
 		"thumbnail_size": "SIZE_LARGE",
 	}
 	var resp PikPakFile
-	if err := c.doJSON(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/files/"+url.PathEscape(fileID), session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/files/"+url.PathEscape(fileID), session.ProxyURL, session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -416,7 +435,7 @@ func (c *PikPakHTTPClient) CreateFolder(ctx context.Context, session PikPakSessi
 		"name":      name,
 	}
 	var resp PikPakFile
-	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -437,7 +456,7 @@ func (c *PikPakHTTPClient) CreateUploadFile(ctx context.Context, session PikPakS
 		"folder_type": "NORMAL",
 	}
 	var resp PikPakCreateUploadFileResponse
-	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -458,7 +477,7 @@ func (c *PikPakHTTPClient) CreateOfflineDownload(ctx context.Context, session Pi
 	var resp struct {
 		Task *PikPakOfflineTask `json:"task"`
 	}
-	if err := c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Task == nil {
@@ -489,7 +508,7 @@ func (c *PikPakHTTPClient) GetOfflineDownloadTask(ctx context.Context, session P
 			Tasks         []PikPakOfflineTask `json:"tasks"`
 			NextPageToken string              `json:"next_page_token"`
 		}
-		if err := c.doJSON(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/tasks", session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
+		if err := c.doJSONWithProxy(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/tasks", session.ProxyURL, session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
 			return nil, err
 		}
 		for _, task := range resp.Tasks {
@@ -522,7 +541,7 @@ func (c *PikPakHTTPClient) DeleteOfflineDownloadTasks(ctx context.Context, sessi
 		"task_ids":     strings.Join(cleanIDs, ","),
 		"delete_files": strconv.FormatBool(deleteFiles),
 	}
-	return c.doJSON(ctx, http.MethodDelete, c.driveBaseURL+"/drive/v1/tasks", session.UserAgent, sessionHeaders(session), query, nil, nil)
+	return c.doJSONWithProxy(ctx, http.MethodDelete, c.driveBaseURL+"/drive/v1/tasks", session.ProxyURL, session.UserAgent, sessionHeaders(session), query, nil, nil)
 }
 
 // RenameFile 修改 PikPak 对象名称。
@@ -531,7 +550,7 @@ func (c *PikPakHTTPClient) RenameFile(ctx context.Context, session PikPakSession
 		"name": name,
 	}
 	var resp PikPakFile
-	if err := c.doJSON(ctx, http.MethodPatch, c.driveBaseURL+"/drive/v1/files/"+url.PathEscape(fileID), session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodPatch, c.driveBaseURL+"/drive/v1/files/"+url.PathEscape(fileID), session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -545,7 +564,7 @@ func (c *PikPakHTTPClient) BatchMove(ctx context.Context, session PikPakSession,
 			"parent_id": targetParentID,
 		},
 	}
-	return c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchMove", session.UserAgent, sessionHeaders(session), nil, payload, nil)
+	return c.doJSONWithProxy(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchMove", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, nil)
 }
 
 // BatchCopy 批量复制 PikPak 对象到目标目录。
@@ -556,7 +575,7 @@ func (c *PikPakHTTPClient) BatchCopy(ctx context.Context, session PikPakSession,
 			"parent_id": targetParentID,
 		},
 	}
-	return c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchCopy", session.UserAgent, sessionHeaders(session), nil, payload, nil)
+	return c.doJSONWithProxy(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchCopy", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, nil)
 }
 
 // BatchTrash 将 PikPak 对象移入 provider 回收站。
@@ -564,19 +583,23 @@ func (c *PikPakHTTPClient) BatchTrash(ctx context.Context, session PikPakSession
 	payload := map[string]any{
 		"ids": ids,
 	}
-	return c.doJSON(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchTrash", session.UserAgent, sessionHeaders(session), nil, payload, nil)
+	return c.doJSONWithProxy(ctx, http.MethodPost, c.driveBaseURL+"/drive/v1/files:batchTrash", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, payload, nil)
 }
 
 // About 查询容量。
 func (c *PikPakHTTPClient) About(ctx context.Context, session PikPakSession) (*PikPakAbout, error) {
 	var resp PikPakAbout
-	if err := c.doJSON(ctx, http.MethodGet, c.aboutBaseURL+"/drive/v1/about", session.UserAgent, sessionHeaders(session), nil, nil, &resp); err != nil {
+	if err := c.doJSONWithProxy(ctx, http.MethodGet, c.aboutBaseURL+"/drive/v1/about", session.ProxyURL, session.UserAgent, sessionHeaders(session), nil, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
 func (c *PikPakHTTPClient) doJSON(ctx context.Context, method string, rawURL string, userAgent string, headers map[string]string, query map[string]string, payload any, out any) error {
+	return c.doJSONWithProxy(ctx, method, rawURL, "", userAgent, headers, query, payload, out)
+}
+
+func (c *PikPakHTTPClient) doJSONWithProxy(ctx context.Context, method string, rawURL string, proxyURL string, userAgent string, headers map[string]string, query map[string]string, payload any, out any) error {
 	if c.httpClient == nil {
 		c.httpClient = http.DefaultClient
 	}
@@ -584,6 +607,10 @@ func (c *PikPakHTTPClient) doJSON(ctx context.Context, method string, rawURL str
 		c.maxAttempts = 1
 	}
 	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	httpClient, err := c.httpClientForProxy(proxyURL)
 	if err != nil {
 		return err
 	}
@@ -624,7 +651,7 @@ func (c *PikPakHTTPClient) doJSON(ctx context.Context, method string, rawURL str
 			}
 		}
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("%w: %v", domainstorage.ErrCloudProviderUnavailable, err)
 			if !isRetryablePikPakTransportError(err) || attempt >= c.maxAttempts {
@@ -668,6 +695,51 @@ func (c *PikPakHTTPClient) doJSON(ctx context.Context, method string, rawURL str
 		return lastErr
 	}
 	return domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider unavailable")
+}
+
+func (c *PikPakHTTPClient) httpClientForProxy(requestProxyURL string) (*http.Client, error) {
+	effectiveProxyURL := c.effectiveProxyURL(requestProxyURL)
+	if effectiveProxyURL == "" {
+		return c.httpClient, nil
+	}
+	parsedProxyURL, err := url.Parse(effectiveProxyURL)
+	if err != nil || parsedProxyURL.Scheme == "" || parsedProxyURL.Host == "" {
+		return nil, fmt.Errorf("%w: proxy_url must be a valid URL", domainstorage.ErrConfigInvalid)
+	}
+	switch strings.ToLower(parsedProxyURL.Scheme) {
+	case "http", "https":
+	default:
+		return nil, fmt.Errorf("%w: proxy_url scheme must be http or https", domainstorage.ErrConfigInvalid)
+	}
+	if parsedProxyURL.User != nil {
+		return nil, fmt.Errorf("%w: proxy_url must not include credentials", domainstorage.ErrConfigInvalid)
+	}
+	if parsedProxyURL.RawQuery != "" || parsedProxyURL.Fragment != "" {
+		return nil, fmt.Errorf("%w: proxy_url must not include query or fragment", domainstorage.ErrConfigInvalid)
+	}
+
+	baseTransport, _ := http.DefaultTransport.(*http.Transport)
+	transport := baseTransport.Clone()
+	if customTransport, ok := c.httpClient.Transport.(*http.Transport); ok && customTransport != nil {
+		transport = customTransport.Clone()
+	}
+	transport.Proxy = http.ProxyURL(parsedProxyURL)
+	return &http.Client{
+		Transport:     transport,
+		CheckRedirect: c.httpClient.CheckRedirect,
+		Jar:           c.httpClient.Jar,
+		Timeout:       c.httpClient.Timeout,
+	}, nil
+}
+
+func (c *PikPakHTTPClient) effectiveProxyURL(requestProxyURL string) string {
+	if value := strings.TrimSpace(requestProxyURL); value != "" {
+		return value
+	}
+	if c.httpClientCustom && c.proxyURLFromEnv {
+		return ""
+	}
+	return strings.TrimSpace(c.defaultProxyURL)
 }
 
 func (c *PikPakHTTPClient) waitBeforePikPakRetry(ctx context.Context, attempt int, retryAfter time.Duration, method string, parsed *url.URL, cause error) error {
@@ -740,6 +812,17 @@ func sessionHeaders(session PikPakSession) map[string]string {
 	return headers
 }
 
+func pikPakCaptchaHeaders(cfg PikPakConfig, accessToken string) map[string]string {
+	headers := map[string]string{
+		"X-Device-ID":     cfg.DeviceID,
+		"X-Captcha-Token": cfg.CaptchaToken,
+	}
+	if strings.TrimSpace(accessToken) != "" {
+		headers["Authorization"] = "Bearer " + strings.TrimSpace(accessToken)
+	}
+	return headers
+}
+
 type pikPakAuthResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -764,13 +847,16 @@ type pikPakErrorPayload struct {
 	ErrorCode        any    `json:"error_code"`
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
-	Details          string `json:"details"`
+	Details          any    `json:"details"`
 }
 
 func mapPikPakHTTPError(status int, body []byte) error {
 	var payload pikPakErrorPayload
 	_ = json.Unmarshal(body, &payload)
 	code := pikPakProviderErrorSignal(payload)
+	if isPikPakRegionBlockedPayload(payload) {
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
+	}
 	if code != "" && code != "0" {
 		return mapPikPakProviderCode(code, payload)
 	}
@@ -794,6 +880,9 @@ func mapPikPakHTTPError(status int, body []byte) error {
 
 func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
 	message := sanitizedPikPakErrorMessage(payload)
+	if isPikPakRegionBlockedPayload(payload) {
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
+	}
 	switch code {
 	case "404", "not_found", "file_not_found", "resource_not_found":
 		return os.ErrNotExist
@@ -841,13 +930,48 @@ func normalizePikPakErrorCode(value any) string {
 }
 
 func sanitizedPikPakErrorMessage(payload pikPakErrorPayload) string {
-	for _, value := range []string{payload.ErrorDescription, payload.Error, payload.Details} {
+	for _, value := range []string{payload.ErrorDescription, payload.Error, pikPakPayloadDetailsString(payload.Details)} {
 		value = strings.TrimSpace(value)
 		if value != "" {
 			return value
 		}
 	}
 	return ""
+}
+
+func isPikPakRegionBlockedPayload(payload pikPakErrorPayload) bool {
+	signal := strings.ToLower(strings.Join([]string{
+		normalizePikPakErrorCode(payload.ErrorCode),
+		payload.Error,
+		payload.ErrorDescription,
+		pikPakPayloadDetailsString(payload.Details),
+	}, " "))
+	for _, marker := range []string{
+		"accessprohibited",
+		"prohibited:cn",
+		"not available in your region",
+		"mainland china",
+	} {
+		if strings.Contains(signal, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func pikPakPayloadDetailsString(details any) string {
+	switch typed := details.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return fmt.Sprint(typed)
+		}
+		return string(data)
+	}
 }
 
 func pikPakPlatform(platform string) (pikPakPlatformInfo, error) {
@@ -917,6 +1041,37 @@ func buildPikPakCaptchaSign(platform pikPakPlatformInfo, deviceID string) (strin
 		value = md5Hex(value + algorithm)
 	}
 	return timestamp, "1." + value
+}
+
+func buildPikPakUserAgent(cfg PikPakConfig, platform pikPakPlatformInfo, userID string) string {
+	if strings.EqualFold(cfg.Platform, "android") {
+		return buildPikPakAndroidUserAgent(cfg.DeviceID, platform, userID)
+	}
+	return platform.UserAgent
+}
+
+func buildPikPakAndroidUserAgent(deviceID string, platform pikPakPlatformInfo, userID string) string {
+	deviceSign := generatePikPakDeviceSign(deviceID, platform.PackageName)
+	return fmt.Sprintf(
+		"ANDROID-%s/%s protocolVersion/200 accesstype/ clientid/%s clientversion/%s action_type/ networktype/WIFI sessionid/ deviceid/%s providername/NONE devicesign/%s refresh_token/ sdkversion/%s datetime/%d usrno/%s appname/android-%s session_origin/ grant_type/ appid/ clientip/ devicename/Xiaomi_M2004j7ac osversion/13 platformversion/10 accessmode/ devicemodel/M2004J7AC ",
+		platform.PackageName,
+		platform.ClientVersion,
+		platform.ClientID,
+		platform.ClientVersion,
+		deviceID,
+		deviceSign,
+		platform.SdkVersion,
+		time.Now().UnixMilli(),
+		userID,
+		platform.PackageName,
+	)
+}
+
+func generatePikPakDeviceSign(deviceID string, packageName string) string {
+	signatureBase := deviceID + packageName + "1" + "appkey"
+	sha1Sum := sha1.Sum([]byte(signatureBase))
+	md5Sum := md5.Sum([]byte(hex.EncodeToString(sha1Sum[:])))
+	return "div101." + deviceID + hex.EncodeToString(md5Sum[:])
 }
 
 func md5Hex(value string) string {

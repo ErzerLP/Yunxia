@@ -23,6 +23,8 @@ var (
 	ErrCloudCaptchaExpired = domainstorage.ErrCloudCaptchaExpired
 	// ErrCloudRateLimited 表示第三方限流。
 	ErrCloudRateLimited = domainstorage.ErrCloudRateLimited
+	// ErrCloudRegionBlocked 表示第三方因部署区域或网络出口限制拒绝访问。
+	ErrCloudRegionBlocked = domainstorage.ErrCloudRegionBlocked
 	// ErrCloudProviderUnavailable 表示第三方服务临时不可用。
 	ErrCloudProviderUnavailable = domainstorage.ErrCloudProviderUnavailable
 	// ErrSourceNameConflict 表示存储源名称冲突。

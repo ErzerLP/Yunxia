@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 
 	domainstorage "yunxia/internal/domain/storage"
@@ -28,6 +29,7 @@ type PikPakConfig struct {
 	DisableMediaLink bool   `json:"disable_media_link"`
 	CacheTTLSeconds  int    `json:"cache_ttl_seconds"`
 	DownloadStrategy string `json:"download_strategy"`
+	ProxyURL         string `json:"proxy_url,omitempty"`
 
 	Username     string `json:"username,omitempty"`
 	Password     string `json:"password,omitempty"`
@@ -69,6 +71,7 @@ func BuildPikPakConfig(config map[string]any, secretPatch map[string]any, existi
 		cfg.RefreshToken = existing.RefreshToken
 		cfg.CaptchaToken = existing.CaptchaToken
 		cfg.DeviceID = existing.DeviceID
+		cfg.ProxyURL = existing.ProxyURL
 	}
 
 	var err error
@@ -87,11 +90,18 @@ func BuildPikPakConfig(config map[string]any, secretPatch map[string]any, existi
 	if cfg.DownloadStrategy, err = readOptionalStringDefault(config, "download_strategy", cfg.DownloadStrategy); err != nil {
 		return PikPakConfig{}, wrapPikPakConfigError(err)
 	}
+	if config != nil {
+		if _, exists := config["proxy_url"]; exists {
+			if cfg.ProxyURL, err = readOptionalString(config, "proxy_url"); err != nil {
+				return PikPakConfig{}, wrapPikPakConfigError(err)
+			}
+		}
+	}
 	if err := applyPikPakSecretPatch(&cfg, secretPatch); err != nil {
 		return PikPakConfig{}, wrapPikPakConfigError(err)
 	}
 	cfg.normalize()
-	if cfg.DeviceID == "" && cfg.Username != "" && cfg.Password != "" {
+	if cfg.DeviceID == "" {
 		cfg.DeviceID = GeneratePikPakDeviceID(cfg.Username, cfg.Password)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -119,6 +129,7 @@ func (c PikPakConfig) PublicMap() map[string]any {
 		"disable_media_link": c.DisableMediaLink,
 		"cache_ttl_seconds":  c.CacheTTLSeconds,
 		"download_strategy":  c.DownloadStrategy,
+		"proxy_url":          c.ProxyURL,
 	}
 }
 
@@ -162,6 +173,9 @@ func (c PikPakConfig) Validate() error {
 	if c.DownloadStrategy != defaultPikPakDownloadStrategy {
 		return fmt.Errorf("%w: download_strategy must be redirect", domainstorage.ErrConfigInvalid)
 	}
+	if err := validatePikPakProxyURL(c.ProxyURL); err != nil {
+		return err
+	}
 	if strings.TrimSpace(c.RefreshToken) == "" && (strings.TrimSpace(c.Username) == "" || strings.TrimSpace(c.Password) == "") {
 		return fmt.Errorf("%w: username/password or refresh_token is required", domainstorage.ErrConfigInvalid)
 	}
@@ -182,10 +196,33 @@ func (c *PikPakConfig) normalize() {
 		c.CacheTTLSeconds = defaultPikPakCacheTTLSeconds
 	}
 	c.Username = strings.TrimSpace(c.Username)
-	c.Password = strings.TrimSpace(c.Password)
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
 	c.CaptchaToken = strings.TrimSpace(c.CaptchaToken)
 	c.DeviceID = strings.TrimSpace(c.DeviceID)
+	c.ProxyURL = strings.TrimSpace(c.ProxyURL)
+}
+
+func validatePikPakProxyURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%w: proxy_url must be a valid URL", domainstorage.ErrConfigInvalid)
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("%w: proxy_url scheme must be http or https", domainstorage.ErrConfigInvalid)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("%w: proxy_url must not include credentials", domainstorage.ErrConfigInvalid)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%w: proxy_url must not include query or fragment", domainstorage.ErrConfigInvalid)
+	}
+	return nil
 }
 
 func applyPikPakSecretPatch(cfg *PikPakConfig, secretPatch map[string]any) error {
@@ -285,7 +322,7 @@ func wrapPikPakConfigError(err error) error {
 
 // GeneratePikPakDeviceID 生成稳定 device_id，兼容 OpenList 的最小策略。
 func GeneratePikPakDeviceID(username string, password string) string {
-	sum := md5.Sum([]byte(strings.TrimSpace(username) + strings.TrimSpace(password)))
+	sum := md5.Sum([]byte(strings.TrimSpace(username) + password))
 	return hex.EncodeToString(sum[:])
 }
 

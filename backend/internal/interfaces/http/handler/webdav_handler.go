@@ -725,6 +725,15 @@ func webDAVStatusFromError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, appsvc.ErrSourceOperationUnsupported), errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		return http.StatusUnprocessableEntity
+	case errors.Is(err, appsvc.ErrCloudAuthFailed), errors.Is(err, appsvc.ErrCloudTokenInvalid),
+		errors.Is(err, appsvc.ErrCloudCaptchaRequired), errors.Is(err, appsvc.ErrCloudCaptchaExpired):
+		return http.StatusUnprocessableEntity
+	case errors.Is(err, appsvc.ErrCloudRateLimited):
+		return http.StatusTooManyRequests
+	case errors.Is(err, appsvc.ErrCloudRegionBlocked):
+		return http.StatusUnavailableForLegalReasons
+	case errors.Is(err, appsvc.ErrCloudProviderUnavailable):
+		return http.StatusBadGateway
 	default:
 		return http.StatusInternalServerError
 	}

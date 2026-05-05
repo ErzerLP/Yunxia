@@ -159,7 +159,7 @@ func (m *PikPakSessionManager) refreshDriveCaptcha(ctx context.Context, source *
 	if userID == "" {
 		return m.refreshAccess(ctx, source)
 	}
-	captcha, err := m.client.RefreshCaptcha(ctx, cfg, pikPakDriveListCaptchaAction, userID)
+	captcha, err := m.client.RefreshCaptcha(ctx, cfg, pikPakDriveListCaptchaAction, userID, state.AccessToken)
 	if err != nil {
 		return PikPakSession{}, PikPakConfig{}, err
 	}
@@ -180,7 +180,7 @@ func (m *PikPakSessionManager) authenticate(ctx context.Context, source *entity.
 	cfg.RefreshToken = state.RefreshToken
 	cfg.CaptchaToken = state.CaptchaToken
 	cfg.DeviceID = state.DeviceID
-	if cfg.DeviceID == "" && cfg.Username != "" && cfg.Password != "" {
+	if cfg.DeviceID == "" {
 		cfg.DeviceID = GeneratePikPakDeviceID(cfg.Username, cfg.Password)
 		state.DeviceID = cfg.DeviceID
 	}
@@ -206,7 +206,7 @@ func (m *PikPakSessionManager) authenticate(ctx context.Context, source *entity.
 		return domainstorage.NewProviderError(domainstorage.ErrCloudTokenInvalid, "cloud token invalid")
 	}
 	if cfg.CaptchaToken == "" {
-		captcha, err := m.client.RefreshCaptcha(ctx, cfg, "POST:/v1/auth/signin", "")
+		captcha, err := m.client.RefreshCaptcha(ctx, cfg, "POST:/v1/auth/signin", "", "")
 		if err != nil {
 			return err
 		}
@@ -237,7 +237,7 @@ func (m *PikPakSessionManager) refreshDriveCaptchaAfterAuth(ctx context.Context,
 	cfg.RefreshToken = state.RefreshToken
 	cfg.CaptchaToken = state.CaptchaToken
 	cfg.DeviceID = state.DeviceID
-	captcha, err := m.client.RefreshCaptcha(ctx, cfg, pikPakDriveListCaptchaAction, state.UserID)
+	captcha, err := m.client.RefreshCaptcha(ctx, cfg, pikPakDriveListCaptchaAction, state.UserID, state.AccessToken)
 	if err != nil {
 		return err
 	}
@@ -301,8 +301,9 @@ func pikPakSessionFromState(cfg PikPakConfig, state *pikPakSessionState) PikPakS
 		CaptchaToken: state.CaptchaToken,
 		DeviceID:     state.DeviceID,
 		UserID:       state.UserID,
-		UserAgent:    platform.UserAgent,
+		UserAgent:    buildPikPakUserAgent(cfg, platform, state.UserID),
 		Platform:     cfg.Platform,
+		ProxyURL:     cfg.ProxyURL,
 	}
 }
 

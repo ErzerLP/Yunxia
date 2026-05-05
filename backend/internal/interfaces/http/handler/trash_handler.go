@@ -122,6 +122,8 @@ func (h *TrashHandler) writeError(c *gin.Context, err error, notFoundCode string
 		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_CAPTCHA_REQUIRED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudRateLimited):
 		httpresp.Error(c, http.StatusTooManyRequests, "CLOUD_RATE_LIMITED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrCloudRegionBlocked):
+		httpresp.Error(c, http.StatusUnavailableForLegalReasons, "CLOUD_REGION_BLOCKED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudProviderUnavailable):
 		httpresp.Error(c, http.StatusBadGateway, "CLOUD_PROVIDER_UNAVAILABLE", err.Error(), nil)
 	default:

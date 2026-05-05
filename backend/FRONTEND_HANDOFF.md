@@ -851,6 +851,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 - [x] 存储源创建/编辑表单新增 `driver_type="pikpak"` 选项。
 - [x] 表单支持 PikPak public config：`root_folder_id`、`platform`、`disable_media_link`、`cache_ttl_seconds`、`download_strategy`。
+- [ ] 可选支持 PikPak public config：`proxy_url`，用于在后端部署网络出口受限时为单个 PikPak 源指定 HTTP/HTTPS 代理。
 - [x] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
 - [x] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
 - [x] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
@@ -862,6 +863,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 - [x] 不持久化、不日志输出 PikPak `direct_parts` 返回的临时 `Authorization` / `X-OSS-Security-Token` 上传 header。
 - [x] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
 - [x] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
+- [ ] 错误提示新增 `CLOUD_REGION_BLOCKED`：表示 PikPak provider 拒绝当前后端网络出口区域，建议提示管理员配置可用代理或调整部署网络。
 - [x] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
 - [x] WebDAV 暴露不再只限 local；PikPak/S3 等非 local 源设置 `is_webdav_exposed=true` 后可通过 `/dav/{webdav_slug}` 访问，但前端只需要展示开关与 slug，不需要实现 WebDAV 客户端。
 
@@ -882,6 +884,7 @@ type PikPakSourceConfig = {
   disable_media_link?: boolean
   cache_ttl_seconds?: number
   download_strategy?: "redirect"
+  proxy_url?: string
 }
 
 type PikPakSecretPatch = {
@@ -896,6 +899,7 @@ type PikPakSecretPatch = {
 #### 注意事项
 
 - `root_path` 必须传 `/`；远端子目录挂载用 `config.root_folder_id`。
+- `proxy_url` 是可选公开配置；格式只允许 `http://host:port` / `https://host:port`，不允许带账号密码、query、fragment。前端可先不展示该高级项；不填时后端会使用运行环境代理配置。
 - PikPak 文件写入口已可调用；列表项 `can_delete` 由后端按 driver capability + ACL 计算。
 - `cache_ttl_seconds` 是后端路径/id 缓存 TTL；前端无需自行缓存 provider file id，写操作后重新请求列表即可看到后端失效后的结果。
 - PikPak 删除调用 provider `batchTrash`，语义是移入 PikPak 回收站；后端不会为该操作创建 Yunxia `.trash` 记录。
@@ -906,6 +910,7 @@ type PikPakSecretPatch = {
 - PikPak 离线任务目标目录不存在时，原生离线下载路径也会由后端递归创建 provider 侧父目录；`target_filename` 非空时会作为 provider 任务名并做同名冲突预检查。
 - 非 PikPak 目标仍使用原有 staging 下载与导入策略；PikPak 原生离线下载不要求前端改创建任务入参，只需要识别任务返回的 `downloader_type="pikpak_native"`。
 - PikPak provider 429/5xx 会由后端有限退避重试；前端仍只需要处理最终稳定错误码，例如 `CLOUD_RATE_LIMITED` 或 `CLOUD_PROVIDER_UNAVAILABLE`。
+- `CLOUD_REGION_BLOCKED` 对应 HTTP 451，通常不是账号密码错误，而是后端到 PikPak 的网络出口所在区域被拒绝；UI 不要提示用户改密码。
 - `delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。
@@ -917,3 +922,4 @@ type PikPakSecretPatch = {
   - `cd web && npm run lint` # pass
   - `cd web && npm run build` # pass
   - `cd web && node scripts/check-vfs-integration.mjs` # pass
+- 2026-05-05：后端补充 PikPak `proxy_url` 与 `CLOUD_REGION_BLOCKED`。测试机直连 PikPak 时 provider 返回区域限制，后端不再误报 `CLOUD_AUTH_FAILED`；如需要在 UI 中配置单源代理，请按上方 checklist 增加高级配置项。

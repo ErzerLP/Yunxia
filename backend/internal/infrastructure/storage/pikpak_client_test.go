@@ -74,6 +74,37 @@ func TestPikPakHTTPClientOfflineDownloadEndpoints(t *testing.T) {
 	}
 }
 
+func TestPikPakHTTPClientUsesConfiguredProxyURL(t *testing.T) {
+	var proxiedURL string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxiedURL = r.URL.String()
+		if r.Method != http.MethodPost || r.URL.Scheme != "http" || r.URL.Host != "provider.invalid" || r.URL.Path != "/v1/auth/signin" {
+			t.Fatalf("unexpected proxied request %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"access_token":"access","refresh_token":"refresh","sub":"user-id"}`))
+	}))
+	defer proxy.Close()
+
+	client := NewPikPakHTTPClient(
+		WithPikPakBaseURLs("http://provider.invalid", "http://provider.invalid", "http://provider.invalid"),
+		WithPikPakRetryPolicy(1, 0),
+	)
+	token, err := client.Login(context.Background(), PikPakConfig{
+		Platform:     "web",
+		Username:     "user@example.com",
+		Password:     "password",
+		CaptchaToken: "captcha",
+		DeviceID:     "device",
+		ProxyURL:     proxy.URL,
+	})
+	if err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	if token.AccessToken != "access" || proxiedURL == "" {
+		t.Fatalf("expected login through configured proxy, token=%+v proxiedURL=%q", token, proxiedURL)
+	}
+}
+
 func containsQueryPair(rawQuery string, pair string) bool {
 	for _, part := range strings.Split(rawQuery, "&") {
 		if part == pair {

@@ -375,7 +375,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 - 通用：`name,driver_type,is_enabled,is_webdav_exposed,webdav_read_only,mount_path,root_path,sort_order`
 - local：`config.base_path`
 - s3：`config.endpoint,region,bucket,base_prefix,force_path_style` + `secret_patch.access_key/secret_key`
-- pikpak（阶段 E 文件写操作、后端暂存上传导入、GCID 条件浏览器直传、PikPak 目标原生离线下载可用）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
+- pikpak（阶段 E 文件写操作、后端暂存上传导入、GCID 条件浏览器直传、PikPak 目标原生离线下载可用）：`config.root_folder_id,platform,disable_media_link,cache_ttl_seconds,download_strategy,proxy_url` + `secret_patch.username/password/refresh_token/captcha_token/device_id`
 
 创建 local 源示例：
 
@@ -441,7 +441,8 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
     "platform": "web",
     "disable_media_link": true,
     "cache_ttl_seconds": 300,
-    "download_strategy": "redirect"
+    "download_strategy": "redirect",
+    "proxy_url": ""
   },
   "secret_patch": {
     "username": "user@example.com",
@@ -462,10 +463,12 @@ PikPak 字段说明：
 - `config.disable_media_link=true` 时下载使用原始文件链接；`false` 时允许优先使用 provider 媒体链接
 - `config.cache_ttl_seconds` 控制 PikPak 路径/id 缓存 TTL；后端会在列表/路径解析时写入缓存，并在上传、离线导入、mkdir、rename、move、copy、delete 等写操作后失效该 source/root 缓存
 - `config.download_strategy` 当前仅支持 `redirect`，后端鉴权后由 `/files/download` 或 `/api/v2/fs/download` 302 到 PikPak 临时下载链接
+- `config.proxy_url` 为可选 PikPak 专用代理地址，支持 `http://host:port` / `https://host:port`，不允许携带用户名密码、query 或 fragment；为空时使用后端运行环境的标准 `HTTP_PROXY/HTTPS_PROXY` 或 `YUNXIA_PIKPAK_PROXY_URL`
 - `secret_patch.username/password/refresh_token/captcha_token/device_id` 均按敏感字段处理；更新时省略字段会保留旧值，传 `null` 会清空该字段
 - `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`
 - token/captcha/device_id 运行态刷新后会更新当前 source 配置并通过 source repository 持久化写回；服务重启后可继续使用最新 refresh/captcha/device 信息
-- PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required 等用户可修正错误不会重试，最终仍按稳定错误码返回
+- PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required、region blocked 等用户或部署可修正错误不会重试，最终仍按稳定错误码返回
+- PikPak provider 返回区域/网络出口限制（例如大陆网络出口被拒绝）时，接口返回 `451 CLOUD_REGION_BLOCKED`；可通过调整后端网络出口、设置运行环境代理或填写 `config.proxy_url` 解决
 - 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
 - PikPak 上传现在同时支持两条后端路径：前端在 `/upload/init.file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 时，后端优先创建 provider OSS 直传计划；未传 GCID 或传普通 MD5/空值时，后端自动回退为 `server_chunk -> ImportFile`
 
@@ -1445,6 +1448,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `CLOUD_TOKEN_INVALID`
 - `CLOUD_CAPTCHA_REQUIRED`
 - `CLOUD_RATE_LIMITED`
+- `CLOUD_REGION_BLOCKED`
 - `CLOUD_PROVIDER_UNAVAILABLE`
 - `MOUNT_PATH_CONFLICT`
 - `PATH_INVALID`
