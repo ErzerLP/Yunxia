@@ -159,6 +159,11 @@ type DriverBundle struct {
   should include `source_id`, provider root id, and normalized inner path. Any
   provider write/import operation must invalidate the affected source/root
   cache at least conservatively; stale provider ids must not survive writes.
+- Third-party HTTP clients may retry transient provider failures such as 429
+  and 5xx with bounded backoff. Do not retry user-correctable auth, token,
+  config, captcha, not-found, or name-conflict errors. Retry logs must use
+  sanitized method/host/path/status/cause fields and must not include request
+  bodies, passwords, tokens, OSS secrets, or download URLs.
 - If a driver delete operation maps to a provider recycle-bin operation (for
   example PikPak `batchTrash`), expose that through capabilities and document
   that `delete_mode=trash` does not create a Yunxia `.trash` item; do not label
@@ -219,6 +224,8 @@ tests that assert:
   completion must also call `ImportFile` and clean the staging directory.
 - Path cache tests cover both repeated reads avoiding redundant provider
   resolution and write/import operations invalidating cached paths.
+- Provider retry tests cover transient failures eventually succeeding, request
+  bodies being recreated for retries, and auth/token errors not being retried.
 - System stats use `CapacityDriver` before recursive `FileDriver`, and only use
   recursive fallback when explicitly enabled.
 

@@ -897,6 +897,7 @@ type PikPakSecretPatch = {
 - PikPak 删除调用 provider `batchTrash`，语义是移入 PikPak 回收站；后端不会为该操作创建 Yunxia `.trash` 记录。
 - 上传到 PikPak 使用后端 staging：前端不需要处理 GCID、OSS 参数、`access_key_secret`、`security_token`、`bucket/key`。
 - PikPak 上传目标父目录不存在时，后端会在 provider 侧递归创建父目录；如果路径中的父级已存在但不是目录，会返回 `PATH_INVALID`。
+- PikPak provider 429/5xx 会由后端有限退避重试；前端仍只需要处理最终稳定错误码，例如 `CLOUD_RATE_LIMITED` 或 `CLOUD_PROVIDER_UNAVAILABLE`。
 - `delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。

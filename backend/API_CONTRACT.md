@@ -465,6 +465,7 @@ PikPak 字段说明：
 - `secret_patch.username/password/refresh_token/captcha_token/device_id` 均按敏感字段处理；更新时省略字段会保留旧值，传 `null` 会清空该字段
 - `GET /sources/:id` 对 PikPak 返回 `secret_fields`；默认不在 `config` 中返回明文 secret，具备 `source.secret.read` capability 时才会返回 `config.username/password/refresh_token/captcha_token/device_id`
 - token/captcha/device_id 运行态刷新后会更新当前请求内的 source 配置；持久化写回仓储属于后续增强点，create/update 的探测阶段会随实体保存
+- PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required 等用户可修正错误不会重试，最终仍按稳定错误码返回
 
 补充：
 

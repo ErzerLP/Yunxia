@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"yunxia/internal/domain/entity"
 	domainstorage "yunxia/internal/domain/storage"
@@ -569,6 +570,99 @@ func TestPikPakHTTPClientWriteRequests(t *testing.T) {
 	}
 	if !reflect.DeepEqual(seen, expected) {
 		t.Fatalf("unexpected requests = %v", seen)
+	}
+}
+
+func TestPikPakHTTPClientRetriesTransientWriteRequest(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() attempt %d error = %v", attempts, err)
+		}
+		if payload["name"] != "retry-folder" {
+			t.Fatalf("unexpected retry payload = %+v", payload)
+		}
+		if attempts < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error_code":"provider_busy"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"folder-retry","name":"retry-folder","kind":"drive#folder"}`))
+	}))
+	defer server.Close()
+
+	var delays []time.Duration
+	client := NewPikPakHTTPClient(
+		WithPikPakHTTPClient(server.Client()),
+		WithPikPakBaseURLs(server.URL, server.URL, server.URL),
+		WithPikPakRetryPolicy(3, time.Second),
+		WithPikPakRetrySleeper(func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		}),
+	)
+
+	file, err := client.CreateFolder(context.Background(), PikPakSession{AccessToken: "access-token"}, "root", "retry-folder")
+	if err != nil {
+		t.Fatalf("CreateFolder() error = %v", err)
+	}
+	if file.ID != "folder-retry" || attempts != 3 {
+		t.Fatalf("expected retry success on third attempt, file=%+v attempts=%d", file, attempts)
+	}
+	if !reflect.DeepEqual(delays, []time.Duration{time.Second, 2 * time.Second}) {
+		t.Fatalf("unexpected retry delays = %v", delays)
+	}
+}
+
+func TestPikPakHTTPClientDoesNotRetryTokenInvalid(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error_code":"invalid_token"}`))
+	}))
+	defer server.Close()
+
+	client := NewPikPakHTTPClient(
+		WithPikPakHTTPClient(server.Client()),
+		WithPikPakBaseURLs(server.URL, server.URL, server.URL),
+		WithPikPakRetryPolicy(3, 0),
+		WithPikPakRetrySleeper(func(context.Context, time.Duration) error {
+			t.Fatalf("token invalid must not retry")
+			return nil
+		}),
+	)
+	_, err := client.About(context.Background(), PikPakSession{AccessToken: "expired"})
+	if !errors.Is(err, domainstorage.ErrCloudTokenInvalid) {
+		t.Fatalf("expected token invalid, got %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected one unauthorized attempt, got %d", attempts)
+	}
+}
+
+func TestPikPakHTTPClientRateLimitKeepsRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error_code":"too_many_requests"}`))
+	}))
+	defer server.Close()
+
+	client := NewPikPakHTTPClient(
+		WithPikPakHTTPClient(server.Client()),
+		WithPikPakBaseURLs(server.URL, server.URL, server.URL),
+		WithPikPakRetryPolicy(1, 0),
+	)
+	_, err := client.About(context.Background(), PikPakSession{AccessToken: "access-token"})
+	if !errors.Is(err, domainstorage.ErrCloudRateLimited) {
+		t.Fatalf("expected rate limited, got %v", err)
+	}
+	var providerErr *domainstorage.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.RetryAfterSeconds != 7 {
+		t.Fatalf("expected retry_after_seconds=7, got %#v", err)
 	}
 }
 

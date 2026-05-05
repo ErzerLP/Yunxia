@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -197,10 +198,13 @@ type PikPakHTTPClientOption func(*PikPakHTTPClient)
 
 // PikPakHTTPClient 是 PikPak 原始 HTTP API 的最小实现。
 type PikPakHTTPClient struct {
-	httpClient   *http.Client
-	userBaseURL  string
-	driveBaseURL string
-	aboutBaseURL string
+	httpClient       *http.Client
+	userBaseURL      string
+	driveBaseURL     string
+	aboutBaseURL     string
+	maxAttempts      int
+	retryBaseDelay   time.Duration
+	sleepBeforeRetry func(context.Context, time.Duration) error
 }
 
 // NewPikPakHTTPClient 创建 PikPak HTTP client。
@@ -209,9 +213,24 @@ func NewPikPakHTTPClient(options ...PikPakHTTPClientOption) *PikPakHTTPClient {
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
-		userBaseURL:  DefaultPikPakUserBaseURL,
-		driveBaseURL: DefaultPikPakDriveBaseURL,
-		aboutBaseURL: DefaultPikPakAboutBaseURL,
+		userBaseURL:    DefaultPikPakUserBaseURL,
+		driveBaseURL:   DefaultPikPakDriveBaseURL,
+		aboutBaseURL:   DefaultPikPakAboutBaseURL,
+		maxAttempts:    3,
+		retryBaseDelay: 500 * time.Millisecond,
+		sleepBeforeRetry: func(ctx context.Context, delay time.Duration) error {
+			if delay <= 0 {
+				return nil
+			}
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			}
+		},
 	}
 	for _, option := range options {
 		option(client)
@@ -239,6 +258,27 @@ func WithPikPakBaseURLs(userBaseURL string, driveBaseURL string, aboutBaseURL st
 		}
 		if strings.TrimSpace(aboutBaseURL) != "" {
 			c.aboutBaseURL = strings.TrimRight(strings.TrimSpace(aboutBaseURL), "/")
+		}
+	}
+}
+
+// WithPikPakRetryPolicy 覆盖 provider 临时错误重试策略。
+func WithPikPakRetryPolicy(maxAttempts int, baseDelay time.Duration) PikPakHTTPClientOption {
+	return func(c *PikPakHTTPClient) {
+		if maxAttempts > 0 {
+			c.maxAttempts = maxAttempts
+		}
+		if baseDelay >= 0 {
+			c.retryBaseDelay = baseDelay
+		}
+	}
+}
+
+// WithPikPakRetrySleeper 注入重试等待函数，测试可用它避免真实 sleep。
+func WithPikPakRetrySleeper(sleeper func(context.Context, time.Duration) error) PikPakHTTPClientOption {
+	return func(c *PikPakHTTPClient) {
+		if sleeper != nil {
+			c.sleepBeforeRetry = sleeper
 		}
 	}
 }
@@ -437,6 +477,9 @@ func (c *PikPakHTTPClient) doJSON(ctx context.Context, method string, rawURL str
 	if c.httpClient == nil {
 		c.httpClient = http.DefaultClient
 	}
+	if c.maxAttempts <= 0 {
+		c.maxAttempts = 1
+	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return err
@@ -447,49 +490,140 @@ func (c *PikPakHTTPClient) doJSON(ctx context.Context, method string, rawURL str
 	}
 	parsed.RawQuery = values.Encode()
 
-	var body io.Reader
+	var bodyData []byte
 	if payload != nil {
 		data, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
 			return marshalErr
 		}
-		body = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, parsed.String(), body)
-	if err != nil {
-		return err
-	}
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if userAgent != "" {
-		req.Header.Set("User-Agent", userAgent)
-	}
-	for key, value := range headers {
-		if value != "" {
-			req.Header.Set(key, value)
-		}
+		bodyData = data
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("%w: %v", domainstorage.ErrCloudProviderUnavailable, err)
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if err := mapPikPakHTTPError(resp.StatusCode, data); err != nil {
-		return err
-	}
-	if out == nil || len(data) == 0 {
+	var lastErr error
+	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+		var body io.Reader
+		if bodyData != nil {
+			body = bytes.NewReader(bodyData)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, parsed.String(), body)
+		if err != nil {
+			return err
+		}
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
+		for key, value := range headers {
+			if value != "" {
+				req.Header.Set(key, value)
+			}
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("%w: %v", domainstorage.ErrCloudProviderUnavailable, err)
+			if !isRetryablePikPakTransportError(err) || attempt >= c.maxAttempts {
+				return lastErr
+			}
+			if err := c.waitBeforePikPakRetry(ctx, attempt, 0, method, parsed, err); err != nil {
+				return err
+			}
+			continue
+		}
+
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		retryAfter := parsePikPakRetryAfter(resp.Header.Get("Retry-After"))
+		if retryablePikPakStatus(resp.StatusCode) && attempt < c.maxAttempts {
+			if err := c.waitBeforePikPakRetry(ctx, attempt, retryAfter, method, parsed, nil); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := mapPikPakHTTPError(resp.StatusCode, data); err != nil {
+			if retryAfter > 0 {
+				if providerErr, ok := err.(*domainstorage.ProviderError); ok && providerErr.RetryAfterSeconds == 0 {
+					providerErr.RetryAfterSeconds = int(retryAfter.Seconds())
+				}
+			}
+			return err
+		}
+		if out == nil || len(data) == 0 {
+			return nil
+		}
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("%w: invalid provider response", domainstorage.ErrCloudProviderUnavailable)
+		}
 		return nil
 	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("%w: invalid provider response", domainstorage.ErrCloudProviderUnavailable)
+	if lastErr != nil {
+		return lastErr
 	}
-	return nil
+	return domainstorage.NewProviderError(domainstorage.ErrCloudProviderUnavailable, "cloud provider unavailable")
+}
+
+func (c *PikPakHTTPClient) waitBeforePikPakRetry(ctx context.Context, attempt int, retryAfter time.Duration, method string, parsed *url.URL, cause error) error {
+	delay := retryAfter
+	if delay <= 0 {
+		delay = c.retryBaseDelay * time.Duration(1<<(attempt-1))
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	slog.Default().WarnContext(ctx, "pikpak provider request retry",
+		slog.String("event", "pikpak.provider.retry"),
+		slog.String("method", method),
+		slog.String("host", parsed.Host),
+		slog.String("path", parsed.EscapedPath()),
+		slog.Int("attempt", attempt),
+		slog.Int("max_attempts", c.maxAttempts),
+		slog.Int64("delay_ms", delay.Milliseconds()),
+		slog.String("cause", sanitizedPikPakRetryCause(cause)),
+	)
+	if c.sleepBeforeRetry == nil {
+		return nil
+	}
+	return c.sleepBeforeRetry(ctx, delay)
+}
+
+func retryablePikPakStatus(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusBadGateway ||
+		status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout ||
+		status >= 500
+}
+
+func isRetryablePikPakTransportError(err error) bool {
+	return err != nil
+}
+
+func parsePikPakRetryAfter(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
+		}
+	}
+	return 0
+}
+
+func sanitizedPikPakRetryCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "transport_error"
 }
 
 func sessionHeaders(session PikPakSession) map[string]string {
