@@ -469,6 +469,7 @@ PikPak 字段说明：
 - token/captcha/device_id 运行态刷新后会更新当前 source 配置并通过 source repository 持久化写回；服务重启后可继续使用最新 refresh/captcha/device 信息
 - PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required、region blocked 等用户或部署可修正错误不会重试，最终仍按稳定错误码返回
 - PikPak provider 返回区域/网络出口限制（例如大陆网络出口被拒绝）时，接口返回 `451 CLOUD_REGION_BLOCKED`；可通过调整后端网络出口、设置运行环境代理或填写 `config.proxy_url` 解决
+- PikPak provider 要求人工验证时，接口返回 `422 CLOUD_CAPTCHA_REQUIRED`；如果 provider 返回验证页面，响应会在 `error.details.verification_url` 中给出可打开的验证地址，管理员完成验证后把得到的 `captcha_token` 作为 `secret_patch.captcha_token` 重新提交或测试
 - 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
 - PikPak 上传现在同时支持两条后端路径：前端在 `/upload/init.file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 时，后端优先创建 provider OSS 直传计划；未传 GCID 或传普通 MD5/空值时，后端自动回退为 `server_chunk -> ImportFile`
 

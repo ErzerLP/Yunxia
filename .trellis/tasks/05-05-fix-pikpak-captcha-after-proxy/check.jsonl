@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend checklist for final review."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Verify storage driver registry/PikPak structure remains compliant."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Verify CLOUD_CAPTCHA_REQUIRED/API behavior consistency."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify tests and gofmt expectations."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Verify secret-safe logging."}
+{"file": ".trellis/tasks/05-05-fix-pikpak-captcha-after-proxy/research/openlist-pikpak-comparison.md", "reason": "Verify PikPak captcha/action/user-agent parity against OpenList findings."}

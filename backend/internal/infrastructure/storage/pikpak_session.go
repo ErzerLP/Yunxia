@@ -237,7 +237,7 @@ func (m *PikPakSessionManager) refreshDriveCaptchaAfterAuth(ctx context.Context,
 	cfg.RefreshToken = state.RefreshToken
 	cfg.CaptchaToken = state.CaptchaToken
 	cfg.DeviceID = state.DeviceID
-	captcha, err := m.client.RefreshCaptcha(ctx, cfg, pikPakDriveListCaptchaAction, state.UserID, state.AccessToken)
+	captcha, err := m.client.RefreshCaptcha(ctx, withPikPakCaptchaUserAgentUserID(cfg, ""), pikPakDriveListCaptchaAction, state.UserID, state.AccessToken)
 	if err != nil {
 		return err
 	}

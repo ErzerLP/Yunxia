@@ -305,6 +305,10 @@ append verification notes for lint/build and the remaining smoke gap.
 - Non-local sources can be WebDAV-exposed when backend supports it. The frontend
   only shows/copies the URL and read-only state; it does not implement a WebDAV
   client.
+- WebDAV requires HTTPS semantics on the backend. When generating copyable
+  WebDAV URLs from an HTTP admin page, do not copy `http://.../dav/...` as-is;
+  generate an HTTPS URL and show a concise note that HTTP deployments need an
+  HTTPS reverse proxy forwarding `X-Forwarded-Proto: https`.
 - Upload direct URLs/headers are short-lived transport instructions. Do not log,
   persist, or store `Authorization`, `X-OSS-Security-Token`, or provider-specific
   signing headers.
@@ -320,6 +324,11 @@ append verification notes for lint/build and the remaining smoke gap.
 | `SOURCE_OPERATION_UNSUPPORTED` | Explain the unsupported operation, e.g. pause/resume/permanent delete |
 | `FILE_ALREADY_EXISTS` / `NAME_CONFLICT` | Tell the user to rename or choose another target |
 | `NO_BACKING_STORAGE` | Tell the user to enter a concrete mounted directory |
+
+Provider errors may be nested under a generic source error, e.g.
+`source connection failed: cloud captcha required`. The frontend must inspect
+both stable error codes and nested raw messages, then show the more specific
+Chinese action hint instead of the backend English chain.
 
 ### 5. Good/Base/Bad Cases
 

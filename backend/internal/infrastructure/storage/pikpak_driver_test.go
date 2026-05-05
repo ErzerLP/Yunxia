@@ -258,6 +258,121 @@ func TestPikPakDriverTestUsesProviderCompatibleAuthContext(t *testing.T) {
 	}
 }
 
+func TestPikPakDriverTestMatchesOpenListRootAndAndroidCaptchaFlow(t *testing.T) {
+	const (
+		username = "user@example.com"
+		password = "password-value"
+	)
+	deviceID := GeneratePikPakDeviceID(username, password)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeFailure := func(message string) {
+			t.Errorf("%s", message)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error_code":"invalid_token"}`))
+		}
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.EscapedPath() == "/v1/shield/captcha/init":
+			if got := r.Header.Get("X-Device-ID"); got != deviceID {
+				writeFailure("captcha init missing Android X-Device-ID")
+				return
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("Decode captcha payload error = %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			action, _ := payload["action"].(string)
+			switch action {
+			case "POST:/v1/auth/signin":
+				if !strings.Contains(r.Header.Get("User-Agent"), "usrno/ appname/android-com.pikcloud.pikpak") {
+					writeFailure("pre-login Android captcha user-agent should not include user id")
+					return
+				}
+				_, _ = w.Write([]byte(`{"captcha_token":"captcha-login","expires_in":300}`))
+			case pikPakDriveListCaptchaAction:
+				if got := r.Header.Get("Authorization"); got != "Bearer access-1" {
+					writeFailure("post-login captcha init missing Authorization")
+					return
+				}
+				if !strings.Contains(r.Header.Get("User-Agent"), "usrno/ appname/android-com.pikcloud.pikpak") {
+					writeFailure("initial post-login Android captcha should still use pre-login user-agent")
+					return
+				}
+				meta, ok := payload["meta"].(map[string]any)
+				if !ok || meta["user_id"] != "user-id" || meta["captcha_sign"] == "" {
+					writeFailure("post-login captcha meta should include provider user_id and captcha_sign")
+					return
+				}
+				_, _ = w.Write([]byte(`{"captcha_token":"captcha-drive","expires_in":300}`))
+			default:
+				writeFailure("unexpected captcha action " + action)
+			}
+		case r.Method == http.MethodPost && r.URL.EscapedPath() == "/v1/auth/signin":
+			_, _ = w.Write([]byte(`{"access_token":"access-1","refresh_token":"refresh-1","sub":"user-id"}`))
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/drive/v1/files":
+			if got := r.URL.Query().Get("parent_id"); got != "root" {
+				t.Errorf("empty root_folder_id should be sent to provider as parent_id=root, got %q", got)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if _, exists := r.URL.Query()["page_token"]; !exists {
+				t.Errorf("first drive list request should include an explicit empty page_token")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if got := r.Header.Get("X-Captcha-Token"); got != "captcha-drive" {
+				writeFailure("drive list used unexpected captcha token")
+				return
+			}
+			if !strings.Contains(r.Header.Get("User-Agent"), "usrno/user-id appname/android-com.pikcloud.pikpak") {
+				writeFailure("drive list Android user-agent should include user id after post-login captcha")
+				return
+			}
+			_, _ = w.Write([]byte(`{"files":[]}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cfg := PikPakConfig{
+		Platform:         "android",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		Username:         username,
+		Password:         password,
+	}
+	raw, err := cfg.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		ID:         12,
+		Name:       "PikPak",
+		DriverType: PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	client := NewPikPakHTTPClient(
+		WithPikPakHTTPClient(server.Client()),
+		WithPikPakBaseURLs(server.URL, server.URL, server.URL),
+		WithPikPakRetryPolicy(1, 0),
+	)
+	driver := NewPikPakDriver(WithPikPakAPIClient(client))
+
+	if err := driver.Test(context.Background(), source); err != nil {
+		t.Fatalf("Test() error = %v", err)
+	}
+}
+
 func TestPikPakDriverWriteOperationsSuccess(t *testing.T) {
 	client := &fakePikPakClient{
 		filesByParent: map[string][]PikPakFile{
@@ -786,6 +901,21 @@ func TestPikPakHTTPErrorMappingFileNotFoundAndSanitizedProviderMessage(t *testin
 	regionErr = mapPikPakHTTPError(http.StatusForbidden, []byte(`{"error_description":"AccessProhibited","details":"Sorry, PikPak is not available in your region"}`))
 	if !errors.Is(regionErr, domainstorage.ErrCloudRegionBlocked) {
 		t.Fatalf("expected region-block payload without explicit error_code to map to cloud region blocked, got %v", regionErr)
+	}
+
+	captchaErr := mapPikPakHTTPError(http.StatusBadRequest, []byte(`{"error_code":"captcha_required","url":"https://verify.example/captcha"}`))
+	var providerErr *domainstorage.ProviderError
+	if !errors.Is(captchaErr, domainstorage.ErrCloudCaptchaRequired) || !errors.As(captchaErr, &providerErr) {
+		t.Fatalf("expected captcha payload to map to provider captcha error, got %v", captchaErr)
+	}
+	if providerErr.VerificationURL != "https://verify.example/captcha" || providerErr.ProviderCode != "captcha_required" {
+		t.Fatalf("expected captcha verification url/code to be preserved, got %+v", providerErr)
+	}
+
+	captchaErr = mapPikPakHTTPError(http.StatusBadRequest, []byte(`{"error":"verification_required","details":{"verification_url":"https://verify.example/nested"}}`))
+	providerErr = nil
+	if !errors.As(captchaErr, &providerErr) || providerErr.VerificationURL != "https://verify.example/nested" {
+		t.Fatalf("expected nested captcha verification url to be preserved, got %v / %+v", captchaErr, providerErr)
 	}
 
 	err := mapPikPakHTTPError(http.StatusBadRequest, []byte(`{"error_code":"9999","error_description":"raw token secret should not leak"}`))

@@ -36,6 +36,9 @@ type PikPakConfig struct {
 	RefreshToken string `json:"refresh_token,omitempty"`
 	CaptchaToken string `json:"captcha_token,omitempty"`
 	DeviceID     string `json:"device_id,omitempty"`
+
+	// captchaUserAgentUserID 仅用于兼容 Android 首次登录后 captcha 的 UA 时序，不持久化。
+	captchaUserAgentUserID *string
 }
 
 // SecretMask 描述敏感字段的脱敏状态。
@@ -200,6 +203,26 @@ func (c *PikPakConfig) normalize() {
 	c.CaptchaToken = strings.TrimSpace(c.CaptchaToken)
 	c.DeviceID = strings.TrimSpace(c.DeviceID)
 	c.ProxyURL = strings.TrimSpace(c.ProxyURL)
+}
+
+func (c PikPakConfig) providerRootID() string {
+	rootID := strings.TrimSpace(c.RootFolderID)
+	if rootID == "" {
+		return "root"
+	}
+	return rootID
+}
+
+func (c PikPakConfig) captchaUserAgentID(userID string) string {
+	if c.captchaUserAgentUserID != nil {
+		return *c.captchaUserAgentUserID
+	}
+	return userID
+}
+
+func withPikPakCaptchaUserAgentUserID(cfg PikPakConfig, userID string) PikPakConfig {
+	cfg.captchaUserAgentUserID = &userID
+	return cfg
 }
 
 func validatePikPakProxyURL(value string) error {

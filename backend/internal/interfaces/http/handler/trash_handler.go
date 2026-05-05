@@ -119,7 +119,7 @@ func (h *TrashHandler) writeError(c *gin.Context, err error, notFoundCode string
 	case errors.Is(err, appsvc.ErrCloudTokenInvalid):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_TOKEN_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudCaptchaRequired), errors.Is(err, appsvc.ErrCloudCaptchaExpired):
-		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_CAPTCHA_REQUIRED", err.Error(), nil)
+		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_CAPTCHA_REQUIRED", err.Error(), cloudProviderErrorDetails(err))
 	case errors.Is(err, appsvc.ErrCloudRateLimited):
 		httpresp.Error(c, http.StatusTooManyRequests, "CLOUD_RATE_LIMITED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudRegionBlocked):

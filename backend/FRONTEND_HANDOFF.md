@@ -911,6 +911,7 @@ type PikPakSecretPatch = {
 - 非 PikPak 目标仍使用原有 staging 下载与导入策略；PikPak 原生离线下载不要求前端改创建任务入参，只需要识别任务返回的 `downloader_type="pikpak_native"`。
 - PikPak provider 429/5xx 会由后端有限退避重试；前端仍只需要处理最终稳定错误码，例如 `CLOUD_RATE_LIMITED` 或 `CLOUD_PROVIDER_UNAVAILABLE`。
 - `CLOUD_REGION_BLOCKED` 对应 HTTP 451，通常不是账号密码错误，而是后端到 PikPak 的网络出口所在区域被拒绝；UI 不要提示用户改密码。
+- `CLOUD_CAPTCHA_REQUIRED` 对应 HTTP 422；如果 `error.details.verification_url` 存在，建议 UI 展示“打开验证页面”入口，并提示管理员验证完成后把得到的 `captcha_token` 回填到 PikPak 源 secret 后重试。
 - `delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。
@@ -923,3 +924,4 @@ type PikPakSecretPatch = {
   - `cd web && npm run build` # pass
   - `cd web && node scripts/check-vfs-integration.mjs` # pass
 - 2026-05-05：后端补充 PikPak `proxy_url` 与 `CLOUD_REGION_BLOCKED`。测试机直连 PikPak 时 provider 返回区域限制，后端不再误报 `CLOUD_AUTH_FAILED`；如需要在 UI 中配置单源代理，请按上方 checklist 增加高级配置项。
+- 2026-05-05：后端补充 `CLOUD_CAPTCHA_REQUIRED` 的 `error.details.verification_url` 透出，避免真实账号触发 PikPak 人工验证时前端/测试人员拿不到验证入口。

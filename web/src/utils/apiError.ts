@@ -8,6 +8,7 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   CLOUD_TOKEN_INVALID: '网盘登录态已失效，请更新 refresh token 或重新填写账号密码。',
   CLOUD_CAPTCHA_REQUIRED: 'PikPak 需要完成安全验证，请管理员完成验证后回填 captcha_token。',
   CLOUD_RATE_LIMITED: '网盘服务请求过于频繁，请稍后再试。',
+  CLOUD_REGION_BLOCKED: '当前网络区域暂不支持访问该网盘服务，请更换可用网络或代理后重试。',
   CLOUD_PROVIDER_UNAVAILABLE: '网盘服务暂时不可用，请稍后重试。',
   SOURCE_READ_ONLY: '目标存储源当前只读，不能执行写操作。',
   NO_BACKING_STORAGE: '目标虚拟目录没有唯一的实际存储源，请进入具体挂载目录后再操作。',
@@ -31,12 +32,35 @@ export function getRawErrorMessage(error: unknown) {
 }
 
 export function getApiErrorMessage(error: unknown, fallback = '操作失败') {
+  const rawMessage = getRawErrorMessage(error)
+  const normalizedMessage = rawMessage.toLowerCase()
+  if (normalizedMessage.includes('cloud captcha required') || normalizedMessage.includes('captcha required')) {
+    return ERROR_CODE_MESSAGES.CLOUD_CAPTCHA_REQUIRED
+  }
+  if (normalizedMessage.includes('cloud captcha expired') || normalizedMessage.includes('captcha expired')) {
+    return ERROR_CODE_MESSAGES.CLOUD_CAPTCHA_REQUIRED
+  }
+  if (normalizedMessage.includes('cloud auth failed') || normalizedMessage.includes('authentication failed')) {
+    return ERROR_CODE_MESSAGES.CLOUD_AUTH_FAILED
+  }
+  if (normalizedMessage.includes('cloud token invalid') || normalizedMessage.includes('token invalid')) {
+    return ERROR_CODE_MESSAGES.CLOUD_TOKEN_INVALID
+  }
+  if (normalizedMessage.includes('cloud rate limited') || normalizedMessage.includes('rate limited')) {
+    return ERROR_CODE_MESSAGES.CLOUD_RATE_LIMITED
+  }
+  if (normalizedMessage.includes('cloud provider unavailable') || normalizedMessage.includes('provider unavailable')) {
+    return ERROR_CODE_MESSAGES.CLOUD_PROVIDER_UNAVAILABLE
+  }
+  if (normalizedMessage.includes('cloud region blocked') || normalizedMessage.includes('region blocked')) {
+    return ERROR_CODE_MESSAGES.CLOUD_REGION_BLOCKED
+  }
+
   const code = getApiErrorCode(error)
   if (code && ERROR_CODE_MESSAGES[code]) {
     return ERROR_CODE_MESSAGES[code]
   }
 
-  const rawMessage = getRawErrorMessage(error)
   if (!rawMessage) return fallback
 
   const upperMessage = rawMessage.toUpperCase()

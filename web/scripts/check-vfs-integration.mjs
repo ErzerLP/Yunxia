@@ -177,6 +177,16 @@ assertIncludes(
   '系统设置页需要能展示全局 WebDAV Base URL。',
 )
 assertIncludes(
+  'src/utils/webdav.ts',
+  'toSecureWebDAVOrigin',
+  'WebDAV 后端要求 HTTPS 语义，前端生成/复制地址时不能直接沿用当前 HTTP 页面 origin。',
+)
+assertIncludes(
+  'src/utils/webdav.ts',
+  "url.protocol = 'https:'",
+  '当前页面为 HTTP 时，WebDAV 地址需要提升为 HTTPS，避免复制出会被后端拒绝的 http://.../dav 地址。',
+)
+assertIncludes(
   'src/pages/settings/SettingsPage.tsx',
   'buildWebDAVBaseUrl',
   '系统设置页需要展示 WebDAV Base URL，而不仅是开关状态。',
@@ -205,6 +215,16 @@ assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
   'copyWebDAVUrl',
   '存储源卡片需要提供复制 WebDAV 地址的入口。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'isWebDAVOriginPromotedToHttps',
+  '存储源卡片需要识别 HTTP 页面下 WebDAV 地址已提升为 HTTPS，并展示部署提示。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  '后端 WebDAV 要求 HTTPS',
+  '存储源卡片不能静默复制 http:// WebDAV 地址；HTTP 部署下必须提示 HTTPS / X-Forwarded-Proto 要求。',
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
@@ -245,6 +265,21 @@ assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
   'getCreateSourceErrorMessage',
   '创建存储源失败提示必须经过前端脱敏/友好化，不能直接展示后端数据库错误。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'getApiErrorMessage(err, fallback)',
+  '创建存储源失败需要复用统一错误映射，不能把 source connection failed: cloud captcha required 等后端英文原文直接展示给用户。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'cloud captcha required',
+  '统一错误映射需要识别 provider 嵌套英文 cloud captcha required。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'PikPak 需要完成安全验证',
+  'PikPak captcha 错误必须展示中文友好提示。',
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',

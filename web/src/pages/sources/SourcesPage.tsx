@@ -10,7 +10,7 @@ import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useHasCapability } from '@/hooks/useCapability'
 import type { SourceDetailResponse, StorageSource, UpdateSourceRequest } from '@/types/api'
-import { buildSourceWebDAVUrl } from '@/utils/webdav'
+import { buildSourceWebDAVUrl, isWebDAVOriginPromotedToHttps } from '@/utils/webdav'
 
 type SourceDriverType = 'local' | 's3' | 'pikpak'
 type PikPakPlatform = 'web' | 'android' | 'pc'
@@ -48,7 +48,6 @@ function StatusBadge({ status }: { status: StorageSource['status'] }) {
 function getCreateSourceErrorMessage(err: unknown) {
   const fallback = '创建存储源失败'
   const rawMessage = err instanceof Error ? err.message : ''
-  if (!rawMessage) return fallback
 
   const message = rawMessage.toLowerCase()
   if (
@@ -67,7 +66,7 @@ function getCreateSourceErrorMessage(err: unknown) {
     return '存储源配置存在重复项，请检查名称、挂载路径后重试。'
   }
 
-  return rawMessage
+  return getApiErrorMessage(err, fallback)
 }
 
 function getLocalBasePath(config: Record<string, unknown> | undefined) {
@@ -958,6 +957,7 @@ export function SourcesPage() {
     enabled: isAuthenticated && canReadSystemConfig,
     retry: false,
   })
+  const webDAVPromotedToHttps = isWebDAVOriginPromotedToHttps()
 
   const copyWebDAVUrl = async (url: string) => {
     try {
@@ -1159,6 +1159,11 @@ export function SourcesPage() {
                       )}
                       {canReadSystemConfig && systemConfig?.webdav_enabled === false && (
                         <p className="text-[11px] text-muted-foreground">全局 WebDAV 当前未启用</p>
+                      )}
+                      {webDAVPromotedToHttps && (
+                        <p className="text-[11px] text-muted-foreground">
+                          后端 WebDAV 要求 HTTPS，已按 HTTPS 生成地址；当前 HTTP 部署需通过带 X-Forwarded-Proto: https 的反向代理访问。
+                        </p>
                       )}
                       {!canReadSystemConfig && (
                         <p className="text-[11px] text-muted-foreground">

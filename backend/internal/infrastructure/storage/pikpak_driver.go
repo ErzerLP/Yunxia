@@ -137,7 +137,7 @@ func WithPikPakPathCache(cache *PikPakPathCache) PikPakDriverOption {
 // Test 做最小连通性检查：建立 session 后列根目录。
 func (d *PikPakDriver) Test(ctx context.Context, source *entity.StorageSource) error {
 	return d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
-		_, err := d.listFilesAll(ctx, session, cfg.RootFolderID)
+		_, err := d.listFilesAll(ctx, session, cfg.providerRootID())
 		return err
 	})
 }
@@ -558,7 +558,7 @@ func (d *PikPakDriver) ensureFolderPathWithSession(ctx context.Context, sourceID
 		return cached, nil
 	}
 	current := PikPakFile{
-		ID:   cfg.RootFolderID,
+		ID:   cfg.providerRootID(),
 		Name: "/",
 		Kind: "drive#folder",
 	}
@@ -828,7 +828,7 @@ func (d *PikPakDriver) resolvePathWithSession(ctx context.Context, sourceID uint
 		return cached, nil
 	}
 	current := PikPakFile{
-		ID:   cfg.RootFolderID,
+		ID:   cfg.providerRootID(),
 		Name: "/",
 		Kind: "drive#folder",
 	}
@@ -878,14 +878,14 @@ func (d *PikPakDriver) cachedPath(sourceID uint, cfg PikPakConfig, virtualPath s
 	if d == nil || d.pathCache == nil {
 		return PikPakFile{}, false
 	}
-	return d.pathCache.get(sourceID, cfg.RootFolderID, virtualPath)
+	return d.pathCache.get(sourceID, cfg.providerRootID(), virtualPath)
 }
 
 func (d *PikPakDriver) cachePath(sourceID uint, cfg PikPakConfig, virtualPath string, file PikPakFile) {
 	if d == nil || d.pathCache == nil {
 		return
 	}
-	d.pathCache.set(sourceID, cfg.RootFolderID, virtualPath, file, time.Duration(cfg.CacheTTLSeconds)*time.Second)
+	d.pathCache.set(sourceID, cfg.providerRootID(), virtualPath, file, time.Duration(cfg.CacheTTLSeconds)*time.Second)
 }
 
 func (d *PikPakDriver) cacheChildren(sourceID uint, cfg PikPakConfig, parentPath string, files []PikPakFile) {
@@ -901,7 +901,7 @@ func (d *PikPakDriver) invalidatePikPakPathCache(sourceID uint, cfg PikPakConfig
 	if d == nil || d.pathCache == nil {
 		return
 	}
-	d.pathCache.clearSource(sourceID, cfg.RootFolderID)
+	d.pathCache.clearSource(sourceID, cfg.providerRootID())
 }
 
 func (d *PikPakDriver) listFilesAll(ctx context.Context, session PikPakSession, parentID string) ([]PikPakFile, error) {

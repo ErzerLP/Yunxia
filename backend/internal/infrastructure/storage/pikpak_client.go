@@ -367,7 +367,7 @@ func (c *PikPakHTTPClient) RefreshCaptcha(ctx context.Context, cfg PikPakConfig,
 	if err != nil {
 		return nil, err
 	}
-	userAgent := buildPikPakUserAgent(cfg, platform, userID)
+	userAgent := buildPikPakUserAgent(cfg, platform, cfg.captchaUserAgentID(userID))
 	meta := buildPikPakCaptchaMeta(cfg, platform, userID)
 	payload := map[string]any{
 		"action":        action,
@@ -385,6 +385,7 @@ func (c *PikPakHTTPClient) RefreshCaptcha(ctx context.Context, cfg PikPakConfig,
 		return nil, &domainstorage.ProviderError{
 			Kind:            domainstorage.ErrCloudCaptchaRequired,
 			Message:         "cloud captcha required",
+			ProviderCode:    "captcha_required",
 			VerificationURL: resp.URL,
 		}
 	}
@@ -399,9 +400,7 @@ func (c *PikPakHTTPClient) ListFiles(ctx context.Context, session PikPakSession,
 		"with_audit":     "true",
 		"limit":          "100",
 		"filters":        `{"phase":{"eq":"PHASE_TYPE_COMPLETE"},"trashed":{"eq":false}}`,
-	}
-	if pageToken != "" {
-		query["page_token"] = pageToken
+		"page_token":     pageToken,
 	}
 	var resp PikPakListFilesResponse
 	if err := c.doJSONWithProxy(ctx, http.MethodGet, c.driveBaseURL+"/drive/v1/files", session.ProxyURL, session.UserAgent, sessionHeaders(session), query, nil, &resp); err != nil {
@@ -848,17 +847,25 @@ type pikPakErrorPayload struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
 	Details          any    `json:"details"`
+	URL              string `json:"url"`
+	VerificationURL  string `json:"verification_url"`
+	CaptchaURL       string `json:"captcha_url"`
+	RedirectURL      string `json:"redirect_url"`
 }
 
 func mapPikPakHTTPError(status int, body []byte) error {
 	var payload pikPakErrorPayload
 	_ = json.Unmarshal(body, &payload)
 	code := pikPakProviderErrorSignal(payload)
+	verificationURL := pikPakPayloadVerificationURL(payload)
 	if isPikPakRegionBlockedPayload(payload) {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
 	}
 	if code != "" && code != "0" {
 		return mapPikPakProviderCode(code, payload)
+	}
+	if status >= http.StatusBadRequest && verificationURL != "" {
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", VerificationURL: verificationURL}
 	}
 	switch {
 	case status >= 200 && status < 300:
@@ -880,6 +887,7 @@ func mapPikPakHTTPError(status int, body []byte) error {
 
 func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
 	message := sanitizedPikPakErrorMessage(payload)
+	verificationURL := pikPakPayloadVerificationURL(payload)
 	if isPikPakRegionBlockedPayload(payload) {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
 	}
@@ -895,12 +903,12 @@ func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
 	case "9", "captcha_expired", "captcha_token_expired":
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaExpired, Message: "cloud captcha expired", ProviderCode: code}
 	case "captcha_required", "verification_required":
-		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code}
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code, VerificationURL: verificationURL}
 	case "10", "rate_limited", "too_many_requests":
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRateLimited, Message: "cloud rate limited", ProviderCode: code}
 	default:
 		if strings.Contains(strings.ToLower(message), "verify") {
-			return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code}
+			return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code, VerificationURL: verificationURL}
 		}
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudProviderUnavailable, Message: "cloud provider request failed", ProviderCode: code}
 	}
@@ -933,6 +941,60 @@ func sanitizedPikPakErrorMessage(payload pikPakErrorPayload) string {
 	for _, value := range []string{payload.ErrorDescription, payload.Error, pikPakPayloadDetailsString(payload.Details)} {
 		value = strings.TrimSpace(value)
 		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func pikPakPayloadVerificationURL(payload pikPakErrorPayload) string {
+	for _, value := range []string{payload.URL, payload.VerificationURL, payload.CaptchaURL, payload.RedirectURL} {
+		if verificationURL := sanitizePikPakVerificationURL(value); verificationURL != "" {
+			return verificationURL
+		}
+	}
+	return pikPakDetailsVerificationURL(payload.Details)
+}
+
+func pikPakDetailsVerificationURL(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return sanitizePikPakVerificationURL(typed)
+	case map[string]any:
+		for _, key := range []string{"url", "verification_url", "captcha_url", "redirect_url"} {
+			if verificationURL := pikPakDetailsVerificationURL(typed[key]); verificationURL != "" {
+				return verificationURL
+			}
+		}
+		for _, nested := range typed {
+			if verificationURL := pikPakDetailsVerificationURL(nested); verificationURL != "" {
+				return verificationURL
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if verificationURL := pikPakDetailsVerificationURL(nested); verificationURL != "" {
+				return verificationURL
+			}
+		}
+	}
+	return ""
+}
+
+func sanitizePikPakVerificationURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+		if parsed.Host != "" {
 			return value
 		}
 	}
