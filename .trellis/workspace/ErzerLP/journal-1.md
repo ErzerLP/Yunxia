@@ -154,3 +154,38 @@ Adapted PikPak source UI, VFS/task/upload handling, tester handoff, and frontend
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: PostgreSQL-only backend migration
+
+**Date**: 2026-05-06
+**Task**: PostgreSQL-only backend migration
+**Branch**: `main`
+
+### Summary
+
+Implemented PostgreSQL-only backend runtime and repository abstractions, fixed DSN timezone after test-server Docker validation, archived the Trellis migration task.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1526ace` | (see git log) |
+| `6df7f87` | (see git log) |
+| `3e2fc21` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

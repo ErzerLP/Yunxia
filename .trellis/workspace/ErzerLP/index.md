@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-05-06
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~156 | Active |
+| `journal-1.md` | ~191 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-05-06 | PostgreSQL-only backend migration | `1526ace`, `6df7f87`, `3e2fc21` | `main` |
 | 4 | 2026-05-06 | Fix qBittorrent sidecar auth and RSS enqueue | `702a3ef`, `e673da5`, `30159f4`, `de5ead3` | `main` |
 | 3 | 2026-05-05 | Frontend PikPak storage handoff adaptation | `15f6699` | `main` |
 | 2 | 2026-05-03 | RSS automation and notification handoff completed | `49d7d60`, `6e2f475` | `main` |
