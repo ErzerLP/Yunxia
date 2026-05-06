@@ -24,8 +24,8 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 // Create 创建用户。
 func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 	model := userModelFromEntity(user)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 
 	*user = *userEntityFromModel(model)
@@ -35,7 +35,7 @@ func (r *UserRepository) Create(ctx context.Context, user *entity.User) error {
 // FindByID 按 ID 查询用户。
 func (r *UserRepository) FindByID(ctx context.Context, id uint) (*entity.User, error) {
 	var model UserModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeError(err)
 	}
 
@@ -45,7 +45,7 @@ func (r *UserRepository) FindByID(ctx context.Context, id uint) (*entity.User, e
 // FindByUsername 按用户名查询用户。
 func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*entity.User, error) {
 	var model UserModel
-	if err := r.db.WithContext(ctx).Where("username = ?", username).First(&model).Error; err != nil {
+	if err := dbFor(ctx, r.db).Where("username = ?", username).First(&model).Error; err != nil {
 		return nil, normalizeError(err)
 	}
 
@@ -54,7 +54,7 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 
 // List 返回筛选后的用户列表。
 func (r *UserRepository) List(ctx context.Context, filter domainrepo.UserListFilter) ([]*entity.User, error) {
-	query := r.db.WithContext(ctx).Model(&UserModel{})
+	query := dbFor(ctx, r.db).Model(&UserModel{})
 	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
 		like := "%" + keyword + "%"
 		query = query.Where("username LIKE ? OR email LIKE ?", like, like)
@@ -65,7 +65,7 @@ func (r *UserRepository) List(ctx context.Context, filter domainrepo.UserListFil
 
 	var models []UserModel
 	if err := query.Order("created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.User, 0, len(models))
 	for index := range models {
@@ -77,8 +77,8 @@ func (r *UserRepository) List(ctx context.Context, filter domainrepo.UserListFil
 // Count 统计用户数量。
 func (r *UserRepository) Count(ctx context.Context) (int64, error) {
 	var count int64
-	if err := r.db.WithContext(ctx).Model(&UserModel{}).Count(&count).Error; err != nil {
-		return 0, err
+	if err := dbFor(ctx, r.db).Model(&UserModel{}).Count(&count).Error; err != nil {
+		return 0, normalizeGormError(err)
 	}
 
 	return count, nil
@@ -87,14 +87,14 @@ func (r *UserRepository) Count(ctx context.Context) (int64, error) {
 // Update 更新用户。
 func (r *UserRepository) Update(ctx context.Context, user *entity.User) error {
 	model := userModelFromEntity(user)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&UserModel{}).
 		Where("id = ?", user.ID).
 		Select("*").
 		Omit("ID", "Username", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -104,9 +104,9 @@ func (r *UserRepository) Update(ctx context.Context, user *entity.User) error {
 
 // UpdateTokenVersion 更新 token 版本。
 func (r *UserRepository) UpdateTokenVersion(ctx context.Context, id uint, tokenVersion int) error {
-	result := r.db.WithContext(ctx).Model(&UserModel{}).Where("id = ?", id).Update("token_version", tokenVersion)
+	result := dbFor(ctx, r.db).Model(&UserModel{}).Where("id = ?", id).Update("token_version", tokenVersion)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -120,7 +120,7 @@ func normalizeError(err error) error {
 		return domainrepo.ErrNotFound
 	}
 
-	return err
+	return normalizeGormError(err)
 }
 
 func userModelFromEntity(user *entity.User) *UserModel {

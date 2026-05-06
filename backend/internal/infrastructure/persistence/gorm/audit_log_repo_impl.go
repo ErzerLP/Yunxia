@@ -23,8 +23,8 @@ func NewAuditLogRepository(db *gorm.DB) *AuditLogRepository {
 // Create 创建审计日志。
 func (r *AuditLogRepository) Create(ctx context.Context, log *entity.AuditLog) error {
 	model := auditLogModelFromEntity(log)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*log = *auditLogEntityFromModel(model)
 	return nil
@@ -33,7 +33,7 @@ func (r *AuditLogRepository) Create(ctx context.Context, log *entity.AuditLog) e
 // FindByID 按 ID 查询审计日志。
 func (r *AuditLogRepository) FindByID(ctx context.Context, id uint) (*entity.AuditLog, error) {
 	var model AuditLogModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeError(err)
 	}
 	return auditLogEntityFromModel(&model), nil
@@ -41,7 +41,7 @@ func (r *AuditLogRepository) FindByID(ctx context.Context, id uint) (*entity.Aud
 
 // List 返回过滤后的审计日志。
 func (r *AuditLogRepository) List(ctx context.Context, filter entity.AuditLogFilter) ([]*entity.AuditLog, int, error) {
-	query := r.db.WithContext(ctx).Model(&AuditLogModel{})
+	query := dbFor(ctx, r.db).Model(&AuditLogModel{})
 
 	if filter.ActorUserID != nil {
 		query = query.Where("actor_user_id = ?", *filter.ActorUserID)
@@ -79,7 +79,7 @@ func (r *AuditLogRepository) List(ctx context.Context, filter entity.AuditLogFil
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
+		return nil, 0, normalizeGormError(err)
 	}
 
 	page := filter.Page
@@ -96,7 +96,7 @@ func (r *AuditLogRepository) List(ctx context.Context, filter entity.AuditLogFil
 		Offset((page - 1) * pageSize).
 		Limit(pageSize).
 		Find(&models).Error; err != nil {
-		return nil, 0, err
+		return nil, 0, normalizeGormError(err)
 	}
 
 	items := make([]*entity.AuditLog, 0, len(models))
@@ -139,9 +139,9 @@ func auditLogModelFromEntity(log *entity.AuditLog) *AuditLogModel {
 		VirtualPath:      log.VirtualPath,
 		ResolvedSourceID: log.ResolvedSourceID,
 		ResolvedPath:     log.ResolvedPath,
-		BeforeJSON:       log.BeforeJSON,
-		AfterJSON:        log.AfterJSON,
-		DetailJSON:       log.DetailJSON,
+		BeforeJSON:       jsonObject(log.BeforeJSON),
+		AfterJSON:        jsonObject(log.AfterJSON),
+		DetailJSON:       jsonObject(log.DetailJSON),
 		CreatedAt:        createdAt,
 	}
 }

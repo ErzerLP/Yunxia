@@ -23,8 +23,8 @@ func NewShareRepository(db *gorm.DB) *ShareRepository {
 // Create 创建分享链接。
 func (r *ShareRepository) Create(ctx context.Context, share *entity.ShareLink) error {
 	model := shareModelFromEntity(share)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*share = *shareEntityFromModel(model)
 	return nil
@@ -33,11 +33,11 @@ func (r *ShareRepository) Create(ctx context.Context, share *entity.ShareLink) e
 // FindByID 按 ID 查询分享链接。
 func (r *ShareRepository) FindByID(ctx context.Context, id uint) (*entity.ShareLink, error) {
 	var model ShareLinkModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return shareEntityFromModel(&model), nil
 }
@@ -45,11 +45,11 @@ func (r *ShareRepository) FindByID(ctx context.Context, id uint) (*entity.ShareL
 // FindByToken 按 token 查询分享链接。
 func (r *ShareRepository) FindByToken(ctx context.Context, token string) (*entity.ShareLink, error) {
 	var model ShareLinkModel
-	if err := r.db.WithContext(ctx).Where("token = ?", token).First(&model).Error; err != nil {
+	if err := dbFor(ctx, r.db).Where("token = ?", token).First(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return shareEntityFromModel(&model), nil
 }
@@ -57,8 +57,8 @@ func (r *ShareRepository) FindByToken(ctx context.Context, token string) (*entit
 // ListByUser 返回当前用户创建的分享链接。
 func (r *ShareRepository) ListAll(ctx context.Context) ([]*entity.ShareLink, error) {
 	var models []ShareLinkModel
-	if err := r.db.WithContext(ctx).Order("created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+	if err := dbFor(ctx, r.db).Order("created_at desc, id desc").Find(&models).Error; err != nil {
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.ShareLink, 0, len(models))
 	for i := range models {
@@ -70,8 +70,8 @@ func (r *ShareRepository) ListAll(ctx context.Context) ([]*entity.ShareLink, err
 // ListByUser 返回当前用户创建的分享链接。
 func (r *ShareRepository) ListByUser(ctx context.Context, userID uint) ([]*entity.ShareLink, error) {
 	var models []ShareLinkModel
-	if err := r.db.WithContext(ctx).Where("user_id = ?", userID).Order("created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+	if err := dbFor(ctx, r.db).Where("user_id = ?", userID).Order("created_at desc, id desc").Find(&models).Error; err != nil {
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.ShareLink, 0, len(models))
 	for i := range models {
@@ -87,7 +87,7 @@ func (r *ShareRepository) Update(ctx context.Context, share *entity.ShareLink) e
 		"source_id":           share.SourceID,
 		"path":                share.Path,
 		"target_virtual_path": share.TargetVirtualPath,
-		"resolved_source_id":  share.ResolvedSourceID,
+		"resolved_source_id":  nullableUint(share.ResolvedSourceID),
 		"resolved_inner_path": share.ResolvedInnerPath,
 		"name":                share.Name,
 		"is_dir":              share.IsDir,
@@ -96,9 +96,9 @@ func (r *ShareRepository) Update(ctx context.Context, share *entity.ShareLink) e
 		"expires_at":          share.ExpiresAt,
 		"updated_at":          share.UpdatedAt,
 	}
-	result := r.db.WithContext(ctx).Model(&ShareLinkModel{}).Where("id = ?", share.ID).Updates(values)
+	result := dbFor(ctx, r.db).Model(&ShareLinkModel{}).Where("id = ?", share.ID).Updates(values)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -108,9 +108,9 @@ func (r *ShareRepository) Update(ctx context.Context, share *entity.ShareLink) e
 
 // Delete 删除分享链接。
 func (r *ShareRepository) Delete(ctx context.Context, id uint) error {
-	result := r.db.WithContext(ctx).Delete(&ShareLinkModel{}, id)
+	result := dbFor(ctx, r.db).Delete(&ShareLinkModel{}, id)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -120,11 +120,11 @@ func (r *ShareRepository) Delete(ctx context.Context, id uint) error {
 
 func (r *ShareRepository) findInto(ctx context.Context, id uint, share *entity.ShareLink) error {
 	model := ShareLinkModel{}
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return domainrepo.ErrNotFound
 		}
-		return err
+		return normalizeGormError(err)
 	}
 	*share = *shareEntityFromModel(&model)
 	return nil
@@ -137,7 +137,7 @@ func shareModelFromEntity(share *entity.ShareLink) *ShareLinkModel {
 		SourceID:          share.SourceID,
 		Path:              share.Path,
 		TargetVirtualPath: share.TargetVirtualPath,
-		ResolvedSourceID:  share.ResolvedSourceID,
+		ResolvedSourceID:  nullableUint(share.ResolvedSourceID),
 		ResolvedInnerPath: share.ResolvedInnerPath,
 		Name:              share.Name,
 		IsDir:             share.IsDir,
@@ -156,7 +156,7 @@ func shareEntityFromModel(model *ShareLinkModel) *entity.ShareLink {
 		SourceID:          model.SourceID,
 		Path:              model.Path,
 		TargetVirtualPath: model.TargetVirtualPath,
-		ResolvedSourceID:  model.ResolvedSourceID,
+		ResolvedSourceID:  uintValue(model.ResolvedSourceID),
 		ResolvedInnerPath: model.ResolvedInnerPath,
 		Name:              model.Name,
 		IsDir:             model.IsDir,

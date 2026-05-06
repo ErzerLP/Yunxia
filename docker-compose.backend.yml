@@ -1,6 +1,24 @@
 name: yunxia-backend
 
 services:
+  postgres:
+    image: "${YUNXIA_DOCKER_POSTGRES_IMAGE:-postgres:16-alpine}"
+    container_name: yunxia-postgres
+    restart: unless-stopped
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      POSTGRES_DB: "${YUNXIA_POSTGRES_DB:-yunxia}"
+      POSTGRES_USER: "${YUNXIA_POSTGRES_USER:-yunxia}"
+      POSTGRES_PASSWORD: "${YUNXIA_POSTGRES_PASSWORD:-yunxia}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${YUNXIA_POSTGRES_USER:-yunxia} -d ${YUNXIA_POSTGRES_DB:-yunxia}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   backend:
     build:
       context: ./backend
@@ -26,7 +44,13 @@ services:
       YUNXIA_SERVER_HOST: "0.0.0.0"
       YUNXIA_SERVER_PORT: "8080"
       YUNXIA_SERVER_MODE: "${YUNXIA_SERVER_MODE:-release}"
-      YUNXIA_DATABASE_DSN: "/app/data/database.db"
+      YUNXIA_DATABASE_DSN: "${YUNXIA_DATABASE_DSN:-postgres://${YUNXIA_POSTGRES_USER:-yunxia}:${YUNXIA_POSTGRES_PASSWORD:-yunxia}@postgres:5432/${YUNXIA_POSTGRES_DB:-yunxia}?sslmode=disable&TimeZone=Asia%2FShanghai}"
+      YUNXIA_DATABASE_AUTO_MIGRATE: "${YUNXIA_DATABASE_AUTO_MIGRATE:-true}"
+      YUNXIA_DATABASE_MAX_OPEN_CONNS: "${YUNXIA_DATABASE_MAX_OPEN_CONNS:-25}"
+      YUNXIA_DATABASE_MAX_IDLE_CONNS: "${YUNXIA_DATABASE_MAX_IDLE_CONNS:-5}"
+      YUNXIA_DATABASE_CONN_MAX_LIFETIME: "${YUNXIA_DATABASE_CONN_MAX_LIFETIME:-1h}"
+      YUNXIA_DATABASE_CONN_MAX_IDLE_TIME: "${YUNXIA_DATABASE_CONN_MAX_IDLE_TIME:-10m}"
+      YUNXIA_DATABASE_SLOW_THRESHOLD: "${YUNXIA_DATABASE_SLOW_THRESHOLD:-500ms}"
       YUNXIA_STORAGE_DATA_DIR: "/app/data/storage"
       YUNXIA_STORAGE_TEMP_DIR: "/app/data/temp"
       YUNXIA_JWT_SECRET: "${YUNXIA_JWT_SECRET:-change-me-in-production}"
@@ -47,8 +71,12 @@ services:
       - backend-data:/app/data
       - backend-downloads:/downloads
     depends_on:
-      - aria2
-      - qbittorrent
+      postgres:
+        condition: service_healthy
+      aria2:
+        condition: service_started
+      qbittorrent:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/v1/health"]
       interval: 30s
@@ -118,6 +146,7 @@ services:
       - "${QBITTORRENT_LISTEN_PORT:-6889}:6889/udp"
 
 volumes:
+  postgres-data:
   backend-data:
   backend-downloads:
   aria2-config:

@@ -24,6 +24,7 @@ import (
 	"yunxia/internal/domain/entity"
 	appLog "yunxia/internal/infrastructure/observability/logging"
 	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
+	"yunxia/internal/infrastructure/persistence/pgtest"
 	"yunxia/internal/infrastructure/security"
 	infraStorage "yunxia/internal/infrastructure/storage"
 	httphandler "yunxia/internal/interfaces/http/handler"
@@ -494,17 +495,8 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	db, err := gormrepo.OpenSQLite(t.TempDir() + "/router.db")
-	if err != nil {
-		t.Fatalf("OpenSQLite() error = %v", err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatalf("db.DB() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = sqlDB.Close()
-	})
+	db, cleanupDB := pgtest.OpenIsolatedDB(t)
+	t.Cleanup(cleanupDB)
 
 	infoBuf := &bytes.Buffer{}
 	errBuf := &bytes.Buffer{}

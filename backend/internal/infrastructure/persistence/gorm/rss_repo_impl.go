@@ -3,7 +3,6 @@ package gorm
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	gormpkg "gorm.io/gorm"
 
@@ -23,8 +22,8 @@ func NewRSSRepository(db *gormpkg.DB) *RSSRepository {
 
 func (r *RSSRepository) CreateSource(ctx context.Context, source *entity.RSSSource) error {
 	model := rssSourceModelFromEntity(source)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*source = *rssSourceEntityFromModel(model)
 	return nil
@@ -32,14 +31,14 @@ func (r *RSSRepository) CreateSource(ctx context.Context, source *entity.RSSSour
 
 func (r *RSSRepository) UpdateSource(ctx context.Context, source *entity.RSSSource) error {
 	model := rssSourceModelFromEntity(source)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&RSSSourceModel{}).
 		Where("id = ?", source.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -48,31 +47,31 @@ func (r *RSSRepository) UpdateSource(ctx context.Context, source *entity.RSSSour
 }
 
 func (r *RSSRepository) DeleteSource(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gormpkg.DB) error {
+	return dbFor(ctx, r.db).Transaction(func(tx *gormpkg.DB) error {
 		result := tx.Delete(&RSSSourceModel{}, id)
 		if result.Error != nil {
-			return result.Error
+			return normalizeGormError(result.Error)
 		}
 		if result.RowsAffected == 0 {
 			return domainrepo.ErrNotFound
 		}
 		if err := tx.Where("source_id = ?", id).Delete(&RSSSubscriptionModel{}).Error; err != nil {
-			return err
+			return normalizeGormError(err)
 		}
-		return tx.Where("source_id = ?", id).Delete(&RSSItemModel{}).Error
+		return normalizeGormError(tx.Where("source_id = ?", id).Delete(&RSSItemModel{}).Error)
 	})
 }
 
 func (r *RSSRepository) FindSourceByID(ctx context.Context, id uint) (*entity.RSSSource, error) {
 	var model RSSSourceModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeGormNotFound(err)
 	}
 	return rssSourceEntityFromModel(&model), nil
 }
 
 func (r *RSSRepository) ListSources(ctx context.Context, filter domainrepo.RSSSourceFilter) ([]*entity.RSSSource, error) {
-	query := r.db.WithContext(ctx).Model(&RSSSourceModel{})
+	query := dbFor(ctx, r.db).Model(&RSSSourceModel{})
 	if !filter.IncludeAll {
 		query = query.Where("user_id = ?", filter.UserID)
 	}
@@ -81,7 +80,7 @@ func (r *RSSRepository) ListSources(ctx context.Context, filter domainrepo.RSSSo
 	}
 	var models []RSSSourceModel
 	if err := query.Order("created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.RSSSource, 0, len(models))
 	for i := range models {
@@ -94,14 +93,14 @@ func (r *RSSRepository) CreateSubscription(ctx context.Context, subscription *en
 	requestedEnabled := subscription.IsEnabled
 	model, err := rssSubscriptionModelFromEntity(subscription)
 	if err != nil {
-		return err
+		return normalizeGormError(err)
 	}
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	if !requestedEnabled {
-		if err := r.db.WithContext(ctx).Model(&RSSSubscriptionModel{}).Where("id = ?", model.ID).UpdateColumn("is_enabled", false).Error; err != nil {
-			return err
+		if err := dbFor(ctx, r.db).Model(&RSSSubscriptionModel{}).Where("id = ?", model.ID).UpdateColumn("is_enabled", false).Error; err != nil {
+			return normalizeGormError(err)
 		}
 		model.IsEnabled = false
 	}
@@ -112,16 +111,16 @@ func (r *RSSRepository) CreateSubscription(ctx context.Context, subscription *en
 func (r *RSSRepository) UpdateSubscription(ctx context.Context, subscription *entity.RSSSubscription) error {
 	model, err := rssSubscriptionModelFromEntity(subscription)
 	if err != nil {
-		return err
+		return normalizeGormError(err)
 	}
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&RSSSubscriptionModel{}).
 		Where("id = ?", subscription.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -130,9 +129,9 @@ func (r *RSSRepository) UpdateSubscription(ctx context.Context, subscription *en
 }
 
 func (r *RSSRepository) DeleteSubscription(ctx context.Context, id uint) error {
-	result := r.db.WithContext(ctx).Delete(&RSSSubscriptionModel{}, id)
+	result := dbFor(ctx, r.db).Delete(&RSSSubscriptionModel{}, id)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -142,14 +141,14 @@ func (r *RSSRepository) DeleteSubscription(ctx context.Context, id uint) error {
 
 func (r *RSSRepository) FindSubscriptionByID(ctx context.Context, id uint) (*entity.RSSSubscription, error) {
 	var model RSSSubscriptionModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeGormNotFound(err)
 	}
 	return rssSubscriptionEntityFromModel(&model), nil
 }
 
 func (r *RSSRepository) ListSubscriptions(ctx context.Context, filter domainrepo.RSSSubscriptionFilter) ([]*entity.RSSSubscription, error) {
-	query := r.db.WithContext(ctx).Model(&RSSSubscriptionModel{})
+	query := dbFor(ctx, r.db).Model(&RSSSubscriptionModel{})
 	if !filter.IncludeAll {
 		query = query.Where("user_id = ?", filter.UserID)
 	}
@@ -161,7 +160,7 @@ func (r *RSSRepository) ListSubscriptions(ctx context.Context, filter domainrepo
 	}
 	var models []RSSSubscriptionModel
 	if err := query.Order("created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.RSSSubscription, 0, len(models))
 	for i := range models {
@@ -172,8 +171,8 @@ func (r *RSSRepository) ListSubscriptions(ctx context.Context, filter domainrepo
 
 func (r *RSSRepository) CreateItem(ctx context.Context, item *entity.RSSItem) error {
 	model := rssItemModelFromEntity(item)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*item = *rssItemEntityFromModel(model)
 	return nil
@@ -181,14 +180,14 @@ func (r *RSSRepository) CreateItem(ctx context.Context, item *entity.RSSItem) er
 
 func (r *RSSRepository) UpdateItem(ctx context.Context, item *entity.RSSItem) error {
 	model := rssItemModelFromEntity(item)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&RSSItemModel{}).
 		Where("id = ?", item.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -198,7 +197,7 @@ func (r *RSSRepository) UpdateItem(ctx context.Context, item *entity.RSSItem) er
 
 func (r *RSSRepository) FindItemByID(ctx context.Context, id uint) (*entity.RSSItem, error) {
 	var model RSSItemModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeGormNotFound(err)
 	}
 	return rssItemEntityFromModel(&model), nil
@@ -206,14 +205,14 @@ func (r *RSSRepository) FindItemByID(ctx context.Context, id uint) (*entity.RSSI
 
 func (r *RSSRepository) FindItemByDedupKey(ctx context.Context, sourceID uint, dedupKey string) (*entity.RSSItem, error) {
 	var model RSSItemModel
-	if err := r.db.WithContext(ctx).Where("source_id = ? AND dedup_key = ?", sourceID, dedupKey).First(&model).Error; err != nil {
+	if err := dbFor(ctx, r.db).Where("source_id = ? AND dedup_key = ?", sourceID, dedupKey).First(&model).Error; err != nil {
 		return nil, normalizeGormNotFound(err)
 	}
 	return rssItemEntityFromModel(&model), nil
 }
 
 func (r *RSSRepository) ListItems(ctx context.Context, filter domainrepo.RSSItemFilter) ([]*entity.RSSItem, error) {
-	query := r.db.WithContext(ctx).Model(&RSSItemModel{})
+	query := dbFor(ctx, r.db).Model(&RSSItemModel{})
 	if !filter.IncludeAll {
 		query = query.Where("user_id = ?", filter.UserID)
 	}
@@ -234,7 +233,7 @@ func (r *RSSRepository) ListItems(ctx context.Context, filter domainrepo.RSSItem
 	}
 	var models []RSSItemModel
 	if err := query.Order("published_at desc, created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.RSSItem, 0, len(models))
 	for i := range models {
@@ -258,7 +257,7 @@ func rssSourceModelFromEntity(source *entity.RSSSource) *RSSSourceModel {
 		LastSuccessAt:          source.LastSuccessAt,
 		NextRefreshAt:          source.NextRefreshAt,
 		LastRefreshStatus:      source.LastRefreshStatus,
-		LastRefreshStatsJSON:   source.LastRefreshStatsJSON,
+		LastRefreshStatsJSON:   jsonObject(source.LastRefreshStatsJSON),
 		CreatedAt:              source.CreatedAt,
 		UpdatedAt:              source.UpdatedAt,
 	}
@@ -288,11 +287,11 @@ func rssSourceEntityFromModel(model *RSSSourceModel) *entity.RSSSource {
 func rssSubscriptionModelFromEntity(subscription *entity.RSSSubscription) (*RSSSubscriptionModel, error) {
 	mustContain, err := marshalRSSStringList(subscription.MustContain)
 	if err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	mustNotContain, err := marshalRSSStringList(subscription.MustNotContain)
 	if err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return &RSSSubscriptionModel{
 		ID:                      subscription.ID,
@@ -300,14 +299,14 @@ func rssSubscriptionModelFromEntity(subscription *entity.RSSSubscription) (*RSSS
 		SourceID:                subscription.SourceID,
 		Name:                    subscription.Name,
 		IsEnabled:               subscription.IsEnabled,
-		MustContainJSON:         mustContain,
-		MustNotContainJSON:      mustNotContain,
+		MustContainJSON:         jsonArray(mustContain),
+		MustNotContainJSON:      jsonArray(mustNotContain),
 		UseRegex:                subscription.UseRegex,
 		CaseSensitive:           subscription.CaseSensitive,
 		TargetVirtualParentPath: subscription.TargetVirtualParentPath,
 		DirectoryTemplate:       subscription.DirectoryTemplate,
 		FilenameTemplate:        subscription.FilenameTemplate,
-		ResolvedSourceID:        subscription.ResolvedSourceID,
+		ResolvedSourceID:        nullableUint(subscription.ResolvedSourceID),
 		ResolvedInnerParentPath: subscription.ResolvedInnerParentPath,
 		CreatedAt:               subscription.CreatedAt,
 		UpdatedAt:               subscription.UpdatedAt,
@@ -328,7 +327,7 @@ func rssSubscriptionEntityFromModel(model *RSSSubscriptionModel) *entity.RSSSubs
 		TargetVirtualParentPath: model.TargetVirtualParentPath,
 		DirectoryTemplate:       model.DirectoryTemplate,
 		FilenameTemplate:        model.FilenameTemplate,
-		ResolvedSourceID:        model.ResolvedSourceID,
+		ResolvedSourceID:        uintValue(model.ResolvedSourceID),
 		ResolvedInnerParentPath: model.ResolvedInnerParentPath,
 		CreatedAt:               model.CreatedAt,
 		UpdatedAt:               model.UpdatedAt,
@@ -348,7 +347,7 @@ func rssItemModelFromEntity(item *entity.RSSItem) *RSSItemModel {
 		DedupKey:              item.DedupKey,
 		DownloadURL:           item.DownloadURL,
 		LinkType:              item.LinkType,
-		ParsedJSON:            parsedJSON,
+		ParsedJSON:            jsonObject(parsedJSON),
 		Status:                item.Status,
 		MatchedSubscriptionID: item.MatchedSubscriptionID,
 		TaskID:                item.TaskID,
@@ -432,11 +431,4 @@ func unmarshalRSSStringList(raw string) []string {
 		return []string{}
 	}
 	return values
-}
-
-func normalizeGormNotFound(err error) error {
-	if errors.Is(err, gormpkg.ErrRecordNotFound) {
-		return domainrepo.ErrNotFound
-	}
-	return err
 }

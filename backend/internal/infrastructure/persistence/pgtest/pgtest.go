@@ -1,4 +1,4 @@
-package gorm
+package pgtest
 
 import (
 	"context"
@@ -8,23 +8,25 @@ import (
 	"testing"
 	"time"
 
-	appcfg "yunxia/internal/infrastructure/config"
+	gormpkg "gorm.io/gorm"
 
-	"gorm.io/gorm"
+	appcfg "yunxia/internal/infrastructure/config"
+	gormrepo "yunxia/internal/infrastructure/persistence/gorm"
 )
 
-func testDB(t *testing.T) (*gorm.DB, func()) {
+// OpenIsolatedDB 为测试创建独立 PostgreSQL schema；未配置 DSN 时跳过测试。
+func OpenIsolatedDB(t testing.TB) (*gormpkg.DB, func()) {
 	t.Helper()
 
 	dsn := strings.TrimSpace(os.Getenv("YUNXIA_TEST_DATABASE_DSN"))
 	if dsn == "" {
-		t.Skip("skip PostgreSQL repository test: set YUNXIA_TEST_DATABASE_DSN to run it")
+		t.Skip("skip PostgreSQL integration test: set YUNXIA_TEST_DATABASE_DSN to run it")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	adminRuntime, err := OpenPostgres(ctx, appcfg.DatabaseConfig{
+	cfg := appcfg.DatabaseConfig{
 		DSN:             dsn,
 		AutoMigrate:     false,
 		MaxOpenConns:    1,
@@ -32,7 +34,8 @@ func testDB(t *testing.T) (*gorm.DB, func()) {
 		ConnMaxLifetime: 0,
 		ConnMaxIdleTime: 0,
 		SlowThreshold:   500 * time.Millisecond,
-	})
+	}
+	adminRuntime, err := gormrepo.OpenPostgres(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open PostgreSQL test database: %v", err)
 	}
@@ -43,15 +46,7 @@ func testDB(t *testing.T) (*gorm.DB, func()) {
 		t.Fatalf("create test schema %s: %v", schema, err)
 	}
 
-	runtime, err := OpenPostgres(ctx, appcfg.DatabaseConfig{
-		DSN:             dsn,
-		AutoMigrate:     false,
-		MaxOpenConns:    1,
-		MaxIdleConns:    1,
-		ConnMaxLifetime: 0,
-		ConnMaxIdleTime: 0,
-		SlowThreshold:   500 * time.Millisecond,
-	})
+	runtime, err := gormrepo.OpenPostgres(ctx, cfg)
 	if err != nil {
 		_ = adminRuntime.DB.WithContext(ctx).Exec("DROP SCHEMA IF EXISTS " + quoteIdentifier(schema) + " CASCADE").Error
 		_ = adminRuntime.Close()

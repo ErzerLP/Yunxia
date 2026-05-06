@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend task entrypoint and required pre-development checklist."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Database initialization, model, repository, migration, and test conventions."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Layering and dependency direction for persistence abstractions."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Database and repository errors must map to stable service/API errors."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend testing, docs, and handoff quality bar."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Database startup/health/logging changes must avoid leaking secrets and keep operational logs stable."}
+{"file":"docs/research/postgresql-only-database-migration.md","reason":"Confirmed design plan for PostgreSQL-only migration."}

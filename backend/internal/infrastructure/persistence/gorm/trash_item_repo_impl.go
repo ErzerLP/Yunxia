@@ -23,8 +23,8 @@ func NewTrashItemRepository(db *gorm.DB) *TrashItemRepository {
 // Create 创建回收站记录。
 func (r *TrashItemRepository) Create(ctx context.Context, item *entity.TrashItem) error {
 	model := trashItemModelFromEntity(item)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*item = *trashItemEntityFromModel(model)
 	return nil
@@ -33,11 +33,11 @@ func (r *TrashItemRepository) Create(ctx context.Context, item *entity.TrashItem
 // FindByID 按 ID 查询回收站记录。
 func (r *TrashItemRepository) FindByID(ctx context.Context, id uint) (*entity.TrashItem, error) {
 	var model TrashItemModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return trashItemEntityFromModel(&model), nil
 }
@@ -45,11 +45,11 @@ func (r *TrashItemRepository) FindByID(ctx context.Context, id uint) (*entity.Tr
 // ListBySourceID 返回指定 source 的回收站记录。
 func (r *TrashItemRepository) ListBySourceID(ctx context.Context, sourceID uint) ([]*entity.TrashItem, error) {
 	var models []TrashItemModel
-	if err := r.db.WithContext(ctx).
+	if err := dbFor(ctx, r.db).
 		Where("source_id = ?", sourceID).
 		Order("deleted_at desc, id desc").
 		Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 
 	items := make([]*entity.TrashItem, 0, len(models))
@@ -61,9 +61,9 @@ func (r *TrashItemRepository) ListBySourceID(ctx context.Context, sourceID uint)
 
 // Delete 删除回收站记录。
 func (r *TrashItemRepository) Delete(ctx context.Context, id uint) error {
-	result := r.db.WithContext(ctx).Delete(&TrashItemModel{}, id)
+	result := dbFor(ctx, r.db).Delete(&TrashItemModel{}, id)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound

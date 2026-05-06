@@ -4,7 +4,7 @@
 
 ## Overview
 
-The backend lives in `backend/` and is a Go service using Gin, GORM/SQLite, JWT, `log/slog`, and DDD-style four-layer architecture. These specs describe current code, not future ideals.
+The backend lives in `backend/` and is a Go service using Gin, GORM/PostgreSQL, JWT, `log/slog`, and DDD-style four-layer architecture. These specs describe current code, not future ideals.
 
 Primary sources:
 1. Current code in `backend/internal/**`

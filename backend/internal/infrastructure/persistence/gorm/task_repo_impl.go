@@ -23,8 +23,8 @@ func NewTaskRepository(db *gorm.DB) *TaskRepository {
 // Create 创建任务。
 func (r *TaskRepository) Create(ctx context.Context, task *entity.DownloadTask) error {
 	model := taskModelFromEntity(task)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*task = *taskEntityFromModel(model)
 	return nil
@@ -33,14 +33,14 @@ func (r *TaskRepository) Create(ctx context.Context, task *entity.DownloadTask) 
 // Update 更新任务。
 func (r *TaskRepository) Update(ctx context.Context, task *entity.DownloadTask) error {
 	model := taskModelFromEntity(task)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&DownloadTaskModel{}).
 		Where("id = ?", task.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -51,11 +51,11 @@ func (r *TaskRepository) Update(ctx context.Context, task *entity.DownloadTask) 
 // FindByID 按 ID 查询任务。
 func (r *TaskRepository) FindByID(ctx context.Context, id uint) (*entity.DownloadTask, error) {
 	var model DownloadTaskModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return taskEntityFromModel(&model), nil
 }
@@ -63,8 +63,8 @@ func (r *TaskRepository) FindByID(ctx context.Context, id uint) (*entity.Downloa
 // List 返回全部任务。
 func (r *TaskRepository) List(ctx context.Context) ([]*entity.DownloadTask, error) {
 	var models []DownloadTaskModel
-	if err := r.db.WithContext(ctx).Order("updated_at desc").Find(&models).Error; err != nil {
-		return nil, err
+	if err := dbFor(ctx, r.db).Order("updated_at desc").Find(&models).Error; err != nil {
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.DownloadTask, 0, len(models))
 	for i := range models {
@@ -85,7 +85,7 @@ func taskModelFromEntity(task *entity.DownloadTask) *DownloadTaskModel {
 		TargetVirtualParentPath: task.TargetVirtualParentPath,
 		TargetFilename:          task.TargetFilename,
 		SaveVirtualPath:         task.SaveVirtualPath,
-		ResolvedSourceID:        task.ResolvedSourceID,
+		ResolvedSourceID:        nullableUint(task.ResolvedSourceID),
 		ResolvedInnerSavePath:   task.ResolvedInnerSavePath,
 		StagingDir:              task.StagingDir,
 		DisplayName:             task.DisplayName,
@@ -115,7 +115,7 @@ func taskEntityFromModel(model *DownloadTaskModel) *entity.DownloadTask {
 		TargetVirtualParentPath: model.TargetVirtualParentPath,
 		TargetFilename:          model.TargetFilename,
 		SaveVirtualPath:         model.SaveVirtualPath,
-		ResolvedSourceID:        model.ResolvedSourceID,
+		ResolvedSourceID:        uintValue(model.ResolvedSourceID),
 		ResolvedInnerSavePath:   model.ResolvedInnerSavePath,
 		StagingDir:              model.StagingDir,
 		DisplayName:             model.DisplayName,

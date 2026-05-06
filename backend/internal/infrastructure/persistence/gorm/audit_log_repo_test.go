@@ -9,7 +9,7 @@ import (
 )
 
 func TestAuditLogRepositoryCreateAndList(t *testing.T) {
-	db, cleanup := testDB(t, "file::memory:?cache=shared")
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewAuditLogRepository(db)

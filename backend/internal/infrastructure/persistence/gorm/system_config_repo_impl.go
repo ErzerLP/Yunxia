@@ -24,11 +24,11 @@ func NewSystemConfigRepository(db *gorm.DB) *SystemConfigRepository {
 // Get 获取系统配置。
 func (r *SystemConfigRepository) Get(ctx context.Context) (*entity.SystemConfig, error) {
 	var model SystemConfigModel
-	if err := r.db.WithContext(ctx).First(&model).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 
 	return systemConfigEntityFromModel(&model), nil
@@ -41,11 +41,11 @@ func (r *SystemConfigRepository) Upsert(ctx context.Context, cfg *entity.SystemC
 		model.ID = 1
 	}
 
-	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if err := dbFor(ctx, r.db).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		UpdateAll: true,
 	}).Create(model).Error; err != nil {
-		return err
+		return normalizeGormError(err)
 	}
 
 	cfg.ID = model.ID

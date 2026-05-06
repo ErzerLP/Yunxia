@@ -24,8 +24,8 @@ func NewRefreshTokenRepository(db *gorm.DB) *RefreshTokenRepository {
 // Create 创建刷新令牌记录。
 func (r *RefreshTokenRepository) Create(ctx context.Context, token *entity.RefreshToken) error {
 	model := refreshTokenModelFromEntity(token)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 
 	*token = *refreshTokenEntityFromModel(model)
@@ -35,11 +35,11 @@ func (r *RefreshTokenRepository) Create(ctx context.Context, token *entity.Refre
 // FindByTokenHash 按 token hash 查询刷新令牌。
 func (r *RefreshTokenRepository) FindByTokenHash(ctx context.Context, tokenHash string) (*entity.RefreshToken, error) {
 	var model RefreshTokenModel
-	if err := r.db.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&model).Error; err != nil {
+	if err := dbFor(ctx, r.db).Where("token_hash = ?", tokenHash).First(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 
 	return refreshTokenEntityFromModel(&model), nil
@@ -48,9 +48,9 @@ func (r *RefreshTokenRepository) FindByTokenHash(ctx context.Context, tokenHash 
 // RevokeByTokenHash 撤销刷新令牌。
 func (r *RefreshTokenRepository) RevokeByTokenHash(ctx context.Context, tokenHash string) error {
 	now := time.Now()
-	result := r.db.WithContext(ctx).Model(&RefreshTokenModel{}).Where("token_hash = ?", tokenHash).Update("revoked_at", &now)
+	result := dbFor(ctx, r.db).Model(&RefreshTokenModel{}).Where("token_hash = ?", tokenHash).Update("revoked_at", &now)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound

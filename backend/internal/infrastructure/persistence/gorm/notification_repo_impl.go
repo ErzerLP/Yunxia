@@ -23,10 +23,10 @@ func NewNotificationRepository(db *gorm.DB) *NotificationRepository {
 func (r *NotificationRepository) CreateChannel(ctx context.Context, channel *entity.NotificationChannel) error {
 	model, err := notificationChannelModelFromEntity(channel)
 	if err != nil {
-		return err
+		return normalizeGormError(err)
 	}
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*channel = *notificationChannelEntityFromModel(model)
 	return nil
@@ -35,16 +35,16 @@ func (r *NotificationRepository) CreateChannel(ctx context.Context, channel *ent
 func (r *NotificationRepository) UpdateChannel(ctx context.Context, channel *entity.NotificationChannel) error {
 	model, err := notificationChannelModelFromEntity(channel)
 	if err != nil {
-		return err
+		return normalizeGormError(err)
 	}
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&NotificationChannelModel{}).
 		Where("id = ?", channel.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -53,9 +53,9 @@ func (r *NotificationRepository) UpdateChannel(ctx context.Context, channel *ent
 }
 
 func (r *NotificationRepository) DeleteChannel(ctx context.Context, id uint) error {
-	result := r.db.WithContext(ctx).Delete(&NotificationChannelModel{}, id)
+	result := dbFor(ctx, r.db).Delete(&NotificationChannelModel{}, id)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -65,20 +65,20 @@ func (r *NotificationRepository) DeleteChannel(ctx context.Context, id uint) err
 
 func (r *NotificationRepository) FindChannelByID(ctx context.Context, id uint) (*entity.NotificationChannel, error) {
 	var model NotificationChannelModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeGormNotFound(err)
 	}
 	return notificationChannelEntityFromModel(&model), nil
 }
 
 func (r *NotificationRepository) ListChannels(ctx context.Context, filter domainrepo.NotificationChannelFilter) ([]*entity.NotificationChannel, error) {
-	query := r.db.WithContext(ctx).Model(&NotificationChannelModel{})
+	query := dbFor(ctx, r.db).Model(&NotificationChannelModel{})
 	if filter.Enabled != nil {
 		query = query.Where("is_enabled = ?", *filter.Enabled)
 	}
 	var models []NotificationChannelModel
 	if err := query.Order("created_at desc, id desc").Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.NotificationChannel, 0, len(models))
 	for i := range models {
@@ -89,8 +89,8 @@ func (r *NotificationRepository) ListChannels(ctx context.Context, filter domain
 
 func (r *NotificationRepository) CreateEvent(ctx context.Context, event *entity.NotificationEvent) error {
 	model := notificationEventModelFromEntity(event)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*event = *notificationEventEntityFromModel(model)
 	return nil
@@ -98,14 +98,14 @@ func (r *NotificationRepository) CreateEvent(ctx context.Context, event *entity.
 
 func (r *NotificationRepository) UpdateEvent(ctx context.Context, event *entity.NotificationEvent) error {
 	model := notificationEventModelFromEntity(event)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&NotificationEventModel{}).
 		Where("id = ?", event.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -115,14 +115,14 @@ func (r *NotificationRepository) UpdateEvent(ctx context.Context, event *entity.
 
 func (r *NotificationRepository) FindEventByID(ctx context.Context, id uint) (*entity.NotificationEvent, error) {
 	var model NotificationEventModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		return nil, normalizeGormNotFound(err)
 	}
 	return notificationEventEntityFromModel(&model), nil
 }
 
 func (r *NotificationRepository) ListEvents(ctx context.Context, filter domainrepo.NotificationEventFilter) ([]*entity.NotificationEvent, error) {
-	query := r.db.WithContext(ctx).Model(&NotificationEventModel{})
+	query := dbFor(ctx, r.db).Model(&NotificationEventModel{})
 	if filter.Status != "" {
 		query = query.Where("status = ?", filter.Status)
 	}
@@ -138,7 +138,7 @@ func (r *NotificationRepository) ListEvents(ctx context.Context, filter domainre
 	}
 	var models []NotificationEventModel
 	if err := query.Order("created_at desc, id desc").Limit(limit).Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.NotificationEvent, 0, len(models))
 	for i := range models {
@@ -150,19 +150,19 @@ func (r *NotificationRepository) ListEvents(ctx context.Context, filter domainre
 func notificationChannelModelFromEntity(channel *entity.NotificationChannel) (*NotificationChannelModel, error) {
 	eventTypesJSON, err := json.Marshal(channel.EventTypes)
 	if err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	configJSON, err := json.Marshal(channel.Config)
 	if err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return &NotificationChannelModel{
 		ID:             channel.ID,
 		Name:           channel.Name,
 		Type:           channel.Type,
 		IsEnabled:      channel.IsEnabled,
-		EventTypesJSON: string(eventTypesJSON),
-		ConfigJSON:     string(configJSON),
+		EventTypesJSON: jsonArray(string(eventTypesJSON)),
+		ConfigJSON:     jsonObject(string(configJSON)),
 		CreatedAt:      channel.CreatedAt,
 		UpdatedAt:      channel.UpdatedAt,
 	}, nil
@@ -197,7 +197,7 @@ func notificationEventModelFromEntity(event *entity.NotificationEvent) *Notifica
 		Severity:      event.Severity,
 		Title:         event.Title,
 		Message:       event.Message,
-		PayloadJSON:   event.PayloadJSON,
+		PayloadJSON:   jsonObject(event.PayloadJSON),
 		Status:        event.Status,
 		Attempts:      event.Attempts,
 		MaxAttempts:   event.MaxAttempts,

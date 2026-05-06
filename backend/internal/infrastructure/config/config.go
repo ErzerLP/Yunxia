@@ -29,7 +29,13 @@ type ServerConfig struct {
 
 // DatabaseConfig 表示数据库配置。
 type DatabaseConfig struct {
-	DSN string
+	DSN             string
+	AutoMigrate     bool
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+	SlowThreshold   time.Duration
 }
 
 // JWTConfig 表示令牌配置。
@@ -105,6 +111,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	connMaxLifetime, err := time.ParseDuration(v.GetString("database.conn_max_lifetime"))
+	if err != nil {
+		return Config{}, err
+	}
+	connMaxIdleTime, err := time.ParseDuration(v.GetString("database.conn_max_idle_time"))
+	if err != nil {
+		return Config{}, err
+	}
+	slowThreshold, err := time.ParseDuration(v.GetString("database.slow_threshold"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Server: ServerConfig{
@@ -113,7 +131,13 @@ func Load() (Config, error) {
 			Mode: v.GetString("server.mode"),
 		},
 		Database: DatabaseConfig{
-			DSN: v.GetString("database.dsn"),
+			DSN:             v.GetString("database.dsn"),
+			AutoMigrate:     v.GetBool("database.auto_migrate"),
+			MaxOpenConns:    v.GetInt("database.max_open_conns"),
+			MaxIdleConns:    v.GetInt("database.max_idle_conns"),
+			ConnMaxLifetime: connMaxLifetime,
+			ConnMaxIdleTime: connMaxIdleTime,
+			SlowThreshold:   slowThreshold,
 		},
 		JWT: JWTConfig{
 			Secret:             v.GetString("jwt.secret"),
@@ -162,7 +186,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.mode", "debug")
-	v.SetDefault("database.dsn", "./data/database.db")
+	v.SetDefault("database.dsn", "postgres://yunxia:yunxia@localhost:5432/yunxia?sslmode=disable&TimeZone=Asia%2FShanghai")
+	v.SetDefault("database.auto_migrate", true)
+	v.SetDefault("database.max_open_conns", 25)
+	v.SetDefault("database.max_idle_conns", 5)
+	v.SetDefault("database.conn_max_lifetime", "1h")
+	v.SetDefault("database.conn_max_idle_time", "10m")
+	v.SetDefault("database.slow_threshold", "500ms")
 	v.SetDefault("jwt.secret", "change-me-in-production")
 	v.SetDefault("jwt.access_token_expire", "15m")
 	v.SetDefault("jwt.refresh_token_expire", "168h")

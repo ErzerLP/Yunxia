@@ -23,8 +23,8 @@ func NewSourceRepository(db *gorm.DB) *SourceRepository {
 // Create 创建存储源。
 func (r *SourceRepository) Create(ctx context.Context, source *entity.StorageSource) error {
 	model := sourceModelFromEntity(source)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 
 	*source = *sourceEntityFromModel(model)
@@ -34,14 +34,14 @@ func (r *SourceRepository) Create(ctx context.Context, source *entity.StorageSou
 // Update 更新存储源。
 func (r *SourceRepository) Update(ctx context.Context, source *entity.StorageSource) error {
 	model := sourceModelFromEntity(source)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&StorageSourceModel{}).
 		Where("id = ?", source.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -52,9 +52,9 @@ func (r *SourceRepository) Update(ctx context.Context, source *entity.StorageSou
 
 // Delete 删除存储源。
 func (r *SourceRepository) Delete(ctx context.Context, id uint) error {
-	result := r.db.WithContext(ctx).Delete(&StorageSourceModel{}, id)
+	result := dbFor(ctx, r.db).Delete(&StorageSourceModel{}, id)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -66,11 +66,11 @@ func (r *SourceRepository) Delete(ctx context.Context, id uint) error {
 // FindByID 按 ID 查询存储源。
 func (r *SourceRepository) FindByID(ctx context.Context, id uint) (*entity.StorageSource, error) {
 	var model StorageSourceModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 
 	return sourceEntityFromModel(&model), nil
@@ -79,8 +79,8 @@ func (r *SourceRepository) FindByID(ctx context.Context, id uint) (*entity.Stora
 // ListAll 查询全部存储源。
 func (r *SourceRepository) ListAll(ctx context.Context) ([]*entity.StorageSource, error) {
 	var models []StorageSourceModel
-	if err := r.db.WithContext(ctx).Order("sort_order asc, id asc").Find(&models).Error; err != nil {
-		return nil, err
+	if err := dbFor(ctx, r.db).Order("sort_order asc, id asc").Find(&models).Error; err != nil {
+		return nil, normalizeGormError(err)
 	}
 
 	items := make([]*entity.StorageSource, 0, len(models))
@@ -94,8 +94,8 @@ func (r *SourceRepository) ListAll(ctx context.Context) ([]*entity.StorageSource
 // ListEnabled 查询启用的存储源。
 func (r *SourceRepository) ListEnabled(ctx context.Context) ([]*entity.StorageSource, error) {
 	var models []StorageSourceModel
-	if err := r.db.WithContext(ctx).Where("is_enabled = ?", true).Order("sort_order asc, id asc").Find(&models).Error; err != nil {
-		return nil, err
+	if err := dbFor(ctx, r.db).Where("is_enabled = ?", true).Order("sort_order asc, id asc").Find(&models).Error; err != nil {
+		return nil, normalizeGormError(err)
 	}
 
 	items := make([]*entity.StorageSource, 0, len(models))
@@ -109,11 +109,11 @@ func (r *SourceRepository) ListEnabled(ctx context.Context) ([]*entity.StorageSo
 // FindByName 按名称查询存储源。
 func (r *SourceRepository) FindByName(ctx context.Context, name string) (*entity.StorageSource, error) {
 	var model StorageSourceModel
-	if err := r.db.WithContext(ctx).Where("name = ?", name).First(&model).Error; err != nil {
+	if err := dbFor(ctx, r.db).Where("name = ?", name).First(&model).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 
 	return sourceEntityFromModel(&model), nil
@@ -122,8 +122,8 @@ func (r *SourceRepository) FindByName(ctx context.Context, name string) (*entity
 // Count 统计存储源数量。
 func (r *SourceRepository) Count(ctx context.Context) (int64, error) {
 	var count int64
-	if err := r.db.WithContext(ctx).Model(&StorageSourceModel{}).Count(&count).Error; err != nil {
-		return 0, err
+	if err := dbFor(ctx, r.db).Model(&StorageSourceModel{}).Count(&count).Error; err != nil {
+		return 0, normalizeGormError(err)
 	}
 
 	return count, nil
@@ -142,7 +142,7 @@ func sourceModelFromEntity(source *entity.StorageSource) *StorageSourceModel {
 		MountPath:       source.MountPath,
 		RootPath:        source.RootPath,
 		SortOrder:       source.SortOrder,
-		ConfigJSON:      source.ConfigJSON,
+		ConfigJSON:      jsonObject(source.ConfigJSON),
 		LastCheckedAt:   source.LastCheckedAt,
 		CreatedAt:       source.CreatedAt,
 		UpdatedAt:       source.UpdatedAt,

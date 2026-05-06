@@ -53,15 +53,20 @@ func main() {
 
 	gin.SetMode(cfg.Server.Mode)
 
-	db, err := gormrepo.OpenSQLite(cfg.Database.DSN)
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer dbCancel()
+	dbRuntime, err := gormrepo.OpenDatabase(dbCtx, cfg.Database)
 	if err != nil {
-		log.Fatalf("open sqlite: %v", err)
+		log.Fatalf("open postgres database: %v", err)
 	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		log.Fatalf("db.DB(): %v", err)
-	}
-	defer sqlDB.Close()
+	defer dbRuntime.Close()
+	db := dbRuntime.DB
+	rootLogger.Info("database runtime ready",
+		slog.String("event", "database.ready"),
+		slog.Bool("auto_migrate", cfg.Database.AutoMigrate),
+		slog.Int("max_open_conns", cfg.Database.MaxOpenConns),
+		slog.Int("max_idle_conns", cfg.Database.MaxIdleConns),
+	)
 
 	userRepo := gormrepo.NewUserRepository(db)
 	refreshRepo := gormrepo.NewRefreshTokenRepository(db)
@@ -299,11 +304,6 @@ func prepareDirectories(cfg appcfg.Config) error {
 		}
 	}
 
-	if dsn := strings.TrimSpace(cfg.Database.DSN); dsn != "" && dsn != ":memory:" && !strings.HasPrefix(dsn, "file:") {
-		if err := os.MkdirAll(filepath.Dir(dsn), 0o755); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

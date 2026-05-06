@@ -2,7 +2,7 @@ package gorm
 
 import (
 	"context"
-	"path/filepath"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,7 +11,7 @@ import (
 )
 
 func TestUserRepositoryPersistsRoleKeyAndStatus(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "repo.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewUserRepository(db)
@@ -37,7 +37,7 @@ func TestUserRepositoryPersistsRoleKeyAndStatus(t *testing.T) {
 }
 
 func TestSystemConfigRepositoryUpsertAndGet(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "cfg.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewSystemConfigRepository(db)
@@ -56,7 +56,7 @@ func TestSystemConfigRepositoryUpsertAndGet(t *testing.T) {
 }
 
 func TestSourceRepositoryCreatePersistsExplicitFalseFlags(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "source.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewSourceRepository(db)
@@ -93,7 +93,7 @@ func TestSourceRepositoryCreatePersistsExplicitFalseFlags(t *testing.T) {
 }
 
 func TestRefreshTokenRepositoryCreateFindAndRevoke(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "token.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewRefreshTokenRepository(db)
@@ -123,8 +123,120 @@ func TestRefreshTokenRepositoryCreateFindAndRevoke(t *testing.T) {
 	}
 }
 
+func TestRepositoryMapsUniqueConflictToSentinel(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	repo := NewUserRepository(db)
+	first := &entity.User{Username: "dupe", PasswordHash: "hash", RoleKey: "user", Status: "active"}
+	if err := repo.Create(context.Background(), first); err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+	second := &entity.User{Username: "dupe", PasswordHash: "hash", RoleKey: "user", Status: "active"}
+	if err := repo.Create(context.Background(), second); !errors.Is(err, domainrepo.ErrConflict) {
+		t.Fatalf("Create(second) error = %v, want ErrConflict", err)
+	}
+}
+
+func TestJSONHelpersNormalizeEmptyPayloads(t *testing.T) {
+	if got := jsonObject(""); got != "{}" {
+		t.Fatalf("jsonObject(empty) = %q, want {}", got)
+	}
+	if got := jsonObject("null"); got != "{}" {
+		t.Fatalf("jsonObject(null) = %q, want {}", got)
+	}
+	if got := jsonArray(""); got != "[]" {
+		t.Fatalf("jsonArray(empty) = %q, want []", got)
+	}
+	if got := jsonArray("null"); got != "[]" {
+		t.Fatalf("jsonArray(null) = %q, want []", got)
+	}
+	if got := jsonArray(`["a"]`); got != `["a"]` {
+		t.Fatalf("jsonArray(valid array) = %q", got)
+	}
+}
+
+func TestTransactorRollsBackRepositoryWrites(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	repo := NewUserRepository(db)
+	transactor := NewTransactor(db)
+	rollbackErr := errors.New("force rollback")
+
+	var createdID uint
+	err := transactor.WithinTx(context.Background(), func(ctx context.Context) error {
+		user := &entity.User{Username: "tx-user", PasswordHash: "hash", RoleKey: "user", Status: "active"}
+		if err := repo.Create(ctx, user); err != nil {
+			return err
+		}
+		createdID = user.ID
+		return rollbackErr
+	})
+	if !errors.Is(err, rollbackErr) {
+		t.Fatalf("WithinTx() error = %v, want rollback sentinel", err)
+	}
+
+	if _, err := repo.FindByID(context.Background(), createdID); !errors.Is(err, domainrepo.ErrNotFound) {
+		t.Fatalf("FindByID() after rollback error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPostgresModelUsesJSONBAndNullableResolvedSource(t *testing.T) {
+	db, cleanup := testDB(t)
+	defer cleanup()
+
+	var udtName string
+	if err := db.Raw(`
+		select udt_name
+		from information_schema.columns
+		where table_schema = current_schema()
+		  and table_name = 'storage_source_models'
+		  and column_name = 'config_json'
+	`).Scan(&udtName).Error; err != nil {
+		t.Fatalf("query jsonb column type: %v", err)
+	}
+	if udtName != "jsonb" {
+		t.Fatalf("storage_source_models.config_json type = %q, want jsonb", udtName)
+	}
+
+	now := time.Now()
+	session := &entity.UploadSession{
+		UploadID:       "nullable-resolved-source",
+		UserID:         1,
+		SourceID:       2,
+		Path:           "/uploads/file.txt",
+		Filename:       "file.txt",
+		FileSize:       1,
+		ChunkSize:      1,
+		TotalChunks:    1,
+		UploadedChunks: []int{},
+		Status:         "pending",
+		ExpiresAt:      now.Add(time.Hour),
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := NewUploadSessionRepository(db).Create(context.Background(), session); err != nil {
+		t.Fatalf("Create(upload session) error = %v", err)
+	}
+	var isNull bool
+	if err := db.Raw("select resolved_source_id is null from upload_session_models where upload_id = ?", session.UploadID).Scan(&isNull).Error; err != nil {
+		t.Fatalf("query nullable resolved_source_id: %v", err)
+	}
+	if !isNull {
+		t.Fatalf("expected zero resolved source id to persist as NULL")
+	}
+	got, err := NewUploadSessionRepository(db).FindByID(context.Background(), session.UploadID)
+	if err != nil {
+		t.Fatalf("FindByID(upload session) error = %v", err)
+	}
+	if got.ResolvedSourceID != 0 {
+		t.Fatalf("domain entity should keep zero-value compatibility, got %d", got.ResolvedSourceID)
+	}
+}
+
 func TestRSSRepositoryPersistsTemplatesAndParsedMetadata(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "rss.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewRSSRepository(db)
@@ -191,7 +303,7 @@ func TestRSSRepositoryPersistsTemplatesAndParsedMetadata(t *testing.T) {
 }
 
 func TestRSSRepositoryCreateSubscriptionPersistsExplicitDisabled(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "rss-disabled.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewRSSRepository(db)
@@ -221,7 +333,7 @@ func TestRSSRepositoryCreateSubscriptionPersistsExplicitDisabled(t *testing.T) {
 }
 
 func TestNotificationRepositoryPersistsChannelAndEvent(t *testing.T) {
-	db, cleanup := testDB(t, filepath.Join(t.TempDir(), "notification.db"))
+	db, cleanup := testDB(t)
 	defer cleanup()
 
 	repo := NewNotificationRepository(db)

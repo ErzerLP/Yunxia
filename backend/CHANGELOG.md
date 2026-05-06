@@ -5,10 +5,40 @@
 ## 当前快照
 
 - 后端根目录：`backend/`
-- 技术栈：Go 1.25、Gin、GORM、SQLite、JWT、bcrypt、Aria2、qBittorrent、AWS SDK for Go v2
+- 技术栈：Go 1.25、Gin、GORM、PostgreSQL、JWT、bcrypt、Aria2、qBittorrent、AWS SDK for Go v2
 - 当前状态：已完成全局权限模型重构；本地存储主链路、S3 MVP、离线下载、RSS/qBittorrent、通知告警、分享/ACL/上传链路已全部接入新权限模型
 - 当前验证：`cd backend && go test ./...` 已通过
 - 前端联调：2026-05-01 测试负责人确认 RSS MVP、RSS 无人值守端到端联调与前序待回归项已完成，`backend/FRONTEND_HANDOFF.md` 前端适配状态关闭
+
+---
+
+## 2026-05-06
+
+### PostgreSQL-only 数据库迁移
+
+- 后端数据库从 SQLite 干净切换为 PostgreSQL-only：
+  - 移除 SQLite driver 与文件型 DSN 默认值。
+  - 新增 PostgreSQL runtime，统一封装连接池、健康检查、AutoMigrate 和关闭。
+  - `docker-compose.backend.yml` 新增 `postgres` service 与 `postgres-data` 命名卷，后端等待 PostgreSQL healthcheck 后启动。
+- 数据库配置增强：
+  - 新增 `YUNXIA_DATABASE_AUTO_MIGRATE`
+  - 新增连接池配置：`MAX_OPEN_CONNS`、`MAX_IDLE_CONNS`、`CONN_MAX_LIFETIME`、`CONN_MAX_IDLE_TIME`
+  - 新增 `YUNXIA_DATABASE_SLOW_THRESHOLD`
+- 持久化层抽象增强：
+  - 新增 domain-level `Transactor` 事务端口和 GORM 实现。
+  - 仓储层通过 `dbFor(ctx, db)` 复用事务上下文，上层无需感知 GORM/PostgreSQL。
+  - PostgreSQL 唯一约束、外键/检查约束等错误统一映射为稳定 repository sentinel。
+- 模型优化：
+  - JSON-like 字段的 PostgreSQL 列类型切换为 `jsonb`。
+  - 部分“未解析/无关联”的 source 引用改为 nullable model 字段，domain 转换层继续保持兼容。
+  - bool/zero-value 写入继续通过显式字段选择和回归测试保护。
+- 测试策略调整：
+  - 仓储/HTTP 集成测试切换为 `YUNXIA_TEST_DATABASE_DSN` + 独立 PostgreSQL schema。
+  - 未配置测试 DSN 时跳过真实 PostgreSQL 集成测试，不再回退 SQLite。
+- 文档同步：
+  - 更新 `docs/research/postgresql-only-database-migration.md`
+  - 更新 `docs/runbooks/backend-docker-quickstart.md`
+  - 更新 `.trellis/spec/backend/database-guidelines.md`
 
 ---
 

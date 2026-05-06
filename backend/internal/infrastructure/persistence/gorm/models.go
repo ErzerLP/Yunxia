@@ -23,7 +23,7 @@ type SystemConfigModel struct {
 	DefaultSourceID  *uint
 	MaxUploadSize    int64     `gorm:"not null"`
 	DefaultChunkSize int64     `gorm:"not null"`
-	WebDAVEnabled    bool      `gorm:"not null;default:true"`
+	WebDAVEnabled    bool      `gorm:"not null"`
 	WebDAVPrefix     string    `gorm:"size:64;not null"`
 	Theme            string    `gorm:"size:32;not null"`
 	Language         string    `gorm:"size:32;not null"`
@@ -56,7 +56,7 @@ type StorageSourceModel struct {
 	MountPath       string `gorm:"uniqueIndex;size:512;not null"`
 	RootPath        string `gorm:"size:512;not null"`
 	SortOrder       int    `gorm:"not null;default:0"`
-	ConfigJSON      string `gorm:"type:text;not null"`
+	ConfigJSON      string `gorm:"type:jsonb;not null"`
 	LastCheckedAt   *time.Time
 	CreatedAt       time.Time `gorm:"not null"`
 	UpdatedAt       time.Time `gorm:"not null"`
@@ -69,15 +69,15 @@ type UploadSessionModel struct {
 	SourceID                uint      `gorm:"index;not null"`
 	Path                    string    `gorm:"size:1024;not null"`
 	TargetVirtualParentPath string    `gorm:"size:1024;not null;default:''"`
-	ResolvedSourceID        uint      `gorm:"index;not null;default:0"`
+	ResolvedSourceID        *uint     `gorm:"index"`
 	ResolvedInnerParentPath string    `gorm:"size:1024;not null;default:''"`
 	Filename                string    `gorm:"size:255;not null"`
 	FileSize                int64     `gorm:"not null"`
 	FileHash                string    `gorm:"size:64;not null"`
 	ChunkSize               int64     `gorm:"not null"`
 	TotalChunks             int       `gorm:"not null"`
-	UploadedChunksJSON      string    `gorm:"type:text;not null"`
-	StorageDataJSON         string    `gorm:"type:text;not null;default:''"`
+	UploadedChunksJSON      string    `gorm:"type:jsonb;not null"`
+	StorageDataJSON         string    `gorm:"type:jsonb;not null"`
 	Status                  string    `gorm:"size:32;not null"`
 	IsFastUpload            bool      `gorm:"not null;default:false"`
 	ExpiresAt               time.Time `gorm:"index;not null"`
@@ -97,7 +97,7 @@ type DownloadTaskModel struct {
 	TargetVirtualParentPath string  `gorm:"size:1024;not null;default:''"`
 	TargetFilename          string  `gorm:"size:255;not null;default:''"`
 	SaveVirtualPath         string  `gorm:"size:1024;not null;default:''"`
-	ResolvedSourceID        uint    `gorm:"index;not null;default:0"`
+	ResolvedSourceID        *uint   `gorm:"index"`
 	ResolvedInnerSavePath   string  `gorm:"size:1024;not null;default:''"`
 	StagingDir              string  `gorm:"size:1024;not null;default:''"`
 	DisplayName             string  `gorm:"size:255;not null"`
@@ -120,7 +120,7 @@ type RSSSourceModel struct {
 	UserID                 uint   `gorm:"index;not null;default:0"`
 	Name                   string `gorm:"size:128;not null"`
 	URL                    string `gorm:"type:text;not null"`
-	IsEnabled              bool   `gorm:"not null;default:true"`
+	IsEnabled              bool   `gorm:"not null"`
 	RefreshIntervalSeconds int    `gorm:"not null;default:1800"`
 	LastRefreshedAt        *time.Time
 	LastError              *string `gorm:"type:text"`
@@ -129,7 +129,7 @@ type RSSSourceModel struct {
 	LastSuccessAt          *time.Time
 	NextRefreshAt          *time.Time
 	LastRefreshStatus      string    `gorm:"size:32;not null;default:''"`
-	LastRefreshStatsJSON   string    `gorm:"type:text;not null;default:''"`
+	LastRefreshStatsJSON   string    `gorm:"type:jsonb;not null"`
 	CreatedAt              time.Time `gorm:"not null"`
 	UpdatedAt              time.Time `gorm:"not null"`
 }
@@ -140,15 +140,15 @@ type RSSSubscriptionModel struct {
 	UserID                  uint      `gorm:"index;not null;default:0"`
 	SourceID                uint      `gorm:"index;not null"`
 	Name                    string    `gorm:"size:128;not null"`
-	IsEnabled               bool      `gorm:"not null;default:true"`
-	MustContainJSON         string    `gorm:"type:text;not null;default:'[]'"`
-	MustNotContainJSON      string    `gorm:"type:text;not null;default:'[]'"`
+	IsEnabled               bool      `gorm:"not null"`
+	MustContainJSON         string    `gorm:"type:jsonb;not null"`
+	MustNotContainJSON      string    `gorm:"type:jsonb;not null"`
 	UseRegex                bool      `gorm:"not null;default:false"`
 	CaseSensitive           bool      `gorm:"not null;default:false"`
 	TargetVirtualParentPath string    `gorm:"size:1024;not null"`
 	DirectoryTemplate       string    `gorm:"size:1024;not null;default:''"`
 	FilenameTemplate        string    `gorm:"size:1024;not null;default:''"`
-	ResolvedSourceID        uint      `gorm:"index;not null;default:0"`
+	ResolvedSourceID        *uint     `gorm:"index"`
 	ResolvedInnerParentPath string    `gorm:"size:1024;not null;default:''"`
 	CreatedAt               time.Time `gorm:"not null"`
 	UpdatedAt               time.Time `gorm:"not null"`
@@ -166,7 +166,7 @@ type RSSItemModel struct {
 	DedupKey              string  `gorm:"uniqueIndex:idx_rss_item_source_dedup;size:128;not null"`
 	DownloadURL           string  `gorm:"type:text;not null;default:''"`
 	LinkType              string  `gorm:"size:32;not null;default:'unsupported'"`
-	ParsedJSON            string  `gorm:"type:text;not null;default:''"`
+	ParsedJSON            string  `gorm:"type:jsonb;not null"`
 	Status                string  `gorm:"index;size:32;not null"`
 	MatchedSubscriptionID *uint   `gorm:"index"`
 	TaskID                *uint   `gorm:"index"`
@@ -210,7 +210,7 @@ type ACLRuleModel struct {
 	Write             bool      `gorm:"not null;default:false"`
 	Delete            bool      `gorm:"not null;default:false"`
 	Share             bool      `gorm:"not null;default:false"`
-	InheritToChildren bool      `gorm:"not null;default:true"`
+	InheritToChildren bool      `gorm:"not null"`
 	CreatedAt         time.Time `gorm:"not null"`
 	UpdatedAt         time.Time `gorm:"not null"`
 }
@@ -222,7 +222,7 @@ type ShareLinkModel struct {
 	SourceID          uint       `gorm:"index;not null"`
 	Path              string     `gorm:"size:1024;not null"`
 	TargetVirtualPath string     `gorm:"size:1024;not null;default:''"`
-	ResolvedSourceID  uint       `gorm:"index;not null;default:0"`
+	ResolvedSourceID  *uint      `gorm:"index"`
 	ResolvedInnerPath string     `gorm:"size:1024;not null;default:''"`
 	Name              string     `gorm:"size:255;not null"`
 	IsDir             bool       `gorm:"not null;default:false"`
@@ -255,9 +255,9 @@ type AuditLogModel struct {
 	VirtualPath      string    `gorm:"index;size:1024"`
 	ResolvedSourceID *uint     `gorm:"index"`
 	ResolvedPath     string    `gorm:"size:1024"`
-	BeforeJSON       string    `gorm:"type:text;not null;default:''"`
-	AfterJSON        string    `gorm:"type:text;not null;default:''"`
-	DetailJSON       string    `gorm:"type:text;not null;default:''"`
+	BeforeJSON       string    `gorm:"type:jsonb;not null"`
+	AfterJSON        string    `gorm:"type:jsonb;not null"`
+	DetailJSON       string    `gorm:"type:jsonb;not null"`
 	CreatedAt        time.Time `gorm:"not null"`
 }
 
@@ -266,9 +266,9 @@ type NotificationChannelModel struct {
 	ID             uint      `gorm:"primaryKey"`
 	Name           string    `gorm:"size:128;not null"`
 	Type           string    `gorm:"index;size:32;not null"`
-	IsEnabled      bool      `gorm:"index;not null;default:true"`
-	EventTypesJSON string    `gorm:"type:text;not null;default:'[]'"`
-	ConfigJSON     string    `gorm:"type:text;not null"`
+	IsEnabled      bool      `gorm:"index;not null"`
+	EventTypesJSON string    `gorm:"type:jsonb;not null"`
+	ConfigJSON     string    `gorm:"type:jsonb;not null"`
 	CreatedAt      time.Time `gorm:"not null"`
 	UpdatedAt      time.Time `gorm:"not null"`
 }
@@ -281,7 +281,7 @@ type NotificationEventModel struct {
 	Severity      string     `gorm:"size:16;not null"`
 	Title         string     `gorm:"size:255;not null"`
 	Message       string     `gorm:"type:text;not null"`
-	PayloadJSON   string     `gorm:"type:text;not null;default:'{}'"`
+	PayloadJSON   string     `gorm:"type:jsonb;not null"`
 	Status        string     `gorm:"index;size:32;not null"`
 	Attempts      int        `gorm:"not null;default:0"`
 	MaxAttempts   int        `gorm:"not null;default:3"`

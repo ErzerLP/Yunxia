@@ -24,8 +24,8 @@ func NewACLRuleRepository(db *gorm.DB) *ACLRuleRepository {
 // Create 创建规则。
 func (r *ACLRuleRepository) Create(ctx context.Context, rule *entity.ACLRule) error {
 	model := aclRuleModelFromEntity(rule)
-	if err := r.db.WithContext(ctx).Create(model).Error; err != nil {
-		return err
+	if err := dbFor(ctx, r.db).Create(model).Error; err != nil {
+		return normalizeGormError(err)
 	}
 	*rule = *aclRuleEntityFromModel(model)
 	return nil
@@ -34,25 +34,25 @@ func (r *ACLRuleRepository) Create(ctx context.Context, rule *entity.ACLRule) er
 // FindByID 按 ID 查询规则。
 func (r *ACLRuleRepository) FindByID(ctx context.Context, id uint) (*entity.ACLRule, error) {
 	var model ACLRuleModel
-	if err := r.db.WithContext(ctx).First(&model, id).Error; err != nil {
+	if err := dbFor(ctx, r.db).First(&model, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, domainrepo.ErrNotFound
 		}
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	return aclRuleEntityFromModel(&model), nil
 }
 
 // List 返回筛选后的规则列表。
 func (r *ACLRuleRepository) List(ctx context.Context, filter domainrepo.ACLRuleFilter) ([]*entity.ACLRule, error) {
-	query := r.db.WithContext(ctx).Model(&ACLRuleModel{}).Where("source_id = ?", filter.SourceID)
+	query := dbFor(ctx, r.db).Model(&ACLRuleModel{}).Where("source_id = ?", filter.SourceID)
 	if path := strings.TrimSpace(filter.Path); path != "" {
 		query = query.Where("path = ?", path)
 	}
 
 	var models []ACLRuleModel
 	if err := query.Order("priority desc, id asc").Find(&models).Error; err != nil {
-		return nil, err
+		return nil, normalizeGormError(err)
 	}
 	items := make([]*entity.ACLRule, 0, len(models))
 	for index := range models {
@@ -64,14 +64,14 @@ func (r *ACLRuleRepository) List(ctx context.Context, filter domainrepo.ACLRuleF
 // Update 更新规则。
 func (r *ACLRuleRepository) Update(ctx context.Context, rule *entity.ACLRule) error {
 	model := aclRuleModelFromEntity(rule)
-	result := r.db.WithContext(ctx).
+	result := dbFor(ctx, r.db).
 		Model(&ACLRuleModel{}).
 		Where("id = ?", rule.ID).
 		Select("*").
 		Omit("ID", "CreatedAt").
 		Updates(model)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound
@@ -81,9 +81,9 @@ func (r *ACLRuleRepository) Update(ctx context.Context, rule *entity.ACLRule) er
 
 // Delete 删除规则。
 func (r *ACLRuleRepository) Delete(ctx context.Context, id uint) error {
-	result := r.db.WithContext(ctx).Delete(&ACLRuleModel{}, id)
+	result := dbFor(ctx, r.db).Delete(&ACLRuleModel{}, id)
 	if result.Error != nil {
-		return result.Error
+		return normalizeGormError(result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return domainrepo.ErrNotFound

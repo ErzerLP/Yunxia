@@ -1,27 +1,14 @@
 package service
 
 import (
-    "testing"
+	"testing"
 
-    gormrepo "yunxia/internal/infrastructure/persistence/gorm"
+	"yunxia/internal/infrastructure/persistence/pgtest"
 
-    "gorm.io/gorm"
+	"gorm.io/gorm"
 )
 
 func openTestDB(t *testing.T) (*gorm.DB, func()) {
-    t.Helper()
-
-    db, err := gormrepo.OpenSQLite(t.TempDir() + "/test.db")
-    if err != nil {
-        t.Fatalf("OpenSQLite() error = %v", err)
-    }
-
-    sqlDB, err := db.DB()
-    if err != nil {
-        t.Fatalf("db.DB() error = %v", err)
-    }
-
-    return db, func() {
-        _ = sqlDB.Close()
-    }
+	t.Helper()
+	return pgtest.OpenIsolatedDB(t)
 }
