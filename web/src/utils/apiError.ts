@@ -27,6 +27,16 @@ export function getApiErrorCode(error: unknown) {
   return ''
 }
 
+export function getApiErrorDetails(error: unknown) {
+  if (error instanceof ApiRequestError) return error.details ?? {}
+  return {}
+}
+
+export function getApiErrorDetailString(error: unknown, key: string) {
+  const value = getApiErrorDetails(error)[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
 export function getRawErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : ''
 }

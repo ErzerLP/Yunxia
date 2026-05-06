@@ -67,6 +67,31 @@ assertIncludes(
   "setMode('v2')",
   '进入 VFS 页面时必须把文件 Store 切换到 v2 模式，上传弹窗才能传虚拟路径。',
 )
+assertIncludes(
+  'src/pages/files/VFSFileManagerPage.tsx',
+  'useSearchParams',
+  '文件页必须读取 /files?path= 深链参数，刷新或复制链接后仍能进入指定 VFS 目录。',
+)
+assertIncludes(
+  'src/pages/files/VFSFileManagerPage.tsx',
+  "searchParams.get('path')",
+  '文件页必须从地址栏 path 参数初始化当前 VFS 目录。',
+)
+assertIncludes(
+  'src/pages/files/VFSFileManagerPage.tsx',
+  'setCurrentVirtualPath(pathFromUrl)',
+  '文件页直接打开 /files?path=... 时必须同步到 fileStore.currentVirtualPath。',
+)
+assertIncludes(
+  'src/pages/files/VFSFileManagerPage.tsx',
+  'setSearchParams(nextSearchParams, { replace: true })',
+  '文件页进入子目录后必须同步地址栏 path 参数，便于刷新、复制和任务目标跳转。',
+)
+assertIncludes(
+  'src/stores/fileStore.ts',
+  'normalizeVirtualPath',
+  'VFS 当前目录需要规范化，避免 /path 与 /path/ 造成 query key 和 URL 同步抖动。',
+)
 assertNotIncludes(
   'src/components/layout/Sidebar.tsx',
   "label: '虚拟目录'",
@@ -265,6 +290,31 @@ assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
   'getCreateSourceErrorMessage',
   '创建存储源失败提示必须经过前端脱敏/友好化，不能直接展示后端数据库错误。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'getApiErrorDetailString',
+  '前端需要能读取 error.details.verification_url 等后端错误详情。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  "getApiErrorDetailString(err, 'verification_url')",
+  'PikPak captcha required 时，存储源弹窗必须读取 details.verification_url。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  '打开验证页面',
+  'PikPak captcha required 时，存储源弹窗必须提供打开验证页面入口。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  '复制验证链接',
+  'PikPak captcha required 时，存储源弹窗必须提供复制 verification_url 入口。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'Captcha Token 字段',
+  'PikPak captcha required 时，存储源弹窗必须提示管理员验证后回填 captcha_token。',
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',

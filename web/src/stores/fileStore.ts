@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { FileItem, FileListResult, PathPermissions, StorageSource, VFSItem, VFSListResult } from '@/types/api'
+import { normalizeVfsPath } from '@/utils/vfs'
 
 export type FileMode = 'v1' | 'v2'
 
@@ -37,6 +38,10 @@ interface FileState {
   navigateVirtualUp: () => void
 }
 
+function normalizeVirtualPath(value: string | null | undefined): string {
+  return normalizeVfsPath(value)
+}
+
 export const useFileStore = create<FileState>((set, get) => ({
   mode: 'v1',
   currentSource: null,
@@ -53,12 +58,12 @@ export const useFileStore = create<FileState>((set, get) => ({
   setMode: (mode) => set({ mode, files: [], vfsItems: [], selectedFiles: new Set(), currentPermissions: null }),
   setCurrentSource: (source) => set({ currentSource: source, currentPath: '/', files: [], selectedFiles: new Set(), currentPermissions: null }),
   setCurrentPath: (path) => set({ currentPath: path, selectedFiles: new Set(), currentPermissions: null }),
-  setCurrentVirtualPath: (path) => set({ currentVirtualPath: path, selectedFiles: new Set(), currentPermissions: null }),
+  setCurrentVirtualPath: (path) => set({ currentVirtualPath: normalizeVirtualPath(path), selectedFiles: new Set(), currentPermissions: null }),
   setCurrentPermissions: (permissions) => set({ currentPermissions: permissions }),
   setFiles: (files) => set({ files }),
   setVfsItems: (items) => set({ vfsItems: items }),
   setFileListResult: (result) => set({ currentPath: result.current_path, files: result.items, currentPermissions: result.current_permissions ?? null }),
-  setVfsListResult: (result) => set({ currentVirtualPath: result.current_path, vfsItems: result.items, currentPermissions: result.current_permissions ?? null }),
+  setVfsListResult: (result) => set({ currentVirtualPath: normalizeVirtualPath(result.current_path), vfsItems: result.items, currentPermissions: result.current_permissions ?? null }),
   toggleSelection: (path) =>
     set((state) => {
       const next = new Set(state.selectedFiles)
@@ -83,13 +88,13 @@ export const useFileStore = create<FileState>((set, get) => ({
     const parent = parts.length === 0 ? '/' : '/' + parts.join('/') + '/'
     set({ currentPath: parent, selectedFiles: new Set(), currentPermissions: null })
   },
-  navigateVirtualTo: (path) => set({ currentVirtualPath: path, selectedFiles: new Set(), currentPermissions: null }),
+  navigateVirtualTo: (path) => set({ currentVirtualPath: normalizeVirtualPath(path), selectedFiles: new Set(), currentPermissions: null }),
   navigateVirtualUp: () => {
     const { currentVirtualPath } = get()
     if (currentVirtualPath === '/') return
     const parts = currentVirtualPath.split('/').filter(Boolean)
     parts.pop()
-    const parent = parts.length === 0 ? '/' : '/' + parts.join('/') + '/'
+    const parent = parts.length === 0 ? '/' : '/' + parts.join('/')
     set({ currentVirtualPath: parent, selectedFiles: new Set(), currentPermissions: null })
   },
 }))

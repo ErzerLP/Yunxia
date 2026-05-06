@@ -91,6 +91,10 @@ update `web/FRONTEND_TEST_HANDOFF.md` in the same change:
 - Upload in VFS mode sends `target_virtual_parent_path`.
 - File lists render `displayedFiles` / `displayedVfsItems` to avoid transient empty states.
 - File query caches are invalidated/refetched after upload/task completion.
+- `/files?path=<virtual-path>` is the VFS deep-link contract. `VFSFileManagerPage`
+  must read the `path` query parameter on entry and keep it synchronized when
+  users navigate directories, so refresh/copy/task-target links reopen the same
+  virtual directory.
 
 ## Forbidden Patterns
 
@@ -318,7 +322,7 @@ append verification notes for lint/build and the remaining smoke gap.
 | Condition | Required frontend behavior |
 |---|---|
 | `CLOUD_AUTH_FAILED` / `CLOUD_TOKEN_INVALID` | Prompt the admin to check account/password/token |
-| `CLOUD_CAPTCHA_REQUIRED` | Explain captcha verification and token refill |
+| `CLOUD_CAPTCHA_REQUIRED` | Explain captcha verification and token refill; when `error.details.verification_url` exists, show open/copy actions |
 | `CLOUD_RATE_LIMITED` | Ask user to retry later |
 | `CLOUD_PROVIDER_UNAVAILABLE` | Show provider temporarily unavailable |
 | `SOURCE_OPERATION_UNSUPPORTED` | Explain the unsupported operation, e.g. pause/resume/permanent delete |

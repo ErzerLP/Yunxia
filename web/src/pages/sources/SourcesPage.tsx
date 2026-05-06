@@ -4,8 +4,8 @@ import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { sourceApi } from '@/api/source'
 import { systemApi } from '@/api/system'
-import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil, Link2, Copy, Lock, Unlock, Eye, EyeOff } from 'lucide-react'
-import { cn, formatBytes, getApiErrorMessage } from '@/utils'
+import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil, Link2, Copy, Lock, Unlock, Eye, EyeOff, ExternalLink } from 'lucide-react'
+import { cn, formatBytes, getApiErrorDetailString, getApiErrorMessage } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useHasCapability } from '@/hooks/useCapability'
@@ -104,6 +104,23 @@ function getDriverLabel(driverType: string) {
 function toPositiveInt(value: string, fallback: number) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
+}
+
+async function writeTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
 }
 
 function getSecretDisplay(detail: SourceDetailResponse | undefined, field: SecretField, canReadSecrets: boolean) {
@@ -588,13 +605,25 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
   const [pikPakSecrets, setPikPakSecrets] = useState<Partial<Record<SecretField, string>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [verificationUrl, setVerificationUrl] = useState('')
 
   const updatePikPakSecret = (field: SecretField, value: string) => {
     setPikPakSecrets((current) => ({ ...current, [field]: value }))
   }
 
+  const copyVerificationUrl = async () => {
+    if (!verificationUrl) return
+    try {
+      await writeTextToClipboard(verificationUrl)
+      addToast('验证链接已复制', 'success')
+    } catch {
+      addToast('复制失败，请手动复制验证链接', 'error')
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setVerificationUrl('')
     if (!name.trim()) return
     if (!mountPath.trim().startsWith('/')) {
       const message = '挂载路径必须以 / 开头'
@@ -661,6 +690,7 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
       onClose()
     } catch (err: unknown) {
       const message = getCreateSourceErrorMessage(err)
+      setVerificationUrl(getApiErrorDetailString(err, 'verification_url'))
       setCreateError(message)
       addToast(message, 'error')
     } finally {
@@ -896,7 +926,38 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
           {createError && (
             <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{createError}</span>
+              <div className="min-w-0 flex-1 space-y-2">
+                <p>{createError}</p>
+                {verificationUrl && (
+                  <div className="space-y-2 rounded-md border border-destructive/20 bg-background/80 p-2 text-muted-foreground">
+                    <p className="text-xs">
+                      请先打开 PikPak 验证页面完成人工验证；验证完成后，将获取到的 captcha_token 填入上方 Captcha Token 字段再重试。
+                    </p>
+                    <code className="block break-all rounded bg-muted px-2 py-1 font-mono text-[11px] text-foreground">
+                      {verificationUrl}
+                    </code>
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={verificationUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        打开验证页面
+                      </a>
+                      <button
+                        type="button"
+                        onClick={copyVerificationUrl}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        复制验证链接
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
           <div className="flex justify-end gap-2 pt-2">
@@ -961,19 +1022,7 @@ export function SourcesPage() {
 
   const copyWebDAVUrl = async (url: string) => {
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(url)
-      } else {
-        const textarea = document.createElement('textarea')
-        textarea.value = url
-        textarea.setAttribute('readonly', '')
-        textarea.style.position = 'fixed'
-        textarea.style.opacity = '0'
-        document.body.appendChild(textarea)
-        textarea.select()
-        document.execCommand('copy')
-        document.body.removeChild(textarea)
-      }
+      await writeTextToClipboard(url)
       addToast('WebDAV 地址已复制', 'success')
     } catch {
       addToast('复制失败，请手动复制 WebDAV 地址', 'error')
