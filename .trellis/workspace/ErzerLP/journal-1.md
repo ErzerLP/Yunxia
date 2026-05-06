@@ -118,3 +118,39 @@ Adapted PikPak source UI, VFS/task/upload handling, tester handoff, and frontend
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Fix qBittorrent sidecar auth and RSS enqueue
+
+**Date**: 2026-05-06
+**Task**: Fix qBittorrent sidecar auth and RSS enqueue
+**Branch**: `main`
+
+### Summary
+
+修复 qBittorrent sidecar Web API 401：对既有配置卷启动时 patch WebUI/API 白名单与内部访问设置；将 qBittorrent 401/403 映射为 DOWNLOADER_AUTH_FAILED；RSS 手动入队失败回写 needs_attention 与错误原因；记录测试机 RSS/qBittorrent 端到端回归通过并归档 qBittorrent 修复任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `702a3ef` | (see git log) |
+| `e673da5` | (see git log) |
+| `30159f4` | (see git log) |
+| `de5ead3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
-- **Last Active**: 2026-05-05
+- **Total Sessions**: 4
+- **Last Active**: 2026-05-06
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~120 | Active |
+| `journal-1.md` | ~156 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-05-06 | Fix qBittorrent sidecar auth and RSS enqueue | `702a3ef`, `e673da5`, `30159f4`, `de5ead3` | `main` |
 | 3 | 2026-05-05 | Frontend PikPak storage handoff adaptation | `15f6699` | `main` |
 | 2 | 2026-05-03 | RSS automation and notification handoff completed | `49d7d60`, `6e2f475` | `main` |
 | 1 | 2026-05-01 | RSS 前端联调完成归档 | `06e5a82` | `main` |
