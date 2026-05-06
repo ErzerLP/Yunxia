@@ -780,8 +780,8 @@ qBittorrent 健康响应语义：
 
 - `enabled=false,status=disabled`：后端未启用 qBittorrent 下载器。
 - `enabled=true,status=ok`：后端已连通 qBittorrent Web API。
-- `enabled=true,status=unavailable,error=...`：后端已启用但 Web API 不可用；`error` 会保留可诊断的下游状态，例如 `qbittorrent login status 401`。
-- 项目 `docker-compose.backend.yml` 内置 sidecar 默认使用内部网络 + qBittorrent WebUI 子网白名单，后端默认 qBittorrent 账号密码为空并跳过登录；仅改接需要认证的外部 qBittorrent 时设置 `YUNXIA_QBITTORRENT_USERNAME` / `YUNXIA_QBITTORRENT_PASSWORD`。
+- `enabled=true,status=unavailable,error=...`：后端已启用但 Web API 不可用；`error` 会保留可诊断的下游状态，例如 `qbittorrent login status 401` 或 `qbittorrent health status 401`。
+- 项目 `docker-compose.backend.yml` 内置 sidecar 默认使用内部网络 + qBittorrent WebUI 子网白名单，后端默认 qBittorrent 账号密码为空并跳过登录；sidecar entrypoint 会在每次启动时修正既有配置卷中的 WebUI 白名单/HostHeader/CSRF/SecureCookie 设置。仅改接需要认证的外部 qBittorrent 时设置 `YUNXIA_QBITTORRENT_USERNAME` / `YUNXIA_QBITTORRENT_PASSWORD`。
 
 订阅创建/更新请求体：
 
@@ -995,6 +995,8 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - 普通文本关键词会匹配标题与链接元数据。
   - 1~2 位纯数字关键词按“集数”语义处理，只匹配标题中的集数 token / `SxxEyy` / `EPyy` / `第 yy 集`，不会匹配 URL、hash、发布时间或 `1080p` 等元信息。
 - `.torrent` URL 入队时后端会先下载 torrent 文件，再以 multipart 文件方式提交给 qBittorrent；避免 qBittorrent 异步拉 URL 失败后任务被误判为取消。
+- qBittorrent Web API 返回 401/403（例如 `/api/v2/app/version` 或 `/api/v2/torrents/add`）会归类为 `DOWNLOADER_AUTH_FAILED` / `status=unavailable`，不会返回 `INTERNAL_ERROR`。
+- `POST /rss/items/:id/download` 手动入队如果在创建下载任务时失败，会把 item 持久化为 `needs_attention`，写入 `error_message` 和 `retry_reason`，前端可通过 `GET /rss/items?status=needs_attention` 看到失败原因；HTTP 响应仍使用稳定错误码（如下游认证失败返回 `503 DOWNLOADER_AUTH_FAILED`）。
 - 每个订阅固定一个基础 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
 - `RSSSubscriptionView` / 创建更新请求新增：
   - `directory_template`：空值保持旧行为，RSS 入队仍使用 `target_virtual_parent_path`；非空时按条目 `parsed` 字段渲染为相对子目录，再拼到 `target_virtual_parent_path` 下。
@@ -1489,6 +1491,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `TASK_NOT_FOUND`
 - `TASK_INVALID_STATE`
 - `DOWNLOADER_UNAVAILABLE`
+- `DOWNLOADER_AUTH_FAILED`
 - `DOWNLOAD_LINK_UNSUPPORTED`
 - `FILE_NAME_INVALID`（任务创建传入非法 `target_filename`）
 
@@ -1503,6 +1506,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `PATH_INVALID`（订阅目标目录或模板非法；导入时作为单项 `error_code` 返回）
 - `NO_BACKING_STORAGE` / `SOURCE_READ_ONLY` / `PERMISSION_DENIED`（导入订阅目标不可写时作为单项 `error_code` 返回）
 - `DOWNLOAD_LINK_UNSUPPORTED`
+- `DOWNLOADER_UNAVAILABLE` / `DOWNLOADER_AUTH_FAILED`（RSS 手动/批量入队时 qBittorrent 不可用或下游认证失败）
 - `TASK_INVALID_STATE`（批量忽略中 item 已完成或存在活跃任务等不可变更状态）
 
 ### 5.7 audit

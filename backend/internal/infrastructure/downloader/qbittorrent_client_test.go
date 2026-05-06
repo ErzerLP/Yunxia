@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	appsvc "yunxia/internal/application/service"
 )
 
 func TestQBittorrentClientAddURISendsSavePathAndTag(t *testing.T) {
@@ -221,8 +224,12 @@ func TestQBittorrentClientLoginFailureReturnsError(t *testing.T) {
 	defer server.Close()
 
 	client := NewQBittorrentClient(server.URL, "admin", "bad-password")
-	if err := client.Health(context.Background()); err == nil {
+	err := client.Health(context.Background())
+	if err == nil {
 		t.Fatalf("expected login failure")
+	}
+	if !errors.Is(err, appsvc.ErrDownloaderAuthFailed) {
+		t.Fatalf("expected ErrDownloaderAuthFailed, got %v", err)
 	}
 }
 
@@ -242,6 +249,66 @@ func TestQBittorrentClientLoginUnauthorizedReturnsDiagnosticStatus(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "qbittorrent login status 401") {
 		t.Fatalf("expected diagnostic 401 status, got %v", err)
+	}
+	if !errors.Is(err, appsvc.ErrDownloaderAuthFailed) {
+		t.Fatalf("expected ErrDownloaderAuthFailed, got %v", err)
+	}
+}
+
+func TestQBittorrentClientHealthUnauthorizedReturnsDownloaderAuthFailed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v2/app/version" {
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+		http.Error(writer, "Unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "", "")
+	err := client.Health(context.Background())
+	if err == nil {
+		t.Fatalf("expected health failure")
+	}
+	if !strings.Contains(err.Error(), "qbittorrent health status 401") {
+		t.Fatalf("expected diagnostic health 401 status, got %v", err)
+	}
+	if !errors.Is(err, appsvc.ErrDownloaderAuthFailed) {
+		t.Fatalf("expected ErrDownloaderAuthFailed, got %v", err)
+	}
+}
+
+func TestQBittorrentClientAddURIUnauthorizedReturnsDownloaderAuthFailed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v2/torrents/add" {
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+		http.Error(writer, "Unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "", "")
+	_, err := client.AddURI(context.Background(), "magnet:?xt=urn:btih:abcdef", "/downloads/staging/task_1")
+	if err == nil {
+		t.Fatalf("expected add failure")
+	}
+	if !strings.Contains(err.Error(), "qbittorrent /api/v2/torrents/add status 401") {
+		t.Fatalf("expected diagnostic add 401 status, got %v", err)
+	}
+	if !errors.Is(err, appsvc.ErrDownloaderAuthFailed) {
+		t.Fatalf("expected ErrDownloaderAuthFailed, got %v", err)
+	}
+}
+
+func TestQBittorrentAuthStatusErrorDoesNotExposeResponseBody(t *testing.T) {
+	err := qbitStatusError("qbittorrent health", http.StatusUnauthorized, "password=secret-token")
+	if !errors.Is(err, appsvc.ErrDownloaderAuthFailed) {
+		t.Fatalf("expected ErrDownloaderAuthFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "qbittorrent health status 401") {
+		t.Fatalf("expected diagnostic status, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "password=") {
+		t.Fatalf("auth status error leaked response body: %v", err)
 	}
 }
 

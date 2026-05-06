@@ -244,6 +244,7 @@ failed
 | `RSS_REGEX_INVALID` | 在规则表单中提示正则非法 |
 | `DOWNLOAD_LINK_UNSUPPORTED` | 提示该 RSS 条目不是 BT/magnet，暂不支持下载 |
 | `DOWNLOADER_UNAVAILABLE` | 提示 qBittorrent 不可用或未启用 |
+| `DOWNLOADER_AUTH_FAILED` | 提示 qBittorrent 下游认证/白名单异常；刷新健康接口并展示 item `error_message` |
 | `PATH_INVALID` | 提示目标虚拟目录非法 |
 | `NO_BACKING_STORAGE` | 提示目标虚拟目录没有挂载存储源 |
 | `SOURCE_READ_ONLY` | 提示目标存储源只读 |
@@ -271,12 +272,13 @@ rss.manage
 
 1. 管理员登录。
 2. 检查 `GET /api/v1/rss/qbittorrent/health`。
-   - Docker Compose 内置 sidecar 默认账号密码为空，后端会跳过 qBittorrent 登录；若返回 `status=unavailable` 且 `error` 包含 `qbittorrent login status 401`，优先检查是否误设置了 `YUNXIA_QBITTORRENT_USERNAME` / `YUNXIA_QBITTORRENT_PASSWORD` 或改接了需要认证的外部 qBittorrent。
+   - Docker Compose 内置 sidecar 默认账号密码为空，后端会跳过 qBittorrent 登录；sidecar 启动脚本会修正既有 qBittorrent 配置卷中的 WebUI 白名单/HostHeader/CSRF/SecureCookie 设置。若返回 `status=unavailable` 且 `error` 包含 `qbittorrent login status 401` 或 `qbittorrent health status 401`，优先检查是否误设置了 `YUNXIA_QBITTORRENT_USERNAME` / `YUNXIA_QBITTORRENT_PASSWORD`、是否改接了需要认证的外部 qBittorrent，或是否未重建/重启 sidecar。
 3. 创建或确认一个可写 VFS 目录，例如 `/local/anime-test`。
 4. 创建 RSS 源。
 5. 创建订阅，`target_virtual_parent_path=/local/anime-test`。
 6. 手动刷新 RSS 源。
 7. 查看条目列表。
+   - 若手动入队返回 `DOWNLOADER_AUTH_FAILED` / `DOWNLOADER_UNAVAILABLE`，对应 item 会进入 `needs_attention` 并在 `error_message` 暴露 qBittorrent 诊断（例如 `/api/v2/torrents/add status 401`）。
 8. 命中 BT/magnet 后检查条目 `status=enqueued`、`task_id` 非空。
 9. 跳转任务列表，确认 `downloader_type=qbittorrent`。
 10. 下载完成后，到 VFS 目标目录确认文件可见。

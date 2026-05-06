@@ -51,11 +51,12 @@ func (c *QBittorrentClient) Health(ctx context.Context) error {
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: qbittorrent health request failed: %v", appsvc.ErrDownloaderUnavailable, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("qbittorrent health status %d", response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return qbitStatusError("qbittorrent health", response.StatusCode, string(body))
 	}
 	return nil
 }
@@ -150,11 +151,12 @@ func (c *QBittorrentClient) findTorrent(ctx context.Context, externalID string) 
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: qbittorrent info request failed: %v", appsvc.ErrDownloaderUnavailable, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("qbittorrent info status %d", response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return nil, qbitStatusError("qbittorrent info", response.StatusCode, string(body))
 	}
 	var torrents []qbitTorrentInfo
 	if err := json.NewDecoder(response.Body).Decode(&torrents); err != nil {
@@ -180,18 +182,19 @@ func (c *QBittorrentClient) login(ctx context.Context) error {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: qbittorrent login request failed: %v", appsvc.ErrDownloaderUnavailable, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("qbittorrent login status %d", response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return qbitStatusError("qbittorrent login", response.StatusCode, string(body))
 	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(string(body)) != "Ok." {
-		return fmt.Errorf("qbittorrent login failed")
+		return fmt.Errorf("%w: qbittorrent login failed", appsvc.ErrDownloaderAuthFailed)
 	}
 	return nil
 }
@@ -207,16 +210,12 @@ func (c *QBittorrentClient) postForm(ctx context.Context, path string, form url.
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := c.client.Do(request)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: qbittorrent %s request failed: %v", appsvc.ErrDownloaderUnavailable, path, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(response.Body)
-		bodyText := strings.TrimSpace(string(body))
-		if bodyText != "" {
-			return fmt.Errorf("qbittorrent %s status %d: %s", path, response.StatusCode, bodyText)
-		}
-		return fmt.Errorf("qbittorrent %s status %d", path, response.StatusCode)
+		return qbitStatusError("qbittorrent "+path, response.StatusCode, string(body))
 	}
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -259,16 +258,12 @@ func (c *QBittorrentClient) postMultipart(ctx context.Context, requestPath strin
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := c.client.Do(request)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: qbittorrent %s request failed: %v", appsvc.ErrDownloaderUnavailable, requestPath, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(response.Body)
-		bodyText := strings.TrimSpace(string(body))
-		if bodyText != "" {
-			return fmt.Errorf("qbittorrent %s status %d: %s", requestPath, response.StatusCode, bodyText)
-		}
-		return fmt.Errorf("qbittorrent %s status %d", requestPath, response.StatusCode)
+		return qbitStatusError("qbittorrent "+requestPath, response.StatusCode, string(body))
 	}
 	bodyBytes, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -310,6 +305,44 @@ func (c *QBittorrentClient) fetchTorrentFile(ctx context.Context, rawURL string)
 		fileName:  torrentFileName(rawURL),
 		content:   content,
 	}, nil
+}
+
+func qbitStatusError(operation string, statusCode int, body string) error {
+	message := fmt.Sprintf("%s status %d", operation, statusCode)
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		if statusText := http.StatusText(statusCode); statusText != "" {
+			message = fmt.Sprintf("%s: %s", message, statusText)
+		}
+		return fmt.Errorf("%w: %s", appsvc.ErrDownloaderAuthFailed, message)
+	}
+	if bodyText := sanitizeQBitErrorBody(body); bodyText != "" {
+		message = fmt.Sprintf("%s: %s", message, bodyText)
+	}
+	return fmt.Errorf("%w: %s", appsvc.ErrDownloaderUnavailable, message)
+}
+
+func sanitizeQBitErrorBody(body string) string {
+	bodyText := strings.TrimSpace(body)
+	if bodyText == "" {
+		return ""
+	}
+	bodyText = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		default:
+			return r
+		}
+	}, bodyText)
+	bodyText = strings.Join(strings.Fields(bodyText), " ")
+	const maxBodyRunes = 240
+	runes := []rune(bodyText)
+	if len(runes) > maxBodyRunes {
+		return string(runes[:maxBodyRunes]) + "…"
+	}
+	return bodyText
 }
 
 func torrentFileName(rawURL string) string {

@@ -130,13 +130,23 @@ func TestDockerComposeQBittorrentDefaultsMatchBackendSidecarAuth(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		`set_qbt_conf "Preferences" "WebUI\\AuthSubnetWhitelist" "0.0.0.0/0, ::/0"`,
+		`set_qbt_conf "Preferences" "WebUI\\AuthSubnetWhitelistEnabled" "true"`,
+		`set_qbt_conf "Preferences" "WebUI\\HostHeaderValidation" "false"`,
+		`set_qbt_conf "Preferences" "WebUI\\CSRFProtection" "false"`,
+		`set_qbt_conf "Preferences" "WebUI\\SecureCookie" "false"`,
+		`set_qbt_conf "Preferences" "WebUI\\Port" "${WEBUI_PORT}"`,
 		`WebUI\\AuthSubnetWhitelist=0.0.0.0/0`,
-		`WebUI\\AuthSubnetWhitelistEnabled=true`,
-		`WebUI\\Port=${WEBUI_PORT}`,
 	} {
 		if !strings.Contains(entrypoint, want) {
 			t.Fatalf("qbittorrent.entrypoint.sh missing %q", want)
 		}
+	}
+	if !strings.Contains(entrypoint, "Patch the internal sidecar API settings on every start") {
+		t.Fatalf("qbittorrent.entrypoint.sh should document idempotent existing-volume patching")
+	}
+	if !strings.Contains(entrypoint, `QBT_KEY="${key}"`) || strings.Contains(entrypoint, `awk -v section=`) {
+		t.Fatalf("qbittorrent.entrypoint.sh should pass backslash-containing config keys to awk without -v escape rewriting")
 	}
 
 	t.Setenv("YUNXIA_QBITTORRENT_ENABLED", "true")

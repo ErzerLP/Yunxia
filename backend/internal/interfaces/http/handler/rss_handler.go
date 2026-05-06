@@ -485,6 +485,10 @@ func (h *RSSHandler) writeError(c *gin.Context, err error, notFoundCode string) 
 		httpresp.Error(c, http.StatusBadRequest, "RSS_REGEX_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		httpresp.Error(c, http.StatusServiceUnavailable, "DOWNLOADER_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrDownloaderAuthFailed):
+		httpresp.Error(c, http.StatusServiceUnavailable, "DOWNLOADER_AUTH_FAILED", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrDownloaderUnavailable):
+		httpresp.Error(c, http.StatusServiceUnavailable, "DOWNLOADER_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrTaskInvalidState):
 		httpresp.Error(c, http.StatusConflict, "TASK_INVALID_STATE", err.Error(), nil)
 	default:

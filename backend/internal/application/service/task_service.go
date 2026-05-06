@@ -197,7 +197,7 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 			ResourceType: "task",
 			Action:       "create",
 			Result:       appaudit.ResultFailed,
-			ErrorCode:    "INTERNAL_ERROR",
+			ErrorCode:    taskCreateErrorCode(err),
 			SourceID:     &source.ID,
 			VirtualPath:  target.saveVirtualPath,
 		})

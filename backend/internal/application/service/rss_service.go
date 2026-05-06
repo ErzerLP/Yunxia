@@ -1165,6 +1165,10 @@ func (s *RSSService) DownloadItem(ctx context.Context, id uint, req appdto.RSSMa
 		return nil, err
 	}
 	if err := s.enqueueItem(ctx, item, subscription); err != nil {
+		if current, findErr := s.rssRepo.FindItemByID(ctx, item.ID); findErr == nil {
+			item = current
+		}
+		s.markItemManualDownloadFailure(ctx, item, subscription.ID, err, s.now())
 		return nil, err
 	}
 	if refreshed, err := s.rssRepo.FindItemByID(ctx, item.ID); err == nil {
@@ -2096,6 +2100,32 @@ func (s *RSSService) markItemRetryOrAttention(ctx context.Context, item *entity.
 	}
 }
 
+func (s *RSSService) markItemManualDownloadFailure(ctx context.Context, item *entity.RSSItem, subscriptionID uint, err error, now time.Time) {
+	if item == nil || err == nil {
+		return
+	}
+	previousStatus := item.Status
+	ensureRSSItemRetryDefaults(item)
+	message := err.Error()
+	item.Status = RSSItemStatusNeedsAttention
+	item.ErrorMessage = &message
+	if subscriptionID != 0 {
+		item.MatchedSubscriptionID = &subscriptionID
+	}
+	item.LastAttemptAt = &now
+	reason, _ := classifyRSSRetryError(err)
+	item.RetryReason = &reason
+	item.NextRetryAt = nil
+	item.UpdatedAt = now
+	if updateErr := s.rssRepo.UpdateItem(ctx, item); updateErr != nil {
+		s.logger.Warn("rss item manual download failure update failed", slog.String("event", "rss.item.manual_download_failure_update_failed"), slog.Uint64("item_id", uint64(item.ID)), slog.Any("error", updateErr))
+		return
+	}
+	if previousStatus != RSSItemStatusNeedsAttention {
+		s.notifyRSSItemNeedsAttention(ctx, item, err)
+	}
+}
+
 func ensureRSSItemRetryDefaults(item *entity.RSSItem) {
 	if item != nil && item.MaxRetryCount <= 0 {
 		item.MaxRetryCount = defaultRSSItemMaxRetryCount
@@ -2116,9 +2146,15 @@ func classifyRSSRetryError(err error) (string, bool) {
 		return "deterministic_error", false
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return RSSRetryReasonDownloaderUnavailable, true
+	case errors.Is(err, ErrDownloaderAuthFailed):
+		return RSSRetryReasonDownloaderUnavailable, false
+	case errors.Is(err, ErrDownloaderUnavailable):
+		return RSSRetryReasonDownloaderUnavailable, true
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(lower, "status 401") || strings.Contains(lower, "status 403") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "forbidden"):
+		return RSSRetryReasonDownloaderUnavailable, false
 	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "read-only") || strings.Contains(lower, "unsupported link") || strings.Contains(lower, "invalid path"):
 		return "deterministic_error", false
 	case strings.Contains(lower, "canceled") || strings.Contains(lower, "cancelled"):
@@ -2224,6 +2260,10 @@ func rssImportErrorCode(err error, notFoundCode string) string {
 		return "RSS_REGEX_INVALID"
 	case errors.Is(err, ErrSourceDriverUnsupported):
 		return "DOWNLOADER_UNAVAILABLE"
+	case errors.Is(err, ErrDownloaderAuthFailed):
+		return "DOWNLOADER_AUTH_FAILED"
+	case errors.Is(err, ErrDownloaderUnavailable):
+		return "DOWNLOADER_UNAVAILABLE"
 	default:
 		return "INTERNAL_ERROR"
 	}
@@ -2259,6 +2299,10 @@ func rssSubscriptionBatchErrorCode(err error) string {
 	case errors.Is(err, ErrRSSRegexInvalid):
 		return "RSS_REGEX_INVALID"
 	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "DOWNLOADER_UNAVAILABLE"
+	case errors.Is(err, ErrDownloaderAuthFailed):
+		return "DOWNLOADER_AUTH_FAILED"
+	case errors.Is(err, ErrDownloaderUnavailable):
 		return "DOWNLOADER_UNAVAILABLE"
 	default:
 		return "INTERNAL_ERROR"
@@ -2297,6 +2341,10 @@ func rssItemBatchErrorCode(err error) string {
 	case errors.Is(err, ErrRSSRegexInvalid):
 		return "RSS_REGEX_INVALID"
 	case errors.Is(err, ErrSourceDriverUnsupported):
+		return "DOWNLOADER_UNAVAILABLE"
+	case errors.Is(err, ErrDownloaderAuthFailed):
+		return "DOWNLOADER_AUTH_FAILED"
+	case errors.Is(err, ErrDownloaderUnavailable):
 		return "DOWNLOADER_UNAVAILABLE"
 	case errors.Is(err, ErrTaskInvalidState):
 		return "TASK_INVALID_STATE"

@@ -1122,6 +1122,75 @@ func TestRSSEnqueueFilenameTemplateTargetFilename(t *testing.T) {
 	}
 }
 
+func TestRSSManualDownloadFailureMarksItemNeedsAttention(t *testing.T) {
+	repo := newFakeRSSRepo()
+	tasks := newFakeRSSTasks()
+	tasks.createErr = fmt.Errorf("%w: qbittorrent /api/v2/torrents/add status 401: Unauthorized", ErrDownloaderAuthFailed)
+	notifier := &fakeRSSNotifier{}
+	now := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	sub := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "sub", IsEnabled: true, TargetVirtualParentPath: "/anime", CreatedAt: now, UpdatedAt: now})
+	item := repo.mustCreateItem(&entity.RSSItem{
+		UserID:      1,
+		SourceID:    source.ID,
+		Title:       "Show - 01",
+		DownloadURL: "magnet:?xt=urn:btih:manual401",
+		LinkType:    RSSLinkTypeMagnet,
+		Status:      RSSItemStatusMatched,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	svc := NewRSSService(repo, nil, tasks, WithRSSNotifier(notifier), WithRSSNow(func() time.Time { return now }))
+
+	_, err := svc.DownloadItem(rssTestAuthContext(), item.ID, appdto.RSSManualDownloadRequest{SubscriptionID: sub.ID})
+	if err == nil {
+		t.Fatalf("expected manual download failure")
+	}
+	if !errors.Is(err, ErrDownloaderAuthFailed) {
+		t.Fatalf("expected ErrDownloaderAuthFailed, got %v", err)
+	}
+
+	stored, err := repo.FindItemByID(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("FindItemByID() error = %v", err)
+	}
+	if stored.Status != RSSItemStatusNeedsAttention {
+		t.Fatalf("expected needs_attention after manual failure, got %q", stored.Status)
+	}
+	if stored.ErrorMessage == nil || !strings.Contains(*stored.ErrorMessage, "torrents/add status 401") {
+		t.Fatalf("expected visible qBittorrent error, got %#v", stored.ErrorMessage)
+	}
+	if stored.RetryReason == nil || *stored.RetryReason != RSSRetryReasonDownloaderUnavailable {
+		t.Fatalf("expected downloader retry reason, got %#v", stored.RetryReason)
+	}
+	if stored.NextRetryAt != nil {
+		t.Fatalf("manual failure should not schedule automatic retry, got %v", stored.NextRetryAt)
+	}
+	if stored.LastAttemptAt == nil || !stored.LastAttemptAt.Equal(now) {
+		t.Fatalf("last_attempt_at = %#v", stored.LastAttemptAt)
+	}
+	if stored.MatchedSubscriptionID == nil || *stored.MatchedSubscriptionID != sub.ID {
+		t.Fatalf("matched subscription = %#v", stored.MatchedSubscriptionID)
+	}
+	if stored.TaskID != nil {
+		t.Fatalf("failed manual enqueue should not attach task, got %#v", stored.TaskID)
+	}
+	if len(notifier.events) != 1 {
+		t.Fatalf("expected one needs-attention notification, got %d", len(notifier.events))
+	}
+	if event := notifier.events[0]; event.EventType != NotificationEventRSSItemNeedsAttention || event.UserID != item.UserID {
+		t.Fatalf("unexpected notification event: %+v", event)
+	}
+
+	listResp, err := svc.ListItems(rssTestAuthContext(), domainrepo.RSSItemFilter{Status: RSSItemStatusNeedsAttention})
+	if err != nil {
+		t.Fatalf("ListItems() error = %v", err)
+	}
+	if len(listResp.Items) != 1 || listResp.Items[0].ErrorMessage == nil || !strings.Contains(*listResp.Items[0].ErrorMessage, "torrents/add status 401") {
+		t.Fatalf("list response should expose item error, got %#v", listResp.Items)
+	}
+}
+
 func TestRSSRetryWorkerBackoffAndMaxAttention(t *testing.T) {
 	repo := newFakeRSSRepo()
 	tasks := newFakeRSSTasks()
@@ -1360,6 +1429,15 @@ func (f *fakeRSSTasks) addTask(status string, message *string) uint {
 	f.nextID++
 	f.tasks[id] = &entity.DownloadTask{ID: id, Status: status, ErrorMessage: message}
 	return id
+}
+
+type fakeRSSNotifier struct {
+	events []NotificationEventInput
+}
+
+func (f *fakeRSSNotifier) Notify(ctx context.Context, input NotificationEventInput) (*entity.NotificationEvent, error) {
+	f.events = append(f.events, input)
+	return &entity.NotificationEvent{UserID: input.UserID, EventType: input.EventType}, nil
 }
 
 type fakeRSSRepo struct {

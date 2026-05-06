@@ -71,6 +71,10 @@ var (
 	ErrTaskInvalidState = errors.New("task invalid state")
 	// ErrDownloadLinkUnsupported 表示下载链接类型不受当前下载器支持。
 	ErrDownloadLinkUnsupported = errors.New("download link unsupported")
+	// ErrDownloaderUnavailable 表示下载器服务暂不可用。
+	ErrDownloaderUnavailable = errors.New("downloader unavailable")
+	// ErrDownloaderAuthFailed 表示下载器下游认证/授权失败。
+	ErrDownloaderAuthFailed = errors.New("downloader auth failed")
 	// ErrRSSRegexInvalid 表示 RSS 订阅正则规则非法。
 	ErrRSSRegexInvalid = errors.New("rss regex invalid")
 	// ErrUserNameConflict 表示用户名冲突。

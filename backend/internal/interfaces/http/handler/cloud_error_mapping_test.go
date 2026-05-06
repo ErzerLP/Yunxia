@@ -82,6 +82,52 @@ func TestCloudRegionBlockedErrorMapping(t *testing.T) {
 	}
 }
 
+func TestDownloaderAuthFailedErrorMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	downstreamErr := fmt.Errorf("%w: qbittorrent /api/v2/torrents/add status 401: Unauthorized", appsvc.ErrDownloaderAuthFailed)
+
+	cases := []struct {
+		name  string
+		write func(*gin.Context)
+	}{
+		{
+			name: "rss",
+			write: func(c *gin.Context) {
+				(&RSSHandler{}).writeError(c, downstreamErr, "RSS_ITEM_NOT_FOUND")
+			},
+		},
+		{
+			name: "task",
+			write: func(c *gin.Context) {
+				(&TaskHandler{}).writeError(c, downstreamErr)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+
+			tc.write(ctx)
+
+			if recorder.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d body=%s", recorder.Code, http.StatusServiceUnavailable, recorder.Body.String())
+			}
+			var body struct {
+				Success bool   `json:"success"`
+				Code    string `json:"code"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body.Success || body.Code != "DOWNLOADER_AUTH_FAILED" {
+				t.Fatalf("unexpected body = %+v raw=%s", body, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestCloudCaptchaRequiredIncludesVerificationURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

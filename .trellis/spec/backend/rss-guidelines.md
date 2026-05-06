@@ -89,10 +89,20 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   `/api/v2/auth/login`. Do not add non-empty backend credential defaults unless
   the sidecar entrypoint also persists the same WebUI credentials and tests
   cover the full bootstrap path.
+- The sidecar entrypoint must patch qBittorrent WebUI auth-bypass settings on
+  every start, not only on first config creation, because named Docker volumes
+  can preserve configs generated before the current entrypoint. Keep the
+  backend Compose service, sidecar entrypoint, and config tests in sync for
+  `AuthSubnetWhitelist`, `AuthSubnetWhitelistEnabled`, `LocalHostAuth`,
+  `HostHeaderValidation`, `CSRFProtection`, and `SecureCookie`.
 - When explicit qBittorrent credentials are configured, login uses
   `POST /api/v2/auth/login` with `application/x-www-form-urlencoded` fields
   named exactly `username` and `password`. Non-200 login responses must remain
   diagnostic, e.g. `qbittorrent login status 401`.
+- qBittorrent Web API 401/403 responses from health, add, or status calls must
+  wrap `ErrDownloaderAuthFailed` so handlers can return stable
+  `DOWNLOADER_AUTH_FAILED` instead of `INTERNAL_ERROR`. Other qBittorrent
+  transport/non-2xx availability failures should wrap `ErrDownloaderUnavailable`.
 - qBittorrent missing-tag lookup immediately after add is not a user cancel.
   Keep the Yunxia task `pending` instead of mapping it to `canceled`.
 - Terminal `failed` / `canceled` task statuses must carry an `error_message`.
@@ -149,6 +159,11 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   must write the error back to the item and classify it as `retry_pending` or
   `needs_attention`. User/task cancellation is not treated as transient and
   should move the item to `needs_attention` rather than silently re-queueing.
+- Manual `POST /rss/items/:id/download` failures after the item reaches
+  `matched` must not leave the item stuck at `matched`. Persist a visible
+  failure state (currently `needs_attention`) with `error_message`,
+  `retry_reason`, and `last_attempt_at`, and emit the existing
+  `rss.item_needs_attention` notification on transition.
 - Task terminal backlink must not depend only on periodic RSS workers. When
   `TaskService` changes an RSS-created task to `completed`, `failed`, or
   `canceled` through refresh/sync/cancel paths, it must notify the RSS backlink
@@ -210,7 +225,9 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 | `.torrent` URL fetch returns non-2xx | Return add error; do not create a false qBittorrent task |
 | `.torrent` file exceeds `maxTorrentFileBytes` | Return add error |
 | Compose sidecar uses default blank `YUNXIA_QBITTORRENT_USERNAME/PASSWORD` | Backend config resolves blank credentials and skips qBittorrent login |
+| Existing qBittorrent config volume lacks WebUI auth whitelist | Entrypoint patches the config on startup before launching qBittorrent |
 | Explicit qBittorrent credentials return login 401 | Health returns `status=unavailable` with diagnostic `error` containing `qbittorrent login status 401` |
+| Empty credentials but `/api/v2/app/version` returns 401 | Health returns `status=unavailable` with diagnostic `error` containing `qbittorrent health status 401`; direct task/RSS enqueue maps to `DOWNLOADER_AUTH_FAILED`, not `INTERNAL_ERROR` |
 | qBittorrent sidecar auth bootstrap changes | Update `docker-compose.backend.yml`, `backend/docker/qbittorrent.entrypoint.sh`, backend config defaults, API/deploy docs, and static consistency tests together |
 | qBittorrent tag not visible immediately | Return `pending`, not `canceled` |
 | qBittorrent state is `missingFiles` / `error` | Return `failed` with state in `error_message` |
@@ -234,6 +251,7 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 | Task completed for RSS item | Mark item `completed` |
 | Task failed with transient error | Mark item `retry_pending` until max retries, then `needs_attention` |
 | Task canceled for RSS item | Mark item `needs_attention` with the cancellation reason |
+| Manual item download enqueue fails after matching | Mark item `needs_attention` with the downstream error message visible in `RSSItemView.error_message` |
 | User cancels an RSS-linked task through task API | Immediately update the linked RSS item to `needs_attention`; do not wait for the next RSS worker tick |
 | Deterministic item failure | Mark item `needs_attention`; do not auto retry |
 | Subscription clone omits name/is_enabled | Create a new subscription named `Original Copy` (or simple numbered variant) and preserve the original enabled state |
@@ -279,6 +297,8 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   - explicit credentials POST `/api/v2/auth/login` with `username` and
     `password` form fields
   - login 401 is preserved as a diagnostic health error
+  - health/app version 401 and torrents/add 401 wrap `ErrDownloaderAuthFailed`
+    and map to stable API errors
   - magnet uses multipart form fields
   - `.torrent` URL is fetched then uploaded as multipart `torrents`
   - missing tag stays `pending`
@@ -288,6 +308,7 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   - backend default qBittorrent username/password are blank
   - Compose default `YUNXIA_QBITTORRENT_USERNAME/PASSWORD` stay blank
   - sidecar entrypoint keeps WebUI subnet auth whitelist enabled
+  - sidecar entrypoint idempotently patches existing config volumes
 - Task service test: terminal `failed` / `canceled` has `error_message`.
 - RSS unattended tests:
   - source failure backoff and successful recovery
@@ -300,6 +321,8 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   - directory template rendering is path-safe and preserves old empty-template
     behavior
   - manual item retry and reprocess endpoints/service paths
+  - manual item download failure persists `needs_attention` and
+    `error_message`
   - automatic retry backoff and max-attempt `needs_attention`
   - task terminal status writes back to RSS item
   - canceling an RSS-linked task through TaskService immediately writes back the

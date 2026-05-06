@@ -348,6 +348,10 @@ func taskErrorCode(err error) string {
 		return "SOURCE_DRIVER_UNSUPPORTED"
 	case errors.Is(err, ErrSourceOperationUnsupported):
 		return "SOURCE_OPERATION_UNSUPPORTED"
+	case errors.Is(err, ErrDownloaderAuthFailed):
+		return "DOWNLOADER_AUTH_FAILED"
+	case errors.Is(err, ErrDownloaderUnavailable):
+		return "DOWNLOADER_UNAVAILABLE"
 	case errors.Is(err, ErrDownloadLinkUnsupported):
 		return "DOWNLOAD_LINK_UNSUPPORTED"
 	case errors.Is(err, ErrCloudAuthFailed):
