@@ -169,6 +169,48 @@ func TestQBittorrentClientSkipsLoginWhenCredentialsEmpty(t *testing.T) {
 	}
 }
 
+func TestQBittorrentClientLoginUsesWebAPIFormFields(t *testing.T) {
+	var loginCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v2/auth/login":
+			loginCalled = true
+			if request.Method != http.MethodPost {
+				t.Fatalf("expected POST login, got %s", request.Method)
+			}
+			if request.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+				t.Fatalf("unexpected content type %q", request.Header.Get("Content-Type"))
+			}
+			if err := request.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			if request.Form.Get("username") != "admin" {
+				t.Fatalf("expected username form field, got %q", request.Form.Get("username"))
+			}
+			if request.Form.Get("password") != "secret" {
+				t.Fatalf("expected password form field, got %q", request.Form.Get("password"))
+			}
+			if request.Form.Get("user") != "" || request.Form.Get("pass") != "" {
+				t.Fatalf("login form used unexpected aliases: %v", request.Form)
+			}
+			_, _ = writer.Write([]byte("Ok."))
+		case "/api/v2/app/version":
+			_, _ = writer.Write([]byte("v5.0.0"))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "admin", "secret")
+	if err := client.Health(context.Background()); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if !loginCalled {
+		t.Fatalf("expected login to be called")
+	}
+}
+
 func TestQBittorrentClientLoginFailureReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/v2/auth/login" {
@@ -181,6 +223,25 @@ func TestQBittorrentClientLoginFailureReturnsError(t *testing.T) {
 	client := NewQBittorrentClient(server.URL, "admin", "bad-password")
 	if err := client.Health(context.Background()); err == nil {
 		t.Fatalf("expected login failure")
+	}
+}
+
+func TestQBittorrentClientLoginUnauthorizedReturnsDiagnosticStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v2/auth/login" {
+			t.Fatalf("unexpected path %s", request.URL.Path)
+		}
+		http.Error(writer, "Unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewQBittorrentClient(server.URL, "admin", "bad-password")
+	err := client.Health(context.Background())
+	if err == nil {
+		t.Fatalf("expected login failure")
+	}
+	if !strings.Contains(err.Error(), "qbittorrent login status 401") {
+		t.Fatalf("expected diagnostic 401 status, got %v", err)
 	}
 }
 

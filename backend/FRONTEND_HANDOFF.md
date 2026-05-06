@@ -271,6 +271,7 @@ rss.manage
 
 1. 管理员登录。
 2. 检查 `GET /api/v1/rss/qbittorrent/health`。
+   - Docker Compose 内置 sidecar 默认账号密码为空，后端会跳过 qBittorrent 登录；若返回 `status=unavailable` 且 `error` 包含 `qbittorrent login status 401`，优先检查是否误设置了 `YUNXIA_QBITTORRENT_USERNAME` / `YUNXIA_QBITTORRENT_PASSWORD` 或改接了需要认证的外部 qBittorrent。
 3. 创建或确认一个可写 VFS 目录，例如 `/local/anime-test`。
 4. 创建 RSS 源。
 5. 创建订阅，`target_virtual_parent_path=/local/anime-test`。

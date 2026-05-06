@@ -34,8 +34,18 @@ func rssSubscriptionMatchesItem(subscription *entity.RSSSubscription, item *enti
 
 ```go
 func ClassifyDownloadLink(rawLink string) string
+func NewQBittorrentClient(apiURL, username, password string) *QBittorrentClient
+func (c *QBittorrentClient) Health(ctx context.Context) error
 func (c *QBittorrentClient) AddURI(ctx context.Context, uri string, dir string) (string, error)
 func (c *QBittorrentClient) TellStatus(ctx context.Context, externalID string) (*service.DownloadStatus, error)
+```
+
+- qBittorrent deployment env:
+
+```text
+YUNXIA_QBITTORRENT_API_URL=http://qbittorrent:8080
+YUNXIA_QBITTORRENT_USERNAME=
+YUNXIA_QBITTORRENT_PASSWORD=
 ```
 
 - RSS-created task naming snapshot:
@@ -73,6 +83,16 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 - `.torrent` URL ingestion must download the torrent file in backend, then POST
   multipart form field `torrents` to qBittorrent with `savepath`, `tags`, and
   `paused=false`.
+- Project Docker Compose qBittorrent sidecar defaults to internal networking
+  plus qBittorrent WebUI subnet auth whitelist. Backend default qBittorrent
+  username/password must remain empty so the client skips
+  `/api/v2/auth/login`. Do not add non-empty backend credential defaults unless
+  the sidecar entrypoint also persists the same WebUI credentials and tests
+  cover the full bootstrap path.
+- When explicit qBittorrent credentials are configured, login uses
+  `POST /api/v2/auth/login` with `application/x-www-form-urlencoded` fields
+  named exactly `username` and `password`. Non-200 login responses must remain
+  diagnostic, e.g. `qbittorrent login status 401`.
 - qBittorrent missing-tag lookup immediately after add is not a user cancel.
   Keep the Yunxia task `pending` instead of mapping it to `canceled`.
 - Terminal `failed` / `canceled` task statuses must carry an `error_message`.
@@ -189,6 +209,9 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 | `must_contain=["05","1080p"]`, title episode is 02 but URL/hash/date contains 05 | Do not match |
 | `.torrent` URL fetch returns non-2xx | Return add error; do not create a false qBittorrent task |
 | `.torrent` file exceeds `maxTorrentFileBytes` | Return add error |
+| Compose sidecar uses default blank `YUNXIA_QBITTORRENT_USERNAME/PASSWORD` | Backend config resolves blank credentials and skips qBittorrent login |
+| Explicit qBittorrent credentials return login 401 | Health returns `status=unavailable` with diagnostic `error` containing `qbittorrent login status 401` |
+| qBittorrent sidecar auth bootstrap changes | Update `docker-compose.backend.yml`, `backend/docker/qbittorrent.entrypoint.sh`, backend config defaults, API/deploy docs, and static consistency tests together |
 | qBittorrent tag not visible immediately | Return `pending`, not `canceled` |
 | qBittorrent state is `missingFiles` / `error` | Return `failed` with state in `error_message` |
 | Source refresh fails repeatedly | Increment `consecutive_failures`, update `next_refresh_at`, enter `degraded` / `circuit_open` |
@@ -230,10 +253,16 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   uploads the torrent file to qBittorrent, and stays pending/running until
   qBittorrent reports progress.
 - Base: magnet link uses qBittorrent multipart `urls` field and tag tracking.
+- Base: Docker Compose qBittorrent sidecar uses auth whitelist and backend
+  blank credentials, so health checks call `/api/v2/app/version` directly.
 - Bad: treating `"05"` as a raw substring over title + URL + torrent hash,
   causing unrelated episodes to enqueue.
 - Bad: submitting a `.torrent` URL as `urls` and assuming qBittorrent will
   always fetch it synchronously.
+- Bad: setting backend default qBittorrent credentials to `admin/adminadmin`
+  while Compose leaves `YUNXIA_QBITTORRENT_USERNAME/PASSWORD` empty; Viper treats
+  empty env vars as unset and falls back to the non-empty defaults, causing an
+  unintended login against the auth-whitelisted sidecar.
 - Bad: mapping "tag not found" to `canceled` on the first status poll.
 
 ### 6. Tests Required
@@ -246,10 +275,19 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
   - negative `02` with URL/hash/date containing `05`
   - explicit `SxxEyy` / `EPyy` / `第 yy 集`
 - qBittorrent client tests:
+  - empty credentials skip login
+  - explicit credentials POST `/api/v2/auth/login` with `username` and
+    `password` form fields
+  - login 401 is preserved as a diagnostic health error
   - magnet uses multipart form fields
   - `.torrent` URL is fetched then uploaded as multipart `torrents`
   - missing tag stays `pending`
   - failed qBittorrent state returns `error_message`
+- Config/deploy tests:
+  - backend default qBittorrent `api_url` matches Compose sidecar
+  - backend default qBittorrent username/password are blank
+  - Compose default `YUNXIA_QBITTORRENT_USERNAME/PASSWORD` stay blank
+  - sidecar entrypoint keeps WebUI subnet auth whitelist enabled
 - Task service test: terminal `failed` / `canceled` has `error_message`.
 - RSS unattended tests:
   - source failure backoff and successful recovery
@@ -319,3 +357,24 @@ postMultipart("/api/v2/torrents/add", fields, []multipartUploadFile{torrentFile}
 ```
 
 Yunxia fetches the torrent file first and uploads it directly to qBittorrent.
+
+#### Wrong
+
+```go
+v.SetDefault("qbittorrent.username", "admin")
+v.SetDefault("qbittorrent.password", "adminadmin")
+```
+
+This can make Docker Compose's intentionally blank
+`YUNXIA_QBITTORRENT_USERNAME/PASSWORD` fall back to non-empty Viper defaults,
+forcing an unnecessary login against the auth-whitelisted sidecar.
+
+#### Correct
+
+```go
+v.SetDefault("qbittorrent.username", "")
+v.SetDefault("qbittorrent.password", "")
+```
+
+Blank defaults match the project sidecar. Deployers who use an authenticated
+external qBittorrent instance opt in with explicit environment variables.

@@ -35,6 +35,8 @@ services:
       # 必须与 aria2 容器中的下载目录一致，并通过 backend-downloads 卷共享。
       YUNXIA_ARIA2_DOWNLOAD_DIR: "${YUNXIA_ARIA2_DOWNLOAD_DIR:-/downloads}"
       # qBittorrent 作为 BT/magnet 下载器；默认使用内部 Web API，不暴露为前端业务入口。
+      # 项目内置 sidecar 默认启用 WebUI 子网白名单，账号密码留空表示后端跳过登录。
+      # 如改接需要认证的外部 qBittorrent，请同时设置下面两个变量。
       YUNXIA_QBITTORRENT_ENABLED: "${YUNXIA_QBITTORRENT_ENABLED:-true}"
       YUNXIA_QBITTORRENT_API_URL: "${YUNXIA_QBITTORRENT_API_URL:-http://qbittorrent:8080}"
       YUNXIA_QBITTORRENT_USERNAME: "${YUNXIA_QBITTORRENT_USERNAME:-}"

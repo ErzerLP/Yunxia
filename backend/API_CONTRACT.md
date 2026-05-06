@@ -776,6 +776,13 @@ RSS MVP 由 Yunxia 管理 RSS 源、订阅规则、条目去重与目标 VFS 目
 | POST | `/rss/items/:id/retry` | `rss.manage` | `subscription_id` 可选 | 202，`{item}` |
 | GET | `/rss/qbittorrent/health` | `rss.read` | - | 200，`{enabled,status,error}` |
 
+qBittorrent 健康响应语义：
+
+- `enabled=false,status=disabled`：后端未启用 qBittorrent 下载器。
+- `enabled=true,status=ok`：后端已连通 qBittorrent Web API。
+- `enabled=true,status=unavailable,error=...`：后端已启用但 Web API 不可用；`error` 会保留可诊断的下游状态，例如 `qbittorrent login status 401`。
+- 项目 `docker-compose.backend.yml` 内置 sidecar 默认使用内部网络 + qBittorrent WebUI 子网白名单，后端默认 qBittorrent 账号密码为空并跳过登录；仅改接需要认证的外部 qBittorrent 时设置 `YUNXIA_QBITTORRENT_USERNAME` / `YUNXIA_QBITTORRENT_PASSWORD`。
+
 订阅创建/更新请求体：
 
 ```json
