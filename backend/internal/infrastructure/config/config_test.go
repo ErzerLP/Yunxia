@@ -164,7 +164,7 @@ func TestDockerComposePostgresDefaultsMatchBackendDatabaseConfig(t *testing.T) {
 		`POSTGRES_PASSWORD: "${YUNXIA_POSTGRES_PASSWORD:-yunxia}"`,
 		`- postgres-data:/var/lib/postgresql/data`,
 		`pg_isready -U ${YUNXIA_POSTGRES_USER:-yunxia} -d ${YUNXIA_POSTGRES_DB:-yunxia}`,
-		`YUNXIA_DATABASE_DSN: "${YUNXIA_DATABASE_DSN:-postgres://${YUNXIA_POSTGRES_USER:-yunxia}:${YUNXIA_POSTGRES_PASSWORD:-yunxia}@postgres:5432/${YUNXIA_POSTGRES_DB:-yunxia}?sslmode=disable&TimeZone=Asia%2FShanghai}"`,
+		`YUNXIA_DATABASE_DSN: "${YUNXIA_DATABASE_DSN:-postgres://${YUNXIA_POSTGRES_USER:-yunxia}:${YUNXIA_POSTGRES_PASSWORD:-yunxia}@postgres:5432/${YUNXIA_POSTGRES_DB:-yunxia}?sslmode=disable&TimeZone=Asia/Shanghai}"`,
 		`YUNXIA_DATABASE_AUTO_MIGRATE: "${YUNXIA_DATABASE_AUTO_MIGRATE:-true}"`,
 		`YUNXIA_DATABASE_MAX_OPEN_CONNS: "${YUNXIA_DATABASE_MAX_OPEN_CONNS:-25}"`,
 		`YUNXIA_DATABASE_MAX_IDLE_CONNS: "${YUNXIA_DATABASE_MAX_IDLE_CONNS:-5}"`,

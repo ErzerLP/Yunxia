@@ -186,7 +186,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.mode", "debug")
-	v.SetDefault("database.dsn", "postgres://yunxia:yunxia@localhost:5432/yunxia?sslmode=disable&TimeZone=Asia%2FShanghai")
+	v.SetDefault("database.dsn", "postgres://yunxia:yunxia@localhost:5432/yunxia?sslmode=disable&TimeZone=Asia/Shanghai")
 	v.SetDefault("database.auto_migrate", true)
 	v.SetDefault("database.max_open_conns", 25)
 	v.SetDefault("database.max_idle_conns", 5)

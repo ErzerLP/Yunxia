@@ -46,7 +46,7 @@ ENV TZ=Asia/Shanghai \
     YUNXIA_SERVER_HOST=0.0.0.0 \
     YUNXIA_SERVER_PORT=8080 \
     YUNXIA_SERVER_MODE=release \
-    YUNXIA_DATABASE_DSN=postgres://yunxia:yunxia@postgres:5432/yunxia?sslmode=disable&TimeZone=Asia%2FShanghai \
+    YUNXIA_DATABASE_DSN=postgres://yunxia:yunxia@postgres:5432/yunxia?sslmode=disable&TimeZone=Asia/Shanghai \
     YUNXIA_DATABASE_AUTO_MIGRATE=true \
     YUNXIA_DATABASE_MAX_OPEN_CONNS=25 \
     YUNXIA_DATABASE_MAX_IDLE_CONNS=5 \
