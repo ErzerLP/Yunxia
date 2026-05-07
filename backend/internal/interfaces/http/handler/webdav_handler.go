@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -12,12 +11,10 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/net/webdav"
 
 	appaudit "yunxia/internal/application/audit"
 	appdto "yunxia/internal/application/dto"
@@ -33,23 +30,22 @@ type passwordComparer interface {
 	Compare(hash, password string) bool
 }
 
-type localWebDAVConfig struct {
-	BasePath string `json:"base_path"`
-}
-
 type webDAVFileService interface {
-	List(ctx context.Context, query appdto.FileListQuery) (*appdto.FileListResponse, int, int, int, int, error)
-	Stat(ctx context.Context, sourceID uint, filePath string) (*appdto.FileItem, error)
-	Mkdir(ctx context.Context, req appdto.MkdirRequest) (*appdto.FileItem, error)
-	Rename(ctx context.Context, req appdto.RenameRequest) (string, string, *appdto.FileItem, error)
-	Move(ctx context.Context, req appdto.MoveCopyRequest) (string, string, error)
-	Copy(ctx context.Context, req appdto.MoveCopyRequest) (string, string, error)
-	Delete(ctx context.Context, req appdto.DeleteFileRequest) (time.Time, error)
-	ResolveDownloadRedirect(ctx context.Context, sourceID uint, filePath, disposition string) (string, error)
+	AccessURL(ctx context.Context, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, error)
 }
 
 type webDAVUploadService interface {
 	ImportLocalFile(ctx context.Context, sourceID uint, parentPath string, filename string, localPath string) (*appdto.FileItem, error)
+}
+
+type webDAVVFSService interface {
+	List(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error)
+	ResolvePath(ctx context.Context, virtualPath string) (appsvc.ResolvedPath, error)
+	Mkdir(ctx context.Context, req appdto.VFSMkdirRequest) (*appdto.VFSItem, error)
+	Rename(ctx context.Context, req appdto.VFSRenameRequest) (string, string, *appdto.VFSItem, error)
+	Move(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
+	Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
+	Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
 }
 
 // WebDAVHandler 负责存储源的 WebDAV 暴露。
@@ -59,10 +55,10 @@ type WebDAVHandler struct {
 	systemConfigRepo domainrepo.SystemConfigRepository
 	userRepo         domainrepo.UserRepository
 	aclAuthorizer    *appsvc.ACLAuthorizer
+	vfsService       webDAVVFSService
 	fileService      webDAVFileService
 	uploadService    webDAVUploadService
 	hasher           passwordComparer
-	lockSystem       webdav.LockSystem
 	auditRecorder    *appaudit.Recorder
 	logger           *slog.Logger
 }
@@ -74,6 +70,7 @@ func NewWebDAVHandler(
 	systemConfigRepo domainrepo.SystemConfigRepository,
 	userRepo domainrepo.UserRepository,
 	aclAuthorizer *appsvc.ACLAuthorizer,
+	vfsService webDAVVFSService,
 	fileService webDAVFileService,
 	uploadService webDAVUploadService,
 	hasher passwordComparer,
@@ -89,10 +86,10 @@ func NewWebDAVHandler(
 		systemConfigRepo: systemConfigRepo,
 		userRepo:         userRepo,
 		aclAuthorizer:    aclAuthorizer,
+		vfsService:       vfsService,
 		fileService:      fileService,
 		uploadService:    uploadService,
 		hasher:           hasher,
-		lockSystem:       webdav.NewMemLS(),
 		auditRecorder:    auditRecorder,
 		logger:           logger,
 	}
@@ -162,40 +159,19 @@ func (h *WebDAVHandler) Serve(c *gin.Context) {
 		destinationPath, _ := normalizeWebDAVDestinationPath(req.Header.Get("Destination"))
 		defer h.recordWriteAudit(c, source, action, webdavPath, destinationPath)
 	}
-	if err := h.authorizeRequest(req.Context(), source.ID, req.Method, webdavPath, req.Header.Get("Destination")); err != nil {
-		if errors.Is(err, appsvc.ErrACLDenied) {
-			http.Error(c.Writer, "forbidden", http.StatusForbidden)
-			return
-		}
-		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
-		return
-	}
 
-	if source.DriverType != "local" {
-		h.serveDriverWebDAV(c, req, source, webdavPath)
-		return
-	}
-
-	rootDir, err := resolveLocalWebDAVRoot(source)
+	vfsPath, err := webDAVVFSPath(source, webdavPath)
 	if err != nil {
-		http.Error(c.Writer, "internal error", http.StatusInternalServerError)
+		http.Error(c.Writer, "bad request", http.StatusBadRequest)
 		return
 	}
 
-	var fileSystem webdav.FileSystem = webdav.Dir(rootDir)
-	if source.WebDAVReadOnly {
-		fileSystem = readOnlyWebDAVFileSystem{delegate: fileSystem}
-	}
-
-	(&webdav.Handler{
-		FileSystem: fileSystem,
-		LockSystem: h.lockSystem,
-	}).ServeHTTP(c.Writer, req)
+	h.serveVFSWebDAV(c, req, source, webdavPath, vfsPath)
 }
 
-func (h *WebDAVHandler) serveDriverWebDAV(c *gin.Context, req *http.Request, source *entity.StorageSource, webdavPath string) {
-	if h.fileService == nil {
-		http.Error(c.Writer, "webdav storage driver unavailable", http.StatusNotImplemented)
+func (h *WebDAVHandler) serveVFSWebDAV(c *gin.Context, req *http.Request, source *entity.StorageSource, webdavPath string, vfsPath string) {
+	if h.vfsService == nil {
+		http.Error(c.Writer, "webdav vfs unavailable", http.StatusNotImplemented)
 		return
 	}
 
@@ -203,36 +179,36 @@ func (h *WebDAVHandler) serveDriverWebDAV(c *gin.Context, req *http.Request, sou
 	case http.MethodOptions:
 		writeWebDAVOptions(c.Writer)
 	case "PROPFIND":
-		h.handleDriverPropfind(c.Writer, req, source, webdavPath)
+		h.handleVFSPropfind(c.Writer, req, source, webdavPath, vfsPath)
 	case http.MethodHead:
-		h.handleDriverDownload(c.Writer, req, source, webdavPath, true)
+		h.handleVFSDownload(c.Writer, req, vfsPath, true)
 	case http.MethodGet:
-		h.handleDriverDownload(c.Writer, req, source, webdavPath, false)
+		h.handleVFSDownload(c.Writer, req, vfsPath, false)
 	case "MKCOL":
 		if !h.ensureWebDAVWritable(c.Writer, source) {
 			return
 		}
-		h.handleDriverMKCOL(c.Writer, req, source, webdavPath)
+		h.handleVFSMKCOL(c.Writer, req, vfsPath)
 	case http.MethodPut:
 		if !h.ensureWebDAVWritable(c.Writer, source) {
 			return
 		}
-		h.handleDriverPUT(c.Writer, req, source, webdavPath)
+		h.handleVFSPUT(c.Writer, req, source, vfsPath)
 	case http.MethodDelete:
 		if !h.ensureWebDAVWritable(c.Writer, source) {
 			return
 		}
-		h.handleDriverDELETE(c.Writer, req, source, webdavPath)
+		h.handleVFSDELETE(c.Writer, req, vfsPath)
 	case "COPY":
 		if !h.ensureWebDAVWritable(c.Writer, source) {
 			return
 		}
-		h.handleDriverCopyMove(c.Writer, req, source, webdavPath, false)
+		h.handleVFSCopyMove(c.Writer, req, source, vfsPath, false)
 	case "MOVE":
 		if !h.ensureWebDAVWritable(c.Writer, source) {
 			return
 		}
-		h.handleDriverCopyMove(c.Writer, req, source, webdavPath, true)
+		h.handleVFSCopyMove(c.Writer, req, source, vfsPath, true)
 	default:
 		http.Error(c.Writer, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -246,8 +222,8 @@ func (h *WebDAVHandler) ensureWebDAVWritable(writer http.ResponseWriter, source 
 	return true
 }
 
-func (h *WebDAVHandler) handleDriverPropfind(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
-	item, err := h.driverWebDAVItem(req.Context(), source, webdavPath)
+func (h *WebDAVHandler) handleVFSPropfind(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string, vfsPath string) {
+	item, err := h.vfsWebDAVItem(req.Context(), source, webdavPath, vfsPath)
 	if err != nil {
 		http.Error(writer, "not found", webDAVStatusFromError(err))
 		return
@@ -256,25 +232,26 @@ func (h *WebDAVHandler) handleDriverPropfind(writer http.ResponseWriter, req *ht
 	items := []appdto.FileItem{*item}
 	depth := strings.TrimSpace(req.Header.Get("Depth"))
 	if item.IsDir && depth != "0" {
-		resp, _, _, _, _, err := h.fileService.List(req.Context(), appdto.FileListQuery{
-			SourceID:  source.ID,
-			Path:      webdavPath,
-			Page:      1,
-			PageSize:  10000,
-			SortBy:    "name",
-			SortOrder: "asc",
-		})
+		resp, err := h.vfsService.List(req.Context(), vfsPath)
 		if err != nil {
 			http.Error(writer, "not found", webDAVStatusFromError(err))
 			return
 		}
-		items = append(items, resp.Items...)
+		for _, child := range resp.Items {
+			childItem, ok := webDAVFileItemFromVFSItem(source, child)
+			if ok {
+				items = append(items, childItem)
+			}
+		}
 	}
 	writeWebDAVMultiStatus(writer, h.prefix, source.WebDAVSlug, items)
 }
 
-func (h *WebDAVHandler) driverWebDAVItem(ctx context.Context, source *entity.StorageSource, webdavPath string) (*appdto.FileItem, error) {
+func (h *WebDAVHandler) vfsWebDAVItem(ctx context.Context, source *entity.StorageSource, webdavPath string, vfsPath string) (*appdto.FileItem, error) {
 	if webdavPath == "/" {
+		if err := h.ensureWebDAVSourceVisible(ctx, source); err != nil {
+			return nil, err
+		}
 		return &appdto.FileItem{
 			Name:       source.WebDAVSlug,
 			Path:       "/",
@@ -284,19 +261,65 @@ func (h *WebDAVHandler) driverWebDAVItem(ctx context.Context, source *entity.Sto
 			CreatedAt:  time.Now().UTC().Format(time.RFC3339),
 		}, nil
 	}
-	return h.fileService.Stat(ctx, source.ID, webdavPath)
+
+	parentPath := parentVirtualPathForHTTP(vfsPath)
+	resp, err := h.vfsService.List(ctx, parentPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range resp.Items {
+		if item.Path != vfsPath {
+			continue
+		}
+		fileItem, ok := webDAVFileItemFromVFSItem(source, item)
+		if !ok {
+			return nil, appsvc.ErrFileNotFound
+		}
+		return &fileItem, nil
+	}
+	return nil, appsvc.ErrFileNotFound
 }
 
-func (h *WebDAVHandler) handleDriverDownload(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string, headOnly bool) {
-	redirectURL, err := h.fileService.ResolveDownloadRedirect(req.Context(), source.ID, webdavPath, "inline")
+func (h *WebDAVHandler) ensureWebDAVSourceVisible(ctx context.Context, source *entity.StorageSource) error {
+	if h == nil || h.aclAuthorizer == nil || source == nil {
+		return nil
+	}
+	visible, err := h.aclAuthorizer.CanSeeSource(ctx, source.ID)
+	if err != nil {
+		return err
+	}
+	if !visible {
+		return appsvc.ErrACLDenied
+	}
+	return nil
+}
+
+func (h *WebDAVHandler) handleVFSDownload(writer http.ResponseWriter, req *http.Request, vfsPath string, headOnly bool) {
+	if h.fileService == nil {
+		http.Error(writer, "download unavailable", http.StatusNotImplemented)
+		return
+	}
+	resolved, err := h.vfsService.ResolvePath(req.Context(), vfsPath)
 	if err != nil {
 		http.Error(writer, "not found", webDAVStatusFromError(err))
 		return
 	}
-	if redirectURL == "" {
+	accessURL, err := h.fileService.AccessURL(req.Context(), appdto.AccessURLRequest{
+		SourceID:    resolved.Source.ID,
+		Path:        resolved.InnerPath,
+		Purpose:     "download",
+		Disposition: "inline",
+		ExpiresIn:   300,
+	})
+	if err != nil {
+		http.Error(writer, "not found", webDAVStatusFromError(err))
+		return
+	}
+	if accessURL == nil || accessURL.URL == "" {
 		http.Error(writer, "download unavailable", http.StatusNotImplemented)
 		return
 	}
+	redirectURL := rewriteVFSAccessURL(accessURL.URL, vfsPath, "inline")
 	writer.Header().Set("Location", redirectURL)
 	if headOnly {
 		writer.WriteHeader(http.StatusFound)
@@ -305,14 +328,13 @@ func (h *WebDAVHandler) handleDriverDownload(writer http.ResponseWriter, req *ht
 	http.Redirect(writer, req, redirectURL, http.StatusFound)
 }
 
-func (h *WebDAVHandler) handleDriverMKCOL(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
-	parentPath, name, err := splitWebDAVTarget(webdavPath)
+func (h *WebDAVHandler) handleVFSMKCOL(writer http.ResponseWriter, req *http.Request, vfsPath string) {
+	parentPath, name, err := splitWebDAVTarget(vfsPath)
 	if err != nil {
 		http.Error(writer, "bad request", http.StatusBadRequest)
 		return
 	}
-	if _, err := h.fileService.Mkdir(req.Context(), appdto.MkdirRequest{
-		SourceID:   source.ID,
+	if _, err := h.vfsService.Mkdir(req.Context(), appdto.VFSMkdirRequest{
 		ParentPath: parentPath,
 		Name:       name,
 	}); err != nil {
@@ -322,12 +344,17 @@ func (h *WebDAVHandler) handleDriverMKCOL(writer http.ResponseWriter, req *http.
 	writer.WriteHeader(http.StatusCreated)
 }
 
-func (h *WebDAVHandler) handleDriverPUT(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
+func (h *WebDAVHandler) handleVFSPUT(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, vfsPath string) {
 	if h.uploadService == nil {
 		http.Error(writer, "webdav upload unavailable", http.StatusNotImplemented)
 		return
 	}
-	parentPath, name, err := splitWebDAVTarget(webdavPath)
+	resolved, err := h.vfsService.ResolvePath(req.Context(), vfsPath)
+	if err != nil {
+		http.Error(writer, "not found", webDAVStatusFromError(err))
+		return
+	}
+	parentPath, name, err := splitWebDAVTarget(resolved.InnerPath)
 	if err != nil {
 		http.Error(writer, "bad request", http.StatusBadRequest)
 		return
@@ -355,10 +382,9 @@ func (h *WebDAVHandler) handleDriverPUT(writer http.ResponseWriter, req *http.Re
 	writer.WriteHeader(http.StatusCreated)
 }
 
-func (h *WebDAVHandler) handleDriverDELETE(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string) {
-	if _, err := h.fileService.Delete(req.Context(), appdto.DeleteFileRequest{
-		SourceID:   source.ID,
-		Path:       webdavPath,
+func (h *WebDAVHandler) handleVFSDELETE(writer http.ResponseWriter, req *http.Request, vfsPath string) {
+	if _, err := h.vfsService.Delete(req.Context(), appdto.VFSDeleteRequest{
+		Path:       vfsPath,
 		DeleteMode: "trash",
 	}); err != nil {
 		http.Error(writer, "webdav delete failed", webDAVStatusFromError(err))
@@ -367,13 +393,23 @@ func (h *WebDAVHandler) handleDriverDELETE(writer http.ResponseWriter, req *http
 	writer.WriteHeader(http.StatusNoContent)
 }
 
-func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, webdavPath string, move bool) {
-	destinationPath, err := h.normalizedDriverDestinationPath(req, source)
+func (h *WebDAVHandler) handleVFSCopyMove(writer http.ResponseWriter, req *http.Request, source *entity.StorageSource, vfsPath string, move bool) {
+	destinationInnerPath, err := h.normalizedWebDAVDestinationPath(req)
 	if err != nil {
 		http.Error(writer, "bad destination", http.StatusBadRequest)
 		return
 	}
-	if webdavPath == "/" || destinationPath == "/" {
+	destinationPath, err := webDAVVFSPath(source, destinationInnerPath)
+	if err != nil {
+		http.Error(writer, "bad destination", http.StatusBadRequest)
+		return
+	}
+	sourceRootPath, err := webDAVVFSPath(source, "/")
+	if err != nil {
+		http.Error(writer, "bad request", http.StatusBadRequest)
+		return
+	}
+	if vfsPath == sourceRootPath || destinationPath == sourceRootPath {
 		http.Error(writer, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -382,13 +418,12 @@ func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *ht
 		destinationParent = "/"
 	}
 	destinationName := path.Base(destinationPath)
-	sourceName := path.Base(webdavPath)
+	sourceName := path.Base(vfsPath)
 
 	var newPath string
 	if move {
-		_, movedPath, err := h.fileService.Move(req.Context(), appdto.MoveCopyRequest{
-			SourceID:   source.ID,
-			Path:       webdavPath,
+		_, movedPath, err := h.vfsService.Move(req.Context(), appdto.VFSMoveCopyRequest{
+			Path:       vfsPath,
 			TargetPath: destinationParent,
 		})
 		if err != nil {
@@ -397,9 +432,8 @@ func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *ht
 		}
 		newPath = movedPath
 	} else {
-		_, copiedPath, err := h.fileService.Copy(req.Context(), appdto.MoveCopyRequest{
-			SourceID:   source.ID,
-			Path:       webdavPath,
+		_, copiedPath, err := h.vfsService.Copy(req.Context(), appdto.VFSMoveCopyRequest{
+			Path:       vfsPath,
 			TargetPath: destinationParent,
 		})
 		if err != nil {
@@ -410,10 +444,9 @@ func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *ht
 	}
 
 	if destinationName != sourceName {
-		_, renamedPath, _, err := h.fileService.Rename(req.Context(), appdto.RenameRequest{
-			SourceID: source.ID,
-			Path:     newPath,
-			NewName:  destinationName,
+		_, renamedPath, _, err := h.vfsService.Rename(req.Context(), appdto.VFSRenameRequest{
+			Path:    newPath,
+			NewName: destinationName,
 		})
 		if err != nil {
 			http.Error(writer, "webdav rename failed", webDAVStatusFromError(err))
@@ -422,7 +455,9 @@ func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *ht
 		newPath = renamedPath
 	}
 	if newPath != destinationPath {
-		writer.Header().Set("Content-Location", h.webDAVExternalHref(source.WebDAVSlug, newPath))
+		if innerPath, ok := webDAVInnerPathFromVFSPath(source.MountPath, newPath); ok {
+			writer.Header().Set("Content-Location", h.webDAVExternalHref(source.WebDAVSlug, innerPath))
+		}
 	}
 	if move {
 		writer.WriteHeader(http.StatusCreated)
@@ -431,7 +466,7 @@ func (h *WebDAVHandler) handleDriverCopyMove(writer http.ResponseWriter, req *ht
 	writer.WriteHeader(http.StatusCreated)
 }
 
-func (h *WebDAVHandler) normalizedDriverDestinationPath(req *http.Request, source *entity.StorageSource) (string, error) {
+func (h *WebDAVHandler) normalizedWebDAVDestinationPath(req *http.Request) (string, error) {
 	raw := strings.TrimSpace(req.Header.Get("Destination"))
 	if raw == "" {
 		return "", os.ErrInvalid
@@ -539,66 +574,6 @@ func capabilitiesForRole(roleKey string) []string {
 	return capabilities
 }
 
-func (h *WebDAVHandler) authorizeRequest(ctx context.Context, sourceID uint, method string, requestPath string, destination string) error {
-	if h.aclAuthorizer == nil {
-		return nil
-	}
-	switch strings.ToUpper(method) {
-	case http.MethodGet, http.MethodHead, http.MethodOptions, "PROPFIND":
-		return h.aclAuthorizer.AuthorizePath(ctx, sourceID, requestPath, appsvc.ACLActionRead)
-	case http.MethodPut, "MKCOL":
-		return h.aclAuthorizer.AuthorizePath(ctx, sourceID, requestPath, appsvc.ACLActionWrite)
-	case http.MethodDelete:
-		return h.aclAuthorizer.AuthorizePath(ctx, sourceID, requestPath, appsvc.ACLActionDelete)
-	case "COPY":
-		if err := h.aclAuthorizer.AuthorizePath(ctx, sourceID, requestPath, appsvc.ACLActionRead); err != nil {
-			return err
-		}
-		if destination == "" {
-			return nil
-		}
-		return h.aclAuthorizer.AuthorizePath(ctx, sourceID, destination, appsvc.ACLActionWrite)
-	case "MOVE":
-		if err := h.aclAuthorizer.AuthorizePath(ctx, sourceID, requestPath, appsvc.ACLActionWrite); err != nil {
-			return err
-		}
-		if destination == "" {
-			return nil
-		}
-		return h.aclAuthorizer.AuthorizePath(ctx, sourceID, destination, appsvc.ACLActionWrite)
-	default:
-		return nil
-	}
-}
-
-type readOnlyWebDAVFileSystem struct {
-	delegate webdav.FileSystem
-}
-
-func (fs readOnlyWebDAVFileSystem) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
-	return os.ErrPermission
-}
-
-func (fs readOnlyWebDAVFileSystem) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (webdav.File, error) {
-	writeFlags := os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREATE | os.O_TRUNC
-	if flag&writeFlags != 0 {
-		return nil, os.ErrPermission
-	}
-	return fs.delegate.OpenFile(ctx, name, flag, perm)
-}
-
-func (fs readOnlyWebDAVFileSystem) RemoveAll(ctx context.Context, name string) error {
-	return os.ErrPermission
-}
-
-func (fs readOnlyWebDAVFileSystem) Rename(ctx context.Context, oldName string, newName string) error {
-	return os.ErrPermission
-}
-
-func (fs readOnlyWebDAVFileSystem) Stat(ctx context.Context, name string) (os.FileInfo, error) {
-	return fs.delegate.Stat(ctx, name)
-}
-
 func cloneRequest(req *http.Request) *http.Request {
 	cloned := req.Clone(req.Context())
 	if req.URL != nil {
@@ -625,6 +600,82 @@ func splitWebDAVTarget(webdavPath string) (string, string, error) {
 		return "", "", os.ErrInvalid
 	}
 	return parentPath, name, nil
+}
+
+func webDAVVFSPath(source *entity.StorageSource, webdavPath string) (string, error) {
+	if source == nil || strings.TrimSpace(source.MountPath) == "" {
+		return "", appsvc.ErrPathInvalid
+	}
+	innerPath, err := normalizeWebDAVRequestPath(webdavPath)
+	if err != nil {
+		return "", err
+	}
+	virtualPath := mergeMountAndInnerPathForHTTP(source.MountPath, innerPath)
+	if virtualPath == "" {
+		return "", appsvc.ErrPathInvalid
+	}
+	return normalizeWebDAVRequestPath(virtualPath)
+}
+
+func webDAVFileItemFromVFSItem(source *entity.StorageSource, item appdto.VFSItem) (appdto.FileItem, bool) {
+	if source == nil {
+		return appdto.FileItem{}, false
+	}
+	innerPath, ok := webDAVInnerPathFromVFSPath(source.MountPath, item.Path)
+	if !ok {
+		return appdto.FileItem{}, false
+	}
+	sourceID := source.ID
+	if item.SourceID != nil {
+		sourceID = *item.SourceID
+	}
+	isDir := item.EntryKind == "directory" || item.IsMountPoint
+	name := item.Name
+	if innerPath == "/" && name == "" {
+		name = source.WebDAVSlug
+	}
+	return appdto.FileItem{
+		Name:        name,
+		Path:        innerPath,
+		ParentPath:  parentVirtualPathForHTTP(innerPath),
+		SourceID:    sourceID,
+		IsDir:       isDir,
+		Size:        item.Size,
+		MimeType:    item.MimeType,
+		Extension:   item.Extension,
+		Etag:        item.Etag,
+		ModifiedAt:  item.ModifiedAt,
+		CreatedAt:   item.CreatedAt,
+		CanPreview:  item.CanPreview,
+		CanDownload: item.CanDownload,
+		CanDelete:   item.CanDelete,
+	}, true
+}
+
+func webDAVInnerPathFromVFSPath(mountPath string, virtualPath string) (string, bool) {
+	mountPath, err := normalizeWebDAVRequestPath(mountPath)
+	if err != nil {
+		return "", false
+	}
+	virtualPath, err = normalizeWebDAVRequestPath(virtualPath)
+	if err != nil {
+		return "", false
+	}
+	if mountPath == "/" {
+		return virtualPath, true
+	}
+	if virtualPath == mountPath {
+		return "/", true
+	}
+	prefix := strings.TrimRight(mountPath, "/") + "/"
+	if !strings.HasPrefix(virtualPath, prefix) {
+		return "", false
+	}
+	innerPath := strings.TrimPrefix(virtualPath, strings.TrimRight(mountPath, "/"))
+	if innerPath == "" {
+		innerPath = "/"
+	}
+	return innerPath, true
 }
 
 func writeWebDAVOptions(writer http.ResponseWriter) {
@@ -725,6 +776,8 @@ func webDAVStatusFromError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, appsvc.ErrSourceOperationUnsupported), errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		return http.StatusUnprocessableEntity
+	case errors.Is(err, appsvc.ErrMetadataVFSCommitFailed), errors.Is(err, appsvc.ErrMetadataVFSMutationSyncFailed):
+		return http.StatusInternalServerError
 	case errors.Is(err, appsvc.ErrCloudAuthFailed), errors.Is(err, appsvc.ErrCloudTokenInvalid),
 		errors.Is(err, appsvc.ErrCloudCaptchaRequired), errors.Is(err, appsvc.ErrCloudCaptchaExpired):
 		return http.StatusUnprocessableEntity
@@ -751,31 +804,6 @@ func isSecureWebDAVRequest(req *http.Request) bool {
 	return strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-func resolveLocalWebDAVRoot(source *entity.StorageSource) (string, error) {
-	var cfg localWebDAVConfig
-	if err := json.Unmarshal([]byte(source.ConfigJSON), &cfg); err != nil {
-		return "", err
-	}
-	if cfg.BasePath == "" {
-		return "", domainrepo.ErrNotFound
-	}
-
-	rootPath, err := normalizeWebDAVRequestPath(source.RootPath)
-	if err != nil {
-		return "", err
-	}
-
-	baseDir := filepath.Clean(cfg.BasePath)
-	rootDir := filepath.Join(baseDir, filepath.FromSlash(strings.TrimPrefix(rootPath, "/")))
-	if err := ensureSubPath(baseDir, rootDir); err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(rootDir, 0o755); err != nil {
-		return "", err
-	}
-	return rootDir, nil
-}
-
 func normalizeWebDAVRequestPath(raw string) (string, error) {
 	if raw == "" {
 		return "/", nil
@@ -791,17 +819,6 @@ func normalizeWebDAVRequestPath(raw string) (string, error) {
 		return "", os.ErrPermission
 	}
 	return cleaned, nil
-}
-
-func ensureSubPath(baseDir, target string) error {
-	rel, err := filepath.Rel(filepath.Clean(baseDir), filepath.Clean(target))
-	if err != nil {
-		return err
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return os.ErrPermission
-	}
-	return nil
 }
 
 func rewriteWebDAVDestination(req *http.Request, prefix, slug string) {

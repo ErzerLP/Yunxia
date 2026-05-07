@@ -14,6 +14,14 @@
 
 ## 2026-05-08
 
+### WebDAV metadata VFS 阶段
+
+- WebDAV local / S3 / PikPak 等 source 统一改为 metadata VFS 入口：`PROPFIND` 走 `VFSService.List` 过滤后的 metadata children，不再让 local source 使用物理 `webdav.Dir` 绕过 VFS/ACL。
+- `GET` / `HEAD` 先按 WebDAV slug 合成 VFS path，再 302 到 `/api/v2/fs/download?path=...&access_token=...`；后续复用统一 VFS download 的 local Range 与 provider presign/302 行为。
+- `MKCOL` / `DELETE` / `MOVE` / `COPY` 调用 `VFSService` mutation，`PUT` 通过 `UploadService.ImportLocalFile` 完成数据面导入后再提交 metadata VFS file/object，返回 201 前确保网页 VFS list 可见。
+- `webdav_read_only=true` 写操作稳定返回 403；错误响应不暴露容器/宿主机物理路径、SQL/provider payload 或 token。
+- 补充 handler/service 测试覆盖 local metadata PROPFIND、防未授权名称泄露、VFS download 302、VFS mutation 调用与只读 403；本阶段仅后端行为/契约变化，无需前端源码适配。
+
 ### ACL node-first 阶段
 
 - ACL 规则新增可选 `vfs_node_id`；GORM model、domain entity、DTO、repo filter 与 API 响应均可持久化/暴露 node 绑定关系。

@@ -2059,6 +2059,67 @@ func TestUploadServiceUsesImportDriverForServerChunkNonLocalDriver(t *testing.T)
 	}
 }
 
+func TestUploadImportLocalFileCommitsMetadataVFSFileObject(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	source := &entity.StorageSource{
+		Name:       "WebDAV metadata import",
+		DriverType: "cloud-import",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/cloud",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	stagedPath := filepath.Join(t.TempDir(), "webdav-upload.txt")
+	if err := os.WriteFile(stagedPath, []byte("webdav-content"), 0o644); err != nil {
+		t.Fatalf("write staged file: %v", err)
+	}
+
+	importer := &recordingTaskImportDriver{}
+	committer := &recordingMetadataVFSCommitter{}
+	svc := NewUploadService(
+		sourceRepo,
+		nil,
+		DefaultSystemOptions(),
+		WithUploadImportDriver("cloud-import", importer),
+		WithUploadMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	item, err := svc.ImportLocalFile(ctx, source.ID, "/uploads", "webdav-upload.txt", stagedPath)
+	if err != nil {
+		t.Fatalf("ImportLocalFile() error = %v", err)
+	}
+	if item.Path != "/uploads/webdav-upload.txt" || item.Size != int64(len("webdav-content")) {
+		t.Fatalf("unexpected imported item = %+v", item)
+	}
+	if len(importer.calls) != 1 || importer.calls[0].targetPath != "/uploads/webdav-upload.txt" {
+		t.Fatalf("expected one import driver call, got %+v", importer.calls)
+	}
+	if len(committer.calls) != 1 {
+		t.Fatalf("expected one metadata commit, got %+v", committer.calls)
+	}
+	call := committer.calls[0]
+	if call.Source == nil ||
+		call.Source.ID != source.ID ||
+		call.VirtualParentPath != "/cloud/uploads" ||
+		call.ResolvedInnerParentPath != "/uploads" ||
+		call.Filename != "webdav-upload.txt" ||
+		call.ObjectPath != "/uploads/webdav-upload.txt" ||
+		call.Size != int64(len("webdav-content")) ||
+		call.ActorID == nil ||
+		*call.ActorID != 7 {
+		t.Fatalf("unexpected metadata commit call = %+v", call)
+	}
+}
+
 func TestUploadFinishCommitsMetadataVFSFileObject(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()

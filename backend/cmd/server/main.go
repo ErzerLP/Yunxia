@@ -345,6 +345,7 @@ func main() {
 		systemConfigRepo,
 		userRepo,
 		aclAuthorizer,
+		vfsSvc,
 		fileSvc,
 		uploadSvc,
 		hasher,

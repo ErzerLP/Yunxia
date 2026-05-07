@@ -360,7 +360,7 @@ func (s *UploadService) initWithImportDriver(ctx context.Context, userID uint, t
 	}, nil
 }
 
-// ImportLocalFile 将后端可见的本地文件导入非 local 存储源。
+// ImportLocalFile 将后端可见的本地文件导入目标存储源，并提交 metadata VFS 文件节点。
 func (s *UploadService) ImportLocalFile(ctx context.Context, sourceID uint, parentPath string, filename string, localPath string) (*appdto.FileItem, error) {
 	if err := validateFileName(filename); err != nil {
 		return nil, err
@@ -368,9 +368,6 @@ func (s *UploadService) ImportLocalFile(ctx context.Context, sourceID uint, pare
 	source, err := s.sourceRepo.FindByID(ctx, sourceID)
 	if err != nil {
 		return nil, err
-	}
-	if source.DriverType == "local" {
-		return nil, ErrSourceOperationUnsupported
 	}
 	parentPath, err = normalizeVirtualPath(parentPath)
 	if err != nil {
@@ -386,25 +383,104 @@ func (s *UploadService) ImportLocalFile(ctx context.Context, sourceID uint, pare
 	if info.IsDir() {
 		return nil, ErrFileIsDirectory
 	}
-	driver, err := s.getImportDriver(source.DriverType)
-	if err != nil {
-		if errors.Is(err, ErrSourceDriverUnsupported) {
-			return nil, ErrSourceOperationUnsupported
+
+	targetPath := joinVirtualPath(parentPath, filename)
+	var item appdto.FileItem
+	if source.DriverType == "local" {
+		item, err = s.importLocalFileIntoLocalSource(source, parentPath, targetPath, localPath)
+		if err != nil {
+			return nil, err
 		}
+	} else {
+		driver, err := s.getImportDriver(source.DriverType)
+		if err != nil {
+			if errors.Is(err, ErrSourceDriverUnsupported) {
+				return nil, ErrSourceOperationUnsupported
+			}
+			return nil, err
+		}
+		if err := driver.ImportFile(ctx, source, targetPath, localPath); err != nil {
+			return nil, normalizeImportDriverError(err)
+		}
+		item = buildStorageEntryItem(source.ID, StorageEntry{
+			Name:       filename,
+			Path:       targetPath,
+			IsDir:      false,
+			Size:       info.Size(),
+			ModifiedAt: time.Now(),
+		})
+	}
+
+	if err := s.commitImportedFileMetadata(ctx, source, parentPath, filename, item); err != nil {
 		return nil, err
 	}
-	targetPath := joinVirtualPath(parentPath, filename)
-	if err := driver.ImportFile(ctx, source, targetPath, localPath); err != nil {
-		return nil, normalizeImportDriverError(err)
-	}
-	item := buildStorageEntryItem(source.ID, StorageEntry{
-		Name:       filename,
-		Path:       targetPath,
-		IsDir:      false,
-		Size:       info.Size(),
-		ModifiedAt: time.Now(),
-	})
 	return &item, nil
+}
+
+func (s *UploadService) importLocalFileIntoLocalSource(source *entity.StorageSource, parentPath string, targetPath string, localPath string) (appdto.FileItem, error) {
+	_, parentPhysicalPath, err := resolvePhysicalPath(source, parentPath)
+	if err != nil {
+		return appdto.FileItem{}, err
+	}
+	parentInfo, err := os.Stat(parentPhysicalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return appdto.FileItem{}, ErrFileNotFound
+		}
+		return appdto.FileItem{}, normalizeLocalWriteError(err)
+	}
+	if !parentInfo.IsDir() {
+		return appdto.FileItem{}, ErrPathInvalid
+	}
+	if !probeLocalDirectoryWritable(parentPhysicalPath) {
+		return appdto.FileItem{}, ErrSourceReadOnly
+	}
+
+	_, targetPhysicalPath, err := resolvePhysicalPath(source, targetPath)
+	if err != nil {
+		return appdto.FileItem{}, err
+	}
+	if err := copyFile(localPath, targetPhysicalPath); err != nil {
+		return appdto.FileItem{}, normalizeLocalWriteError(err)
+	}
+	info, err := os.Stat(targetPhysicalPath)
+	if err != nil {
+		return appdto.FileItem{}, normalizeLocalWriteError(err)
+	}
+	item := buildFileItem(source.ID, targetPath, info)
+	return item, nil
+}
+
+func (s *UploadService) commitImportedFileMetadata(ctx context.Context, source *entity.StorageSource, parentPath string, filename string, item appdto.FileItem) error {
+	if s.metadataCommitter == nil || source == nil || item.IsDir {
+		return nil
+	}
+	if item.Name == "" {
+		item.Name = filename
+	}
+	virtualParentPath := mergeMountAndInnerPath(source.MountPath, parentPath)
+	actorID := currentMetadataMutationActorID(ctx)
+	result, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+		Source:                  source,
+		VirtualParentPath:       virtualParentPath,
+		ResolvedInnerParentPath: parentPath,
+		Filename:                item.Name,
+		ObjectPath:              item.Path,
+		Size:                    item.Size,
+		MimeType:                item.MimeType,
+		ETag:                    item.Etag,
+		ActorID:                 actorID,
+	})
+	if err != nil {
+		s.recordUploadMetadataCommitFailure(ctx, source, actorID, resolveMetadataVFSNodeID(ctx, s.metadataReader, virtualParentPath), virtualParentPath, item.Path, item.Name, err)
+		return maskMetadataVFSCommitError(err)
+	}
+	if result == nil || result.Node == nil {
+		err := ErrMetadataVFSCommitFailed
+		s.recordUploadMetadataCommitFailure(ctx, source, actorID, resolveMetadataVFSNodeID(ctx, s.metadataReader, virtualParentPath), virtualParentPath, item.Path, item.Name, err)
+		return maskMetadataVFSCommitError(err)
+	}
+	return nil
 }
 
 // UploadChunk 接收单个 chunk。

@@ -1314,16 +1314,19 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 约束：
 
 - 使用 Basic Auth
-- 对 `is_webdav_exposed=true` 的存储源开放；local 继续使用物理文件系统适配，非 local 源通过 FileService/UploadService/driver 能力适配
+- 对 `is_webdav_exposed=true` 的存储源开放；local / S3 / PikPak 等所有 source 都统一通过 metadata VFS 控制面进入，不再让 local 绕到物理 `webdav.Dir`，也不让非 local 暴露 provider 原生路径
 - 需要 HTTPS 语义；反向代理场景应传 `X-Forwarded-Proto: https`
 - 普通用户仍受 ACL 约束
 - `webdav_read_only=true` 时写方法会被拒绝
-- 非 local 源能力边界：
-  - `PROPFIND` 走 `FileService.List/Stat`，返回 WebDAV `207 Multi-Status`
-  - `GET` / `HEAD` 走 provider presigned URL，返回 `302 Location`
-  - `MKCOL` / `DELETE` / `COPY` / `MOVE` 走对应文件服务写操作
-  - `PUT` 先把请求体写入后端临时文件，再通过 `UploadService.ImportLocalFile -> ImportDriver` 导入目标源；因此仅适用于已注册 `ImportDriver` 的非 local 源（当前 S3/PikPak 可用）
-  - 非 local `COPY` / `MOVE` 的 `Destination` 必须仍在同一个 WebDAV source slug 下；跨 WebDAV source 移动/复制当前不支持
+- metadata VFS 行为：
+  - `PROPFIND` 走 `VFSService.List` / metadata parent stat，返回 WebDAV `207 Multi-Status`；服务端先按 metadata VFS + ACL 过滤，普通用户不会收到未授权节点名称
+  - `GET` / `HEAD` 先按 WebDAV slug 合成 VFS path，再通过 VFS resolve 生成 `/api/v2/fs/download?path=...&access_token=...` 短链 302；后续由统一 VFS download 入口处理 local Range 流或 provider presign/302
+  - `MKCOL` / `DELETE` / `COPY` / `MOVE` 调用 `VFSService.Mkdir/Delete/Copy/Move/Rename`，复用网页 VFS 的 metadata mutation sync、operation journal 与 ACL 行为
+  - `PUT` 先把请求体写入后端临时文件，再按 VFS resolve 得到的 source/inner parent 调用 `UploadService.ImportLocalFile`；返回 `201` 前必须完成数据面导入与 metadata VFS file/object commit
+  - `COPY` / `MOVE` 的 `Destination` 必须仍在同一个 WebDAV source slug 下；跨 WebDAV source 移动/复制当前不支持
+- 只读与防泄露：
+  - `webdav_read_only=true` 时 `PUT` / `MKCOL` / `DELETE` / `COPY` / `MOVE` 稳定返回 `403`，响应只包含通用 WebDAV 错误文本，不返回容器/宿主机物理路径
+  - metadata sync / commit 失败返回 5xx WebDAV 错误状态，响应不包含 SQL、provider payload、local 物理路径或 token
 - 写方法当前会写入审计：
   - `PUT -> file.put`
   - `MKCOL -> file.mkcol`

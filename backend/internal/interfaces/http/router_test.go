@@ -699,6 +699,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		configRepo,
 		userRepo,
 		aclAuthorizer,
+		vfsSvc,
 		fileSvc,
 		uploadSvc,
 		hasher,
