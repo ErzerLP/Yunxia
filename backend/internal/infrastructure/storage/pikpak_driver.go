@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -504,7 +505,7 @@ func (d *PikPakDriver) CreateNativeDownload(ctx context.Context, source *entity.
 		progress := pikPakOfflineProgressPercent(task.Progress)
 		result = &domainstorage.NativeDownloadTask{
 			ExternalID:      strings.TrimSpace(task.ID),
-			DisplayName:     pikPakOfflineTaskDisplayName(task, rawURL),
+			DisplayName:     pikPakOfflineTaskDisplayName(task, ""),
 			ProgressPercent: progress,
 		}
 		return nil
@@ -1045,22 +1046,25 @@ func pikPakOfflineTaskToNativeStatus(task *PikPakOfflineTask) *domainstorage.Nat
 		return &domainstorage.NativeDownloadStatus{Status: "pending"}
 	}
 	progress := pikPakOfflineProgressPercent(task.Progress)
-	var errorMessage *string
-	if strings.TrimSpace(task.Message) != "" {
-		message := strings.TrimSpace(task.Message)
-		errorMessage = &message
-	}
 	status := &domainstorage.NativeDownloadStatus{
 		Status:          mapPikPakOfflinePhase(task.Phase),
 		ProgressPercent: progress,
 		DisplayName:     pikPakOfflineTaskDisplayName(task, ""),
-		ErrorMessage:    errorMessage,
+		ErrorMessage:    pikPakOfflineTaskSafeErrorMessage(task),
 	}
 	if status.Status == "completed" {
 		completed := float64(100)
 		status.ProgressPercent = &completed
 	}
 	return status
+}
+
+func pikPakOfflineTaskSafeErrorMessage(task *PikPakOfflineTask) *string {
+	if task == nil || strings.TrimSpace(task.Message) == "" {
+		return nil
+	}
+	message := "cloud provider task failed"
+	return &message
 }
 
 func mapPikPakOfflinePhase(phase string) string {
@@ -1095,20 +1099,41 @@ func pikPakOfflineProgressPercent(progress float64) *float64 {
 
 func pikPakOfflineTaskDisplayName(task *PikPakOfflineTask, fallbackURL string) string {
 	if task == nil {
-		return path.Base(fallbackURL)
+		return pikPakOfflineFallbackURLFileName(fallbackURL)
 	}
 	for _, candidate := range []string{
 		task.Name,
 		pikPakOfflineFileName(task.File),
 		pikPakOfflineFileName(task.ReferenceResource),
-		path.Base(fallbackURL),
 	} {
-		candidate = strings.TrimSpace(candidate)
-		if candidate != "" && candidate != "." && candidate != "/" {
-			return candidate
+		if filename := pikPakOfflineSafeDisplayName(candidate); filename != "" {
+			return filename
 		}
 	}
-	return fallbackURL
+	return pikPakOfflineFallbackURLFileName(fallbackURL)
+}
+
+func pikPakOfflineFallbackURLFileName(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil {
+		return ""
+	}
+	return pikPakOfflineSafeDisplayName(path.Base(parsed.Path))
+}
+
+func pikPakOfflineSafeDisplayName(candidate string) string {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" || candidate == "." || candidate == "/" {
+		return ""
+	}
+	lower := strings.ToLower(candidate)
+	if strings.Contains(candidate, "://") || strings.HasPrefix(lower, "magnet:") {
+		return ""
+	}
+	if validatePikPakFileName(candidate) != nil {
+		return ""
+	}
+	return candidate
 }
 
 func pikPakOfflineFileName(file *PikPakFile) string {

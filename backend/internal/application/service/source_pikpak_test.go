@@ -511,6 +511,7 @@ func TestPikPakNativeTaskDownloadUsesProviderWithoutStagingImport(t *testing.T) 
 	}
 	fallbackDownloader := &completedWritingDownloader{filename: "fallback.mkv", content: []byte("fallback")}
 	importer := &recordingTaskImportDriver{}
+	committer := &recordingMetadataVFSCommitter{}
 	taskSvc := NewTaskService(
 		taskRepo,
 		sourceRepo,
@@ -518,6 +519,7 @@ func TestPikPakNativeTaskDownloadUsesProviderWithoutStagingImport(t *testing.T) 
 		WithTaskStagingDir(filepath.Join(t.TempDir(), "task-staging")),
 		WithTaskImportDriver(infraStorage.PikPakDriverType, importer),
 		WithTaskNativeDownloadDriver(infraStorage.PikPakDriverType, nativeDriver),
+		WithTaskMetadataVFSCommitter(committer),
 	)
 	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
 		UserID:       42,
@@ -560,8 +562,113 @@ func TestPikPakNativeTaskDownloadUsesProviderWithoutStagingImport(t *testing.T) 
 	if got.Status != "completed" || got.Progress != 100 || got.ErrorMessage != nil {
 		t.Fatalf("expected completed native task with sanitized terminal fields, got %+v", got)
 	}
+	if got.ResultVFSNodeID == 0 {
+		t.Fatalf("expected completed native task result_vfs_node_id, got %+v", got)
+	}
+	if len(committer.calls) != 1 ||
+		committer.calls[0].VirtualParentPath != "/pikpak/Downloads" ||
+		committer.calls[0].ResolvedInnerParentPath != "/Downloads" ||
+		committer.calls[0].Filename != "episode.mkv" ||
+		committer.calls[0].ObjectPath != "/Downloads/episode.mkv" {
+		t.Fatalf("unexpected native metadata commit calls = %+v", committer.calls)
+	}
 	if len(importer.calls) != 0 {
 		t.Fatalf("native task should not import local staging, got %+v", importer.calls)
+	}
+}
+
+func TestPikPakNativeTaskMissingFilenameDoesNotComplete(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	operationRepo := gorm.NewVFSOperationRepository(db)
+	raw, err := (infraStorage.PikPakConfig{
+		RootFolderID:     "root",
+		Platform:         "web",
+		DisableMediaLink: true,
+		CacheTTLSeconds:  300,
+		DownloadStrategy: "redirect",
+		RefreshToken:     "refresh-0",
+		DeviceID:         "device-0",
+	}).Marshal()
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "PikPak",
+		DriverType: infraStorage.PikPakDriverType,
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/pikpak",
+		RootPath:   "/",
+		ConfigJSON: raw,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("Create(source) error = %v", err)
+	}
+
+	nativeDriver := &recordingNativeDownloadDriver{
+		createResult: &NativeDownloadTask{ExternalID: "native-missing-name"},
+		statusByID: map[string]*NativeDownloadStatus{
+			"native-missing-name": {Status: "completed"},
+		},
+	}
+	committer := &recordingMetadataVFSCommitter{}
+	taskSvc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		&completedWritingDownloader{filename: "fallback.mkv", content: []byte("fallback")},
+		WithTaskStagingDir(filepath.Join(t.TempDir(), "task-staging")),
+		WithTaskNativeDownloadDriver(infraStorage.PikPakDriverType, nativeDriver),
+		WithTaskMetadataVFSCommitter(committer),
+		WithTaskOperationJournal(NewVFSOperationJournalService(operationRepo)),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{
+		UserID:       42,
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		Capabilities: []string{},
+	})
+
+	created, err := taskSvc.Create(ctx, appdto.CreateTaskRequest{
+		Type:     "download",
+		URL:      "magnet:?xt=urn:btih:missingname",
+		SourceID: source.ID,
+		SavePath: "/Downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create(native missing name) error = %v", err)
+	}
+	if created.DisplayName != "" {
+		t.Fatalf("native task should not synthesize filename from URL, got display_name=%q", created.DisplayName)
+	}
+
+	got, err := taskSvc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get(native missing name) error = %v", err)
+	}
+	if got.Status == "completed" || got.ResultVFSNodeID != 0 ||
+		got.ErrorMessage == nil || *got.ErrorMessage != ErrMetadataVFSCommitFailed.Error() {
+		t.Fatalf("native task without result filename must fail safely, got %+v", got)
+	}
+	if len(committer.calls) != 0 {
+		t.Fatalf("metadata commit should not run without a safe result filename, got %+v", committer.calls)
+	}
+	operations, err := operationRepo.ListDue(context.Background(), domainrepo.VFSOperationDueFilter{
+		OperationType: entity.VFSOperationTypeTaskCommit,
+		DueBefore:     time.Now().Add(time.Hour),
+		Limit:         10,
+	})
+	if err != nil {
+		t.Fatalf("operationRepo.ListDue() error = %v", err)
+	}
+	if len(operations) != 1 ||
+		operations[0].Status != entity.VFSOperationStatusFailed ||
+		operations[0].ErrorCode != "METADATA_VFS_COMMIT_FAILED" ||
+		operations[0].ErrorMessage != ErrMetadataVFSCommitFailed.Error() {
+		t.Fatalf("expected sanitized task_commit journal entry, got %+v", operations)
 	}
 }
 

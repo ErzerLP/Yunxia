@@ -166,6 +166,8 @@ func (h *UploadHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusUnavailableForLegalReasons, "CLOUD_REGION_BLOCKED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudProviderUnavailable):
 		httpresp.Error(c, http.StatusBadGateway, "CLOUD_PROVIDER_UNAVAILABLE", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrMetadataVFSCommitFailed):
+		httpresp.Error(c, http.StatusInternalServerError, "METADATA_VFS_COMMIT_FAILED", err.Error(), nil)
 	default:
 		httpresp.Error(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

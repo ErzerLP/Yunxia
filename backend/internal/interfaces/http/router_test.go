@@ -526,6 +526,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
 	vfsMountRepo := gormrepo.NewVFSMountRepository(db)
 	vfsTagRepo := gormrepo.NewVFSTagRepository(db)
+	vfsOperationRepo := gormrepo.NewVFSOperationRepository(db)
 	transactor := gormrepo.NewTransactor(db)
 	hasher := security.NewBcryptHasher(4)
 	tokenSvc := security.NewJWTTokenService("router-secret", 15*time.Minute, 7*24*time.Hour)
@@ -613,12 +614,14 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		storageObjectRepo,
 		appsvc.WithMetadataVFSCommitTransactor(transactor),
 	)
+	vfsOperationJournalSvc := appsvc.NewVFSOperationJournalService(vfsOperationRepo)
 	vfsSvc := appsvc.NewVFSService(
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", fakeS3),
 		appsvc.WithVFSFileOperator(fileSvc),
 		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
 		appsvc.WithVFSMetadataServices(metadataVFSReader, metadataVFSSyncSvc),
+		appsvc.WithVFSOperationJournal(vfsOperationJournalSvc),
 	)
 	uploadSvc := appsvc.NewUploadService(
 		sourceRepo,
@@ -630,6 +633,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithUploadVFSResolver(vfsSvc),
 		appsvc.WithUploadMetadataVFSReader(metadataVFSReader),
 		appsvc.WithUploadMetadataVFSCommitter(metadataVFSCommitter),
+		appsvc.WithUploadOperationJournal(vfsOperationJournalSvc),
 	)
 	taskSvc := appsvc.NewTaskService(
 		gormrepo.NewTaskRepository(db),
@@ -640,6 +644,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithTaskVFSResolver(vfsSvc),
 		appsvc.WithTaskMetadataVFSReader(metadataVFSReader),
 		appsvc.WithTaskMetadataVFSCommitter(metadataVFSCommitter),
+		appsvc.WithTaskOperationJournal(vfsOperationJournalSvc),
 	)
 	rssSvc := appsvc.NewRSSService(
 		rssRepo,

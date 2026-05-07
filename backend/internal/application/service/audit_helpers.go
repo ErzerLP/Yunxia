@@ -340,6 +340,8 @@ func mapFileErrorCode(err error) string {
 		return "SOURCE_READ_ONLY"
 	case errors.Is(err, ErrMetadataVFSMutationSyncFailed):
 		return "METADATA_VFS_MUTATION_SYNC_FAILED"
+	case errors.Is(err, ErrMetadataVFSCommitFailed):
+		return "METADATA_VFS_COMMIT_FAILED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:
@@ -377,6 +379,8 @@ func taskErrorCode(err error) string {
 		return "TASK_INVALID_STATE"
 	case errors.Is(err, ErrNoBackingStorage):
 		return "NO_BACKING_STORAGE"
+	case errors.Is(err, ErrMetadataVFSCommitFailed):
+		return "METADATA_VFS_COMMIT_FAILED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:

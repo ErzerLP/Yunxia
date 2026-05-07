@@ -257,6 +257,7 @@ func main() {
 		appsvc.WithUploadVFSResolver(vfsSvc),
 		appsvc.WithUploadMetadataVFSReader(metadataVFSReader),
 		appsvc.WithUploadMetadataVFSCommitter(metadataVFSCommitter),
+		appsvc.WithUploadOperationJournal(vfsOperationJournalSvc),
 	}
 	uploadServiceOptions = append(uploadServiceOptions, storageDrivers.UploadServiceOptions()...)
 	uploadSvc := appsvc.NewUploadService(sourceRepo, uploadRepo, options, uploadServiceOptions...)
@@ -269,6 +270,7 @@ func main() {
 		appsvc.WithTaskVFSResolver(vfsSvc),
 		appsvc.WithTaskMetadataVFSReader(metadataVFSReader),
 		appsvc.WithTaskMetadataVFSCommitter(metadataVFSCommitter),
+		appsvc.WithTaskOperationJournal(vfsOperationJournalSvc),
 		appsvc.WithTaskDownloadRouter(downloadRouter),
 	}
 	taskServiceOptions = append(taskServiceOptions, storageDrivers.TaskServiceOptions()...)

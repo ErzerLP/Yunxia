@@ -1237,27 +1237,45 @@ func TestRSSTaskBacklinkUpdatesItemTerminalStates(t *testing.T) {
 	now := time.Date(2026, 4, 30, 15, 0, 0, 0, time.UTC)
 	completedTaskID := tasks.addTask("completed", nil)
 	tasks.tasks[completedTaskID].ResultVFSNodeID = 99
+	completedWithoutNodeTaskID := tasks.addTask("completed", nil)
 	failedMessage := "temporary network error"
 	failedTaskID := tasks.addTask("failed", &failedMessage)
+	metadataFailedMessage := ErrMetadataVFSCommitFailed.Error()
+	metadataFailedTaskID := tasks.addTask("failed", &metadataFailedMessage)
 	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
 	sub := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "sub", IsEnabled: true, TargetVirtualParentPath: "/anime", CreatedAt: now, UpdatedAt: now})
 	completed := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "done", DownloadURL: "magnet:?xt=urn:btih:done", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusEnqueued, MatchedSubscriptionID: &sub.ID, TaskID: &completedTaskID, MaxRetryCount: 3, CreatedAt: now, UpdatedAt: now})
+	completedWithoutNode := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "done-no-node", DownloadURL: "magnet:?xt=urn:btih:done2", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusEnqueued, MatchedSubscriptionID: &sub.ID, TaskID: &completedWithoutNodeTaskID, MaxRetryCount: 3, CreatedAt: now, UpdatedAt: now})
 	failed := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "fail", DownloadURL: "magnet:?xt=urn:btih:fail", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusEnqueued, MatchedSubscriptionID: &sub.ID, TaskID: &failedTaskID, MaxRetryCount: 3, CreatedAt: now, UpdatedAt: now})
+	metadataFailed := repo.mustCreateItem(&entity.RSSItem{UserID: 1, SourceID: source.ID, Title: "metadata-fail", DownloadURL: "magnet:?xt=urn:btih:metafail", LinkType: RSSLinkTypeMagnet, Status: RSSItemStatusEnqueued, MatchedSubscriptionID: &sub.ID, TaskID: &metadataFailedTaskID, MaxRetryCount: 3, CreatedAt: now, UpdatedAt: now})
 	svc := NewRSSService(repo, nil, tasks, WithRSSTaskRepository(tasks), WithRSSNow(func() time.Time { return now }))
 
 	if _, err := svc.RunRetryCycle(context.Background(), 10); err != nil {
 		t.Fatalf("RunRetryCycle failed: %v", err)
 	}
 	completed, _ = repo.FindItemByID(context.Background(), completed.ID)
+	completedWithoutNode, _ = repo.FindItemByID(context.Background(), completedWithoutNode.ID)
 	failed, _ = repo.FindItemByID(context.Background(), failed.ID)
+	metadataFailed, _ = repo.FindItemByID(context.Background(), metadataFailed.ID)
 	if completed.Status != RSSItemStatusCompleted {
 		t.Fatalf("completed backlink status = %q", completed.Status)
 	}
 	if completed.ResultVFSNodeID != 99 {
 		t.Fatalf("expected completed item result_vfs_node_id=99, got %#v", completed)
 	}
+	if completedWithoutNode.Status != RSSItemStatusNeedsAttention ||
+		completedWithoutNode.ErrorMessage == nil ||
+		*completedWithoutNode.ErrorMessage != ErrMetadataVFSCommitFailed.Error() {
+		t.Fatalf("completed task without result node should need attention, got %#v", completedWithoutNode)
+	}
 	if failed.Status != RSSItemStatusRetryPending || failed.RetryReason == nil || *failed.RetryReason != RSSRetryReasonDownloaderUnavailable {
 		t.Fatalf("failed backlink item = %#v", failed)
+	}
+	if metadataFailed.Status != RSSItemStatusNeedsAttention ||
+		metadataFailed.ErrorMessage == nil ||
+		*metadataFailed.ErrorMessage != ErrMetadataVFSCommitFailed.Error() ||
+		metadataFailed.NextRetryAt != nil {
+		t.Fatalf("metadata failed backlink item = %#v", metadataFailed)
 	}
 }
 

@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待适配 | 2026-05-08 | 上传/任务/RSS | 上传完成、离线任务页、RSS 条目列表/告警 | P2 | `/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-node-first-completion) |
 | 待适配 | 2026-05-07 | VFS 刷新 | 文件/VFS 页、目录刷新按钮、错误提示 | P2 | `POST /api/v2/fs/refresh`、`GET /api/v2/fs/list` | [详情](#handoff-2026-05-07-vfs-refresh-sync) |
 | 待适配 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
 | 待适配 | 2026-05-07 | VFS 标签 | 文件/VFS 页、文件详情/右键菜单、后续筛选入口 | P2 | `/api/v1/tags*`、`/api/v2/fs/tags*` | [详情](#handoff-2026-05-07-vfs-tags) |
@@ -994,3 +995,25 @@ type PikPakSecretPatch = {
 - Provider/list 失败时，接口返回稳定 cloud/provider 错误，但不会清空已有 metadata 子节点；目录会标记为 `sync_state="error"`，前端可继续加载旧 DB 视图。
 - 刷新成功后，`GET /api/v2/fs/list` 返回更新后的 metadata 列表，并在条目上暴露 `sync_state`。
 - 完整契约见 `backend/API_CONTRACT.md` 的 `3.14 统一虚拟目录树 V2`。
+
+<a id="handoff-2026-05-08-node-first-completion"></a>
+
+### [P2][待适配][上传/任务/RSS] 2026-05-08 Upload/task/RSS node-first 完成语义
+
+#### 前端适配 checklist
+
+- [ ] 上传完成页/通知：`/api/v1/upload/finish` 成功时要求 `completed=true` 且读取 `result_vfs_node_id`；随后刷新目标父目录的 `/api/v2/fs/list`，不要仅依赖旧 `/api/v1/files` 列表。
+- [ ] 上传失败错误码新增/确认 `METADATA_VFS_COMMIT_FAILED`：提示“文件已写入底层存储，但目录索引提交失败，请稍后重试或联系管理员”，不要展示低层路径/SQL/provider payload。
+- [ ] 离线任务页：`DownloadTaskView.status="completed"` 时应有 `result_vfs_node_id`；`failed` 且 `error_message="metadata vfs commit failed"` 时展示安全摘要，并引导用户刷新目录或联系管理员。
+- [ ] RSS 条目列表：只有 `RSSItemView.status="completed"` 且 `result_vfs_node_id` 非空时展示“定位结果节点/打开目录”的强入口。
+- [ ] RSS 条目 `needs_attention` 需要显示 `error_message` / `retry_reason`；metadata commit failed 或 completed 但缺失 result node 会进入 `needs_attention`，不要停留在 matched/enqueued loading 态。
+
+#### 本次后端行为变化
+
+- 上传、离线下载、PikPak 原生离线、RSS item 的完成语义统一以 metadata VFS node/object commit 成功为准。
+- 上传成功和任务 completed 后，`/api/v2/fs/list` 会立即看到 result node；成功 DTO 会回写 `result_vfs_node_id`。
+- PikPak native 若 provider completed 但没有返回安全文件名且任务没有 `target_filename`，会转为 `failed` + `METADATA_VFS_COMMIT_FAILED`，不会用 URL/magnet 字符串伪造完成结果。
+- metadata commit 失败会记录内部 `upload_commit` / `task_commit` operation journal，对外只返回稳定错误码和安全摘要。
+- RSS backlink 收敛：task completed 但没有 result node 不再把 item 标为 completed，而是进入 `needs_attention`。
+
+完整字段和错误码见 `backend/API_CONTRACT.md` 的 `3.7 upload`、`3.9 tasks`、`3.10 rss`。

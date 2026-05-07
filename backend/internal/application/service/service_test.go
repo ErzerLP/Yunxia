@@ -1179,6 +1179,7 @@ func TestTaskMetadataCommitFailureDoesNotCompleteTask(t *testing.T) {
 
 	sourceRepo := gorm.NewSourceRepository(db)
 	taskRepo := gorm.NewTaskRepository(db)
+	operationRepo := gorm.NewVFSOperationRepository(db)
 
 	basePath := t.TempDir()
 	configJSON, err := marshalLocalSourceConfig(basePath)
@@ -1200,6 +1201,7 @@ func TestTaskMetadataCommitFailureDoesNotCompleteTask(t *testing.T) {
 
 	commitErr := errors.New(`metadata commit failed at D:\secret\yunxia\physical-path token=top-secret`)
 	committer := &failingMetadataVFSCommitter{err: commitErr}
+	journal := NewVFSOperationJournalService(operationRepo)
 	svc := NewTaskService(
 		taskRepo,
 		sourceRepo,
@@ -1207,6 +1209,7 @@ func TestTaskMetadataCommitFailureDoesNotCompleteTask(t *testing.T) {
 		WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")),
 		WithTaskVFSResolver(NewVFSService(sourceRepo)),
 		WithTaskMetadataVFSCommitter(committer),
+		WithTaskOperationJournal(journal),
 	)
 	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
 
@@ -1237,6 +1240,25 @@ func TestTaskMetadataCommitFailureDoesNotCompleteTask(t *testing.T) {
 	}
 	if stored.Status == "completed" {
 		t.Fatalf("task should not be persisted as completed after metadata failure: %+v", stored)
+	}
+	operations, err := operationRepo.ListDue(context.Background(), domainrepo.VFSOperationDueFilter{
+		OperationType: entity.VFSOperationTypeTaskCommit,
+		DueBefore:     time.Now().Add(time.Hour),
+		Limit:         10,
+	})
+	if err != nil {
+		t.Fatalf("operationRepo.ListDue() error = %v", err)
+	}
+	if len(operations) != 1 {
+		t.Fatalf("expected one task_commit journal operation, got %+v", operations)
+	}
+	operation := operations[0]
+	if operation.Status != entity.VFSOperationStatusFailed ||
+		operation.ErrorCode != "METADATA_VFS_COMMIT_FAILED" ||
+		operation.ErrorMessage != ErrMetadataVFSCommitFailed.Error() ||
+		strings.Contains(operation.PayloadJSON, "top-secret") ||
+		strings.Contains(operation.PayloadJSON, "physical-path") {
+		t.Fatalf("unexpected sanitized task_commit operation = %+v", operation)
 	}
 }
 
@@ -2124,6 +2146,103 @@ func TestUploadFinishCommitsMetadataVFSFileObject(t *testing.T) {
 		object.Status != entity.StorageObjectStatusAvailable ||
 		object.Size != int64(len("hello-world")) {
 		t.Fatalf("unexpected storage object = %+v", object)
+	}
+}
+
+func TestUploadMetadataCommitFailureDoesNotReturnCompletedOrSaveResult(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	operationRepo := gorm.NewVFSOperationRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "upload metadata failure",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/media",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	commitErr := errors.New(`metadata commit failed at /tmp/yunxia/private token=top-secret`)
+	committer := &failingMetadataVFSCommitter{err: commitErr}
+	journal := NewVFSOperationJournalService(operationRepo)
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadMetadataVFSCommitter(committer),
+		WithUploadOperationJournal(journal),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/uploads",
+		Filename: "movie.txt",
+		FileSize: int64(len("hello-world")),
+		FileHash: "5eb63bbbe01eeed093cb22bb8f5acdc3",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 0, []byte("hello")); err != nil {
+		t.Fatalf("UploadChunk(0) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 1, []byte("-worl")); err != nil {
+		t.Fatalf("UploadChunk(1) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 2, []byte("d")); err != nil {
+		t.Fatalf("UploadChunk(2) error = %v", err)
+	}
+
+	finishResp, err := svc.Finish(ctx, appdto.UploadFinishRequest{UploadID: initResp.Upload.UploadID})
+	if !errors.Is(err, ErrMetadataVFSCommitFailed) {
+		t.Fatalf("Finish() error = %v, want ErrMetadataVFSCommitFailed", err)
+	}
+	if finishResp != nil {
+		t.Fatalf("metadata commit failure must not return completed response, got %+v", finishResp)
+	}
+	stored, err := uploadRepo.FindByID(context.Background(), initResp.Upload.UploadID)
+	if err != nil {
+		t.Fatalf("uploadRepo.FindByID() error = %v", err)
+	}
+	if stored.Status == "completed" || stored.ResultVFSNodeID != 0 {
+		t.Fatalf("upload session should remain non-completed without result node, got %+v", stored)
+	}
+	operations, err := operationRepo.ListDue(context.Background(), domainrepo.VFSOperationDueFilter{
+		OperationType: entity.VFSOperationTypeUploadCommit,
+		DueBefore:     time.Now().Add(time.Hour),
+		Limit:         10,
+	})
+	if err != nil {
+		t.Fatalf("operationRepo.ListDue() error = %v", err)
+	}
+	if len(operations) != 1 {
+		t.Fatalf("expected one upload_commit journal operation, got %+v", operations)
+	}
+	operation := operations[0]
+	if operation.Status != entity.VFSOperationStatusFailed ||
+		operation.ErrorCode != "METADATA_VFS_COMMIT_FAILED" ||
+		operation.ErrorMessage != ErrMetadataVFSCommitFailed.Error() ||
+		strings.Contains(operation.PayloadJSON, "top-secret") ||
+		strings.Contains(operation.PayloadJSON, "/tmp/yunxia/private") {
+		t.Fatalf("unexpected sanitized upload_commit operation = %+v", operation)
 	}
 }
 
@@ -3097,7 +3216,9 @@ func (c *recordingMetadataVFSCommitter) CommitFileObject(_ context.Context, req 
 	if c.err != nil {
 		return nil, c.err
 	}
-	return &MetadataVFSFileObjectCommitResult{}, nil
+	return &MetadataVFSFileObjectCommitResult{
+		Node: &entity.VFSNode{ID: uint(len(c.calls)), Path: joinVirtualPath(req.VirtualParentPath, req.Filename), Kind: entity.VFSNodeKindFile},
+	}, nil
 }
 
 type fakeSourceConfigCodec struct {

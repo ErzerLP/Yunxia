@@ -1968,6 +1968,10 @@ func (s *RSSService) applyRSSItemTaskBacklink(ctx context.Context, item *entity.
 	}
 	switch task.Status {
 	case "completed":
+		if task.ResultVFSNodeID == 0 {
+			s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), ErrMetadataVFSCommitFailed, now, false)
+			return nil
+		}
 		item.Status = RSSItemStatusCompleted
 		item.ErrorMessage = nil
 		item.RetryReason = nil
@@ -2153,6 +2157,7 @@ func classifyRSSRetryError(err error) (string, bool) {
 		errors.Is(err, ErrPathInvalid),
 		errors.Is(err, ErrNoBackingStorage),
 		errors.Is(err, ErrNameConflict),
+		errors.Is(err, ErrMetadataVFSCommitFailed),
 		errors.Is(err, ErrSourceReadOnly),
 		errors.Is(err, ErrACLDenied),
 		errors.Is(err, ErrPermissionDenied),
@@ -2168,6 +2173,8 @@ func classifyRSSRetryError(err error) (string, bool) {
 	}
 	lower := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(lower, ErrMetadataVFSCommitFailed.Error()):
+		return "deterministic_error", false
 	case strings.Contains(lower, "status 401") || strings.Contains(lower, "status 403") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "forbidden"):
 		return RSSRetryReasonDownloaderUnavailable, false
 	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "read-only") || strings.Contains(lower, "unsupported link") || strings.Contains(lower, "invalid path"):

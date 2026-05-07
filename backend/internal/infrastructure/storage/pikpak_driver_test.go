@@ -703,6 +703,29 @@ func TestPikPakDriverNativeDownloadCreateStatusAndCancel(t *testing.T) {
 	if call.ParentID != "folder-downloads" || call.URL != "magnet:?xt=urn:btih:abcdef" || call.Name != "episode.mkv" {
 		t.Fatalf("unexpected native create call = %+v", call)
 	}
+	unnamedTask, err := driver.CreateNativeDownload(context.Background(), source, domainstorage.NativeDownloadRequest{
+		URL:           "https://example.com/movie.mkv",
+		TargetDirPath: "/Downloads",
+	})
+	if err != nil {
+		t.Fatalf("CreateNativeDownload(unnamed) error = %v", err)
+	}
+	if unnamedTask.DisplayName != "" {
+		t.Fatalf("native task should not synthesize display name from magnet URL, got %+v", unnamedTask)
+	}
+	client.offlineTasks[unnamedTask.ExternalID] = PikPakOfflineTask{
+		ID:       unnamedTask.ExternalID,
+		Name:     "https://example.com/movie.mkv",
+		Phase:    "PHASE_TYPE_COMPLETE",
+		Progress: 1,
+	}
+	unnamedStatus, err := driver.GetNativeDownloadStatus(context.Background(), source, unnamedTask.ExternalID)
+	if err != nil {
+		t.Fatalf("GetNativeDownloadStatus(unnamed) error = %v", err)
+	}
+	if unnamedStatus.Status != "completed" || unnamedStatus.DisplayName != "" {
+		t.Fatalf("native completed status without provider filename should keep empty display name, got %+v", unnamedStatus)
+	}
 	client.offlineTasks[task.ExternalID] = PikPakOfflineTask{
 		ID:       task.ExternalID,
 		Name:     "episode.mkv",
@@ -716,6 +739,24 @@ func TestPikPakDriverNativeDownloadCreateStatusAndCancel(t *testing.T) {
 	}
 	if status.Status != "completed" || status.ProgressPercent == nil || *status.ProgressPercent != 100 {
 		t.Fatalf("unexpected native status = %+v", status)
+	}
+	client.offlineTasks[task.ExternalID] = PikPakOfflineTask{
+		ID:       task.ExternalID,
+		Name:     "episode.mkv",
+		Phase:    "PHASE_TYPE_ERROR",
+		Message:  `provider payload token=secret /tmp/raw.json`,
+		Progress: 0.5,
+	}
+	status, err = driver.GetNativeDownloadStatus(context.Background(), source, "offline-1")
+	if err != nil {
+		t.Fatalf("GetNativeDownloadStatus(error) error = %v", err)
+	}
+	if status.Status != "failed" ||
+		status.ErrorMessage == nil ||
+		*status.ErrorMessage != "cloud provider task failed" ||
+		strings.Contains(*status.ErrorMessage, "secret") ||
+		strings.Contains(*status.ErrorMessage, "payload") {
+		t.Fatalf("native status should sanitize provider task message, got %+v", status)
 	}
 
 	if err := driver.CancelNativeDownload(context.Background(), source, "offline-1", true); err != nil {

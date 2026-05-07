@@ -518,7 +518,7 @@ PikPak 字段说明：
 |---|---|---|---|---|
 | POST | `/upload/init` | Bearer | 两种模式，见下方 | 200，`UploadInitResponse` |
 | PUT | `/upload/chunk` | Bearer | query: `upload_id,index`，body 为二进制分片 | 200，`{upload_id,index,received_bytes,already_uploaded}` |
-| POST | `/upload/finish` | Bearer | `upload_id[,parts[]]` | 201，`{completed,upload_id,file,result_vfs_node_id?}` |
+| POST | `/upload/finish` | Bearer | `upload_id[,parts[]]` | 201，`{completed:true,upload_id,file,result_vfs_node_id}` |
 | GET | `/upload/sessions` | Bearer | query: `source_id,status` | 200，`{items[]}` |
 | DELETE | `/upload/sessions/:upload_id` | Bearer | path: `upload_id` | 200，`{upload_id,canceled}` |
 
@@ -557,7 +557,8 @@ PikPak 字段说明：
   - `target_virtual_parent_path`
   - `resolved_source_id`
   - `resolved_inner_parent_path`
-- 上传完成响应会在 metadata 提交成功时返回 `result_vfs_node_id`，表示本次写入文件对应的 metadata VFS node id；`is_fast_upload=true` 的初始化响应同样可能带该字段
+- 上传 / fast-upload 的 `completed` 语义以 metadata VFS file node + storage object 提交成功为准：成功响应必须带 `result_vfs_node_id`，且随后 `GET /api/v2/fs/list?path=<target_parent>` 立即能看到该 result node
+- 若底层文件/对象已写入但 metadata commit 失败，`/upload/finish` 不会返回 `completed=true`，会返回稳定 `500 METADATA_VFS_COMMIT_FAILED` 与安全摘要 `metadata vfs commit failed`；后端会保留可追踪 operation journal，上传 session 不写入 completed/result
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
 - PikPak 上传会按 `file_hash` 自动分流：
@@ -722,12 +723,13 @@ PikPak `direct_parts` 响应示例：
   - S3 目标：从 staging 上传到对应对象 key
   - PikPak fallback 目标：从 staging 调 PikPak `ImportFile` 导入；当 PikPak 原生离线下载不可用或未注册时仍保留该路径
   - staging 本地物理路径不会返回给前端
-  - 导入完成后清理 staging；后续刷新如果遇到已导入文件但 staging 已清理，任务保持 `completed`，不会回退为 `failed`
+  - 导入 + metadata VFS commit 都成功后才清理 staging 并进入 `completed`；后续刷新如果遇到已导入文件但 staging 已清理，会先确认/补交 metadata result node，不能确认时转为 `failed`
   - 当 `target_filename` 非空且 staging 中只有一个有效文件时，导入阶段会把该文件落到目标父目录下的 `target_filename`；若 `target_filename` 没有明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名），会保留原下载文件扩展名；多文件任务保持原相对路径，不应用重命名
 - PikPak 原生离线下载任务：
   - 创建任务时后端会把目标 VFS 目录解析为 PikPak source 内目录；目标父目录不存在时会由 PikPak driver 递归创建。
   - `target_filename` 非空时会传给 provider 作为任务名，并在创建前检查同目录同名冲突；为空时由 provider 按链接自行命名。
-  - 任务完成后文件已经在 PikPak source 中，不再调用 staging 导入；刷新 VFS 列表即可看到 provider 侧结果。
+  - 任务完成后文件已经在 PikPak source 中，不再调用 staging 导入；后端仍会提交 metadata VFS result node，`completed` 响应后刷新/列出 VFS 目录即可看到结果。
+  - 若 provider reported completed 但既没有 `target_filename` 也没有返回安全文件名，后端会把任务置为 `failed` + `METADATA_VFS_COMMIT_FAILED`，不会用 magnet/URL 字符串伪造 result node 或 `completed`。
   - provider `PHASE_TYPE_PENDING/RUNNING/COMPLETE/ERROR` 分别映射为 `pending/running/completed/failed`。
   - 暂停/恢复当前返回 `422 SOURCE_OPERATION_UNSUPPORTED`；取消会调用 provider 删除任务记录，并透传 `delete_file` 为 provider `delete_files`。
 - 返回体当前会补充 VFS 快照字段：
@@ -737,13 +739,13 @@ PikPak `direct_parts` 响应示例：
   - `save_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_save_path`
-  - `result_vfs_node_id`：staging 导入完成且只有一个明确结果文件时返回；多文件任务或 provider 原生任务可能省略
+  - `result_vfs_node_id`：任务进入 `completed` 时必须返回，指向本次任务提交出的 metadata VFS result file node；多文件任务当前指向第一个成功提交的结果文件，后续如引入目录级 result node 再扩展
 - 普通用户默认仅能看到 / 操作自己的任务
 - `DELETE /tasks/:id` 对终态任务是幂等的：已 `completed` / `failed` / `canceled` 的任务不会再调用底层下载器取消，因此不会把 Aria2/qBittorrent 的底层 400 暴露给前端；已完成任务保持 `completed`
 - 用户主动取消的非终态任务会先在 Yunxia 内记录为 `canceled` 和 `error_message="download canceled by user"`，后续下载器状态刷新不会覆盖该取消原因
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
-- `completed` 任务返回时 `error_message` 固定为 `null`；若导入失败，任务会转为 `failed` 并返回失败原因
+- `completed` 任务返回时 `error_message` 固定为 `null`；若导入或 metadata commit 失败，任务会转为 `failed`，`speed_bytes=0`、`eta_seconds=null`，`error_message` 为安全摘要（metadata commit 失败固定 `metadata vfs commit failed`），并记录 `task_commit` operation journal
 - `failed` / `canceled` 任务会返回明确 `error_message`；下载器未返回原因时后端补默认原因，用户主动取消时为 `download canceled by user`
 - `DownloadTaskView.downloader_type` 当前可能为 `aria2`、`qbittorrent` 或 `pikpak_native`
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
@@ -1005,7 +1007,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - qBittorrent Web API 返回 401/403（例如 `/api/v2/app/version` 或 `/api/v2/torrents/add`）会归类为 `DOWNLOADER_AUTH_FAILED` / `status=unavailable`，不会返回 `INTERNAL_ERROR`。
 - `POST /rss/items/:id/download` 手动入队如果在创建下载任务时失败，会把 item 持久化为 `needs_attention`，写入 `error_message` 和 `retry_reason`，前端可通过 `GET /rss/items?status=needs_attention` 看到失败原因；HTTP 响应仍使用稳定错误码（如下游认证失败返回 `503 DOWNLOADER_AUTH_FAILED`）。
 - 每个订阅固定一个基础 `target_virtual_parent_path`；后端保存 VFS 解析快照 `target_vfs_parent_node_id`、`resolved_source_id`、`resolved_inner_parent_path`。
-- RSS item 关联的下载任务完成后，若任务有明确 `result_vfs_node_id`，会回写到 `RSSItemView.result_vfs_node_id` 方便前端从 RSS 条目跳转/定位 VFS 节点。
+- RSS item 只有在关联下载任务为 `completed` 且任务带有非零 `result_vfs_node_id` 时才会变为 `completed`，并回写到 `RSSItemView.result_vfs_node_id` 方便前端从 RSS 条目跳转/定位 VFS 节点。
 - `RSSSubscriptionView` / 创建更新请求新增：
   - `directory_template`：空值保持旧行为，RSS 入队仍使用 `target_virtual_parent_path`；非空时按条目 `parsed` 字段渲染为相对子目录，再拼到 `target_virtual_parent_path` 下。
   - `filename_template`：RSS 入队时会基于 item `parsed` / `title` 渲染为任务级 `target_filename` 快照；下载器仍写入 staging，后端仅在完成导入阶段对“单文件任务”重命名。模板结果不含明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名）时会自动保留原文件扩展名；多文件 torrent 保持原相对路径，不批量改名。
@@ -1016,7 +1018,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - RSS 源连续失败会记录 `last_error` 并按失败次数退避；超过阈值进入 `circuit_open`，成功刷新后恢复 `ok` 并清零失败计数。单源失败不会中断 refresh-all 中其他源；手动 refresh-all 会强制刷新所有启用源，`skipped` 仅表示该源已有刷新在进行。
 - 条目状态当前可能为：`new`、`unsupported`、`ignored`、`matched`、`enqueued`、`retry_pending`、`completed`、`needs_attention`、`failed`。
 - 条目重试字段：`retry_count`、`max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。自动重试默认最多 3 次，退避为 5m / 30m / 2h；手动 retry 可绕过 `next_retry_at`。
-- 已有关联非终态 task 的 RSS item 不会重复入队；普通自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `completed` 会回写 item `completed`，task `failed` 会按错误类型进入 `retry_pending` 或 `needs_attention`，task `canceled` 会进入 `needs_attention` 等待人工处理。
+- 已有关联非终态 task 的 RSS item 不会重复入队；普通自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `completed` 且有 result node 才会回写 item `completed`，task `failed` / `canceled` 或 completed 但缺失 result node 会进入 `needs_attention`（或按既有瞬时下载器错误进入有限 `retry_pending`），metadata commit 失败固定展示安全错误摘要。
 - 规则 preview 返回每个已有 item 的 `result`（`matched` / `missing` / `excluded`）以及 `matched`、`missing`、`excluded` 关键词列表，用于解释命中/未命中原因。
 - 复制订阅会授权原订阅 owner，复制 `source_id`、规则、regex/case、目标路径、目录/文件名模板与 VFS 解析快照；新订阅使用新 `id/created_at/updated_at`。未传 `name` 时默认生成 `原名 Copy`（必要时简单追加序号），未传 `is_enabled` 时保持原订阅状态。
 - 批量启用/禁用订阅对每个 `subscription_id` 独立 `FindSubscriptionByID` 与授权；成功项更新 `is_enabled` 与 `updated_at`，失败项写入 `error_code/error_message`，不会导致整个响应失败。
@@ -1397,6 +1399,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   "save_virtual_path": "/local/downloads",
   "resolved_source_id": 1,
   "resolved_inner_save_path": "/downloads",
+  "result_vfs_node_id": 34,
   "display_name": "archive.zip",
   "source_url": "https://example.com/archive.zip",
   "progress": 0,
@@ -1559,6 +1562,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `UPLOAD_TOO_LARGE`
 - `TRASH_ITEM_NOT_FOUND`
 - `TRASH_RESTORE_CONFLICT`
+- `METADATA_VFS_COMMIT_FAILED`
 - `METADATA_VFS_MUTATION_SYNC_FAILED`
 - `TAG_INVALID`
 - `TAG_NOT_FOUND`

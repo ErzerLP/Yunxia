@@ -250,6 +250,13 @@ func WithUploadMetadataVFSCommitter(committer MetadataVFSCommitter) UploadServic
 	}
 }
 
+// WithUploadOperationJournal 注册上传 metadata commit 失败时的 operation journal。
+func WithUploadOperationJournal(journal vfsOperationJournalRecorder) UploadServiceOption {
+	return func(s *UploadService) {
+		s.operationJournal = journal
+	}
+}
+
 // WithUploadMetadataVFSReader 注册上传目标 metadata VFS node 快照解析器。
 func WithUploadMetadataVFSReader(reader metadataVFSReader) UploadServiceOption {
 	return func(s *UploadService) {
@@ -338,6 +345,13 @@ func WithTaskVFSResolver(resolver interface {
 func WithTaskMetadataVFSCommitter(committer MetadataVFSCommitter) TaskServiceOption {
 	return func(s *TaskService) {
 		s.metadataCommitter = committer
+	}
+}
+
+// WithTaskOperationJournal 注册任务 metadata commit 失败时的 operation journal。
+func WithTaskOperationJournal(journal vfsOperationJournalRecorder) TaskServiceOption {
+	return func(s *TaskService) {
+		s.operationJournal = journal
 	}
 }
 

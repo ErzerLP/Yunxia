@@ -42,6 +42,7 @@ type UploadService struct {
 	}
 	metadataReader    metadataVFSReader
 	metadataCommitter MetadataVFSCommitter
+	operationJournal  vfsOperationJournalRecorder
 	logger            *slog.Logger
 	auditRecorder     *appaudit.Recorder
 }
@@ -822,10 +823,13 @@ func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, sou
 		ActorID:                 &actorID,
 	})
 	if err != nil {
+		s.recordUploadMetadataCommitFailure(ctx, source, &actorID, session.TargetVFSParentNodeID, virtualParentPath, item.Path, filename, err)
 		return 0, maskMetadataVFSCommitError(err)
 	}
 	if result == nil || result.Node == nil {
-		return 0, nil
+		err := ErrMetadataVFSCommitFailed
+		s.recordUploadMetadataCommitFailure(ctx, source, &actorID, session.TargetVFSParentNodeID, virtualParentPath, item.Path, filename, err)
+		return 0, maskMetadataVFSCommitError(err)
 	}
 	session.ResultVFSNodeID = result.Node.ID
 	return result.Node.ID, nil
@@ -862,10 +866,13 @@ func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID
 		ActorID:                 &userID,
 	})
 	if err != nil {
+		s.recordUploadMetadataCommitFailure(ctx, target.source, &userID, target.targetVFSParentNodeID, virtualParentPath, item.Path, item.Name, err)
 		return 0, maskMetadataVFSCommitError(err)
 	}
 	if result == nil || result.Node == nil {
-		return 0, nil
+		err := ErrMetadataVFSCommitFailed
+		s.recordUploadMetadataCommitFailure(ctx, target.source, &userID, target.targetVFSParentNodeID, virtualParentPath, item.Path, item.Name, err)
+		return 0, maskMetadataVFSCommitError(err)
 	}
 	return result.Node.ID, nil
 }
@@ -875,6 +882,37 @@ func maskMetadataVFSCommitError(err error) error {
 		return nil
 	}
 	return ErrMetadataVFSCommitFailed
+}
+
+func (s *UploadService) recordUploadMetadataCommitFailure(ctx context.Context, source *entity.StorageSource, actorID *uint, targetParentNodeID uint, virtualParentPath string, objectPath string, filename string, err error) {
+	if s == nil || s.operationJournal == nil || source == nil || err == nil {
+		return
+	}
+	sourceID := source.ID
+	input := VFSOperationRecordInput{
+		OperationType:      entity.VFSOperationTypeUploadCommit,
+		TargetParentNodeID: optionalUintPtr(targetParentNodeID),
+		SourcePathSnapshot: objectPath,
+		TargetPathSnapshot: joinVirtualPath(virtualParentPath, filename),
+		SourceIDSnapshot:   &sourceID,
+		DriverTypeSnapshot: source.DriverType,
+		ErrorCode:          "METADATA_VFS_COMMIT_FAILED",
+		Error:              err,
+		CreatedBy:          actorID,
+		Payload: map[string]any{
+			"phase":    "metadata_commit",
+			"filename": filename,
+		},
+	}
+	_, _ = s.operationJournal.RecordFailure(ctx, input)
+}
+
+func optionalUintPtr(value uint) *uint {
+	if value == 0 {
+		return nil
+	}
+	copied := value
+	return &copied
 }
 
 func uploadSessionTargetVirtualPath(session *entity.UploadSession) string {

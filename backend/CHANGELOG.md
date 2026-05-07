@@ -12,6 +12,18 @@
 
 ---
 
+## 2026-05-08
+
+### Upload/task/RSS node-first 完成语义补强
+
+- 上传完成、fast-upload、server_chunk import、direct multipart 完成路径继续以 metadata VFS commit 成功为 `completed` 前置条件；commit 失败时返回/记录安全哨兵 `METADATA_VFS_COMMIT_FAILED`，不返回 completed 响应、不写入 result node。
+- `UploadService` 与 `TaskService` 接入 operation journal，metadata commit 失败会分别记录 `upload_commit` / `task_commit`，journal 只保存稳定错误码、安全摘要和脱敏 payload。
+- 离线任务完成语义补强：staging 导入成功后必须提交 result file node；多文件任务回写第一个成功提交的 result node；PikPak native completed 会基于 `target_filename` 或 provider 返回的安全文件名提交 metadata result node，缺失文件名时不会用 URL/magnet 伪 completed。
+- PikPak native 任务状态只向上返回稳定状态、进度、文件名和安全错误摘要；provider task message 不透出 token、路径或原始 payload。
+- task metadata commit 失败会落入 `failed`，清理实时 speed/eta，`error_message` 固定为 `metadata vfs commit failed`；RSS backlink 对应进入 `needs_attention`，不再把缺失 result node 的 task completed 误标为 RSS completed。
+- HTTP workflow 补充上传完成后 `/api/v2/fs/list` 立即可见 result node 断言；service 测试补齐 upload/task commit failure journal、PikPak native result node、RSS completed-without-result-node/metadata-failed backlink。
+- 文档同步更新 `backend/API_CONTRACT.md` 与固定 `backend/FRONTEND_HANDOFF.md`，新增前端关注点 `METADATA_VFS_COMMIT_FAILED`、`result_vfs_node_id` 与 RSS `needs_attention` 展示。
+
 ## 2026-05-07
 
 ### VFS Refresh / Sync API 阶段
@@ -45,8 +57,8 @@
 ### 上传 / 下载任务 / RSS VFS Node 快照阶段
 
 - `UploadSessionView` / `DownloadTaskView` / `RSSSubscriptionView` 新增 `target_vfs_parent_node_id` 快照字段；后端在目标父目录已存在于 metadata VFS 时保存对应 node id，上层可继续保留 path 快照兼容展示。
-- 上传完成与 fast-upload metadata 提交成功后，`UploadFinishResponse` / `UploadInitResponse` 会返回 `result_vfs_node_id`；下载任务 staging 导入成功且只有一个明确结果文件时，`DownloadTaskView.result_vfs_node_id` 会指向结果文件 node。
-- RSS item 在关联下载任务进入 completed 后会回写 `result_vfs_node_id`，方便后续从订阅条目定位 VFS 节点；多文件任务或 provider 原生任务可能暂时为空。
+- 上传完成与 fast-upload metadata 提交成功后，`UploadFinishResponse` / `UploadInitResponse` 会返回 `result_vfs_node_id`；下载任务 staging 导入成功后，`DownloadTaskView.result_vfs_node_id` 会指向结果文件 node。
+- RSS item 在关联下载任务进入 completed 后会回写 `result_vfs_node_id`，方便后续从订阅条目定位 VFS 节点；最新语义要求 task completed 必须带 result node。
 - 测试路由补齐 upload/task metadata committer 注入，与生产 wiring 保持一致；新增测试覆盖上传完成、下载完成、RSS task backlink 的 node id 快照。
 - 文档同步：更新 `backend/API_CONTRACT.md` 与本变更记录；新增字段均为向后兼容可选字段，不要求前端立即适配。
 

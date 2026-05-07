@@ -347,6 +347,24 @@ func TestS3UploadInitAndFinishLifecycle(t *testing.T) {
 		t.Fatalf("expected upload finish result_vfs_node_id, got %+v", finished)
 	}
 
+	rec = performRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/v1/sources/%d", sourceID), nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("s3 source detail expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	sourceDetail := decodeEnvelope[sourceDetailData](t, rec.Body.Bytes())
+	mountPath, _ := sourceDetail.Source["mount_path"].(string)
+	if mountPath == "" {
+		t.Fatalf("expected source mount_path in detail, got %+v", sourceDetail.Source)
+	}
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path="+url.QueryEscape(mountPath+"/uploads"), nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list after upload expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	vfsListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	if !containsString(collectMapNames(vfsListed.Items), "archive.zip") {
+		t.Fatalf("expected uploaded archive.zip immediately in vfs list, got %+v", vfsListed.Items)
+	}
+
 	rec = performRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/v1/files?source_id=%d&path=/uploads&page=1&page_size=200&sort_by=name&sort_order=asc", sourceID), nil, accessToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("s3 files list after upload expected 200, got %d body=%s", rec.Code, rec.Body.String())
