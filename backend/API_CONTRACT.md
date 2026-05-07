@@ -1221,7 +1221,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - `is_mount_point`
   - `source_id`（纯虚拟节点时可能为空）
   - `sync_state`: `indexed` / `pending` / `syncing` / `stale` / `missing` / `conflict` / `error`；旧式/未索引条目可能省略
-- `GET /api/v2/fs/download` 可作为分享和普通下载的统一数据面入口：传 `access_token` 时仍会先按当前 VFS path 解析 source/inner path，再校验 token 中的 source/path；local 文件由 Go `ServeContent` 处理 Range，支持 presign 的 provider 继续 302。
+- `GET /api/v2/fs/download` 可作为分享和普通下载的统一数据面入口：后端会优先按 metadata VFS node 读取 `storage_objects.locator`，local 文件由 Go `ServeContent` 处理 Range，S3/PikPak 等支持 presign 的 provider 继续 302；若目标尚未索引为 metadata object，则回退到当前 VFS path 解析 source/inner path 的兼容路径。传 `access_token` 时，object-first 路径校验 token 中的 source/object inner path，兼容路径仍校验 source/path。
 - `POST /fs/refresh` 请求示例：
   ```json
   { "path": "/pikpak/anime", "mode": "sync" }
@@ -1258,7 +1258,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - 本地挂载目录探测为不可写时，列表项 `can_delete=false`；写操作返回 `403 SOURCE_READ_ONLY`
 - 纯虚拟目录上的写操作（mkdir / rename / move / copy / delete / upload init）如果没有唯一 backing storage，返回 `409 NO_BACKING_STORAGE`
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
-- `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`
+- `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`；若目标已存在 metadata object，短链签发也优先基于 storage object locator 校验，前端调用方式不变。
 
 ### 3.15 VFS 标签（`/api/v1/tags`、`/api/v2/fs/tags`）
 
@@ -1320,7 +1320,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `webdav_read_only=true` 时写方法会被拒绝
 - metadata VFS 行为：
   - `PROPFIND` 走 `VFSService.List` / metadata parent stat，返回 WebDAV `207 Multi-Status`；服务端先按 metadata VFS + ACL 过滤，普通用户不会收到未授权节点名称
-  - `GET` / `HEAD` 先按 WebDAV slug 合成 VFS path，再通过 VFS resolve 生成 `/api/v2/fs/download?path=...&access_token=...` 短链 302；后续由统一 VFS download 入口处理 local Range 流或 provider presign/302
+  - `GET` / `HEAD` 先按 WebDAV slug 合成 VFS path，再生成 `/api/v2/fs/download?path=...&access_token=...` 短链 302；短链签发和后续下载均优先复用 metadata object locator，之后由统一 VFS download 入口处理 local Range 流或 provider presign/302
   - `MKCOL` / `DELETE` / `COPY` / `MOVE` 调用 `VFSService.Mkdir/Delete/Copy/Move/Rename`，复用网页 VFS 的 metadata mutation sync、operation journal 与 ACL 行为
   - `PUT` 先把请求体写入后端临时文件，再按 VFS resolve 得到的 source/inner parent 调用 `UploadService.ImportLocalFile`；返回 `201` 前必须完成数据面导入与 metadata VFS file/object commit
   - `COPY` / `MOVE` 的 `Destination` 必须仍在同一个 WebDAV source slug 下；跨 WebDAV source 移动/复制当前不支持

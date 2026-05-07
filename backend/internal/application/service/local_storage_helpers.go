@@ -205,7 +205,10 @@ func buildStorageEntryItem(sourceID uint, entry StorageEntry) appdto.FileItem {
 
 	item.Size = entry.Size
 	item.Extension = strings.ToLower(filepath.Ext(entry.Name))
-	item.MimeType = mime.TypeByExtension(item.Extension)
+	item.MimeType = strings.TrimSpace(entry.MimeType)
+	if item.MimeType == "" {
+		item.MimeType = mime.TypeByExtension(item.Extension)
+	}
 	if item.MimeType == "" {
 		item.MimeType = "application/octet-stream"
 	}

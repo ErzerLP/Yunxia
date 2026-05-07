@@ -214,6 +214,71 @@ func TestMetadataVFSRenameUpdatesSubtreePaths(t *testing.T) {
 	}
 }
 
+func TestMetadataVFSRenameSyncsPathBasedObjectLocator(t *testing.T) {
+	ctx := context.Background()
+	nodeRepo := newFakeVFSNodeRepository()
+	objectRepo := newFakeStorageObjectRepository()
+	sourceID := uint(7)
+	source := &entity.StorageSource{ID: sourceID, Name: "Docs", DriverType: "local", MountPath: "/docs", RootPath: "/", IsEnabled: true}
+	sourceRepo := newFakeMetadataVFSSyncSourceRepository(source)
+	now := fixedMetadataVFSTime()
+	svc := NewMetadataVFSService(
+		nodeRepo,
+		WithMetadataVFSClock(func() time.Time { return now }),
+		WithMetadataVFSObjectLocatorSync(sourceRepo, objectRepo),
+	)
+	root, err := svc.EnsureRoot(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRoot() error = %v", err)
+	}
+	mount := mustCreateMetadataVFSNode(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "docs",
+		Path:      "/docs",
+		Kind:      entity.VFSNodeKindMount,
+		SourceID:  &sourceID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	object := &entity.StorageObject{
+		SourceID:    sourceID,
+		DriverType:  "local",
+		LocatorType: "local_path",
+		LocatorJSON: `{"path":"/old.txt"}`,
+		Status:      entity.StorageObjectStatusAvailable,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := objectRepo.Create(ctx, object); err != nil {
+		t.Fatalf("Create(object) error = %v", err)
+	}
+	mustCreateMetadataVFSNode(t, nodeRepo, &entity.VFSNode{
+		ParentID:   &mount.ID,
+		Name:       "old.txt",
+		Path:       "/docs/old.txt",
+		Kind:       entity.VFSNodeKindFile,
+		ObjectID:   &object.ID,
+		SourceID:   &sourceID,
+		SyncState:  entity.VFSNodeSyncStateIndexed,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		IndexedAt:  &now,
+		LastSeenAt: &now,
+	})
+
+	if _, _, err := svc.Rename(ctx, MetadataVFSRenameRequest{Path: "/docs/old.txt", NewName: "new.txt"}); err != nil {
+		t.Fatalf("Rename(file) error = %v", err)
+	}
+	updatedObject, err := objectRepo.FindByID(ctx, object.ID)
+	if err != nil {
+		t.Fatalf("FindByID(object) error = %v", err)
+	}
+	if updatedObject.LocatorJSON != `{"path":"/new.txt"}` {
+		t.Fatalf("object locator = %s, want /new.txt", updatedObject.LocatorJSON)
+	}
+}
+
 func TestMetadataVFSRenameRejectsRootMountAndConflicts(t *testing.T) {
 	ctx := context.Background()
 	repo := newFakeVFSNodeRepository()

@@ -128,6 +128,7 @@ func main() {
 			Config:                 appsvc.NewS3SourceConfigCodec(),
 			Probe:                  s3Driver,
 			File:                   s3Driver,
+			ObjectReader:           s3Driver,
 			Upload:                 s3Driver,
 			Import:                 s3Driver,
 			RecursiveStatsFallback: true,
@@ -138,6 +139,7 @@ func main() {
 			Config:         appsvc.NewPikPakSourceConfigCodec(),
 			Probe:          pikPakDriver,
 			File:           pikPakDriver,
+			ObjectReader:   pikPakDriver,
 			Upload:         pikPakDriver,
 			Import:         pikPakDriver,
 			NativeDownload: pikPakDriver,
@@ -181,6 +183,7 @@ func main() {
 	metadataVFSReader := appsvc.NewMetadataVFSService(
 		vfsNodeRepo,
 		appsvc.WithMetadataVFSTransactor(transactor),
+		appsvc.WithMetadataVFSObjectLocatorSync(sourceRepo, storageObjectRepo),
 	)
 	aclAuthorizer := appsvc.NewACLAuthorizer(
 		systemConfigRepo,
@@ -228,6 +231,7 @@ func main() {
 		appsvc.WithFileAuditRecorder(auditRecorder),
 		appsvc.WithFileACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashItemRepository(trashRepo),
+		appsvc.WithFileMetadataVFSObjectAccess(metadataVFSReader, storageObjectRepo),
 	}
 	fileServiceOptions = append(fileServiceOptions, storageDrivers.FileServiceOptions()...)
 	fileSvc := appsvc.NewFileService(sourceRepo, fileAccessSvc, tokenSvc, userRepo, fileServiceOptions...)

@@ -484,6 +484,10 @@ func (s *webDAVHandlerFakeFileService) AccessURL(_ context.Context, req appdto.A
 	return &appdto.AccessURLResponse{URL: "/api/v1/files/download?" + values.Encode(), Method: "GET", ExpiresAt: "2026-05-05T08:05:00Z"}, nil
 }
 
+func (s *webDAVHandlerFakeFileService) AccessURLByVFSObject(_ context.Context, _ string, _ appdto.AccessURLRequest) (*appdto.AccessURLResponse, bool, error) {
+	return nil, false, nil
+}
+
 type webDAVHandlerFakeUploadService struct {
 	importCalls []webDAVHandlerImportCall
 }

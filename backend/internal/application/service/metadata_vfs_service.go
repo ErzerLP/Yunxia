@@ -17,10 +17,12 @@ import (
 
 // MetadataVFSService 提供以 DB VFS metadata 为主的控制面服务。
 //
-// 本阶段只更新 VFS metadata tree 的路径快照，不触碰底层 driver / object
-// 数据面；跨挂载或跨 source 的真实数据移动留给后续 driver import/sync 阶段。
+// 本阶段只更新 VFS metadata tree 的路径快照，并在已注入 objectRepo 时同步
+// path-based storage object locator；不直接触碰底层 provider 数据面。
 type MetadataVFSService struct {
 	nodeRepo   domainrepo.VFSNodeRepository
+	objectRepo domainrepo.StorageObjectRepository
+	sourceRepo domainrepo.SourceRepository
 	tagRepo    domainrepo.VFSTagRepository
 	transactor domainrepo.Transactor
 	now        func() time.Time
@@ -54,6 +56,14 @@ type MetadataVFSMoveRequest struct {
 func WithMetadataVFSTagRepository(tagRepo domainrepo.VFSTagRepository) MetadataVFSServiceOption {
 	return func(s *MetadataVFSService) {
 		s.tagRepo = tagRepo
+	}
+}
+
+// WithMetadataVFSObjectLocatorSync 注册 path-based object locator 同步依赖。
+func WithMetadataVFSObjectLocatorSync(sourceRepo domainrepo.SourceRepository, objectRepo domainrepo.StorageObjectRepository) MetadataVFSServiceOption {
+	return func(s *MetadataVFSService) {
+		s.sourceRepo = sourceRepo
+		s.objectRepo = objectRepo
 	}
 }
 
@@ -436,12 +446,87 @@ func (s *MetadataVFSService) updateMetadataSubtreePath(ctx context.Context, node
 			}
 			item.UpdatedBy = cloneUintPtr(actorID)
 			item.UpdatedAt = now
+			if err := s.syncPathBasedObjectLocator(txCtx, item, now); err != nil {
+				return err
+			}
 			if err := s.nodeRepo.Update(txCtx, item); err != nil {
 				return normalizeMetadataVFSError(err)
 			}
 		}
 		return nil
 	})
+}
+
+func (s *MetadataVFSService) syncPathBasedObjectLocator(ctx context.Context, node *entity.VFSNode, now time.Time) error {
+	if s == nil || s.objectRepo == nil || s.sourceRepo == nil || node == nil ||
+		node.Kind != entity.VFSNodeKindFile || node.ObjectID == nil || node.SourceID == nil {
+		return nil
+	}
+	object, err := s.objectRepo.FindByID(ctx, *node.ObjectID)
+	if err != nil {
+		if errors.Is(err, domainrepo.ErrNotFound) {
+			return nil
+		}
+		return normalizeMetadataVFSError(err)
+	}
+	if !metadataVFSObjectLocatorPathBased(object) {
+		return nil
+	}
+	innerPath, err := s.metadataNodeInnerPath(ctx, *node.SourceID, node.Path)
+	if err != nil {
+		return err
+	}
+	locatorJSON, err := metadataCommitMarshalLocatorJSON(map[string]any{"path": innerPath})
+	if err != nil {
+		return err
+	}
+	object.LocatorJSON = locatorJSON
+	object.UpdatedAt = now
+	if err := s.objectRepo.Update(ctx, object); err != nil {
+		return normalizeMetadataVFSError(err)
+	}
+	return nil
+}
+
+func metadataVFSObjectLocatorPathBased(object *entity.StorageObject) bool {
+	if object == nil {
+		return false
+	}
+	switch strings.TrimSpace(object.LocatorType) {
+	case "local_path", "driver_path", "provider_path":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *MetadataVFSService) metadataNodeInnerPath(ctx context.Context, sourceID uint, virtualPath string) (string, error) {
+	source, err := s.sourceRepo.FindByID(ctx, sourceID)
+	if err != nil {
+		return "", normalizeMetadataVFSError(err)
+	}
+	if source == nil || strings.TrimSpace(source.MountPath) == "" {
+		return normalizeVirtualPath(virtualPath)
+	}
+	mountPath, err := normalizeMountPath(source.MountPath)
+	if err != nil {
+		return "", err
+	}
+	normalizedPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return "", err
+	}
+	if !isSubPath(mountPath, normalizedPath) {
+		return "", ErrPathInvalid
+	}
+	inner := strings.TrimPrefix(normalizedPath, mountPath)
+	if inner == "" {
+		inner = "/"
+	}
+	if !strings.HasPrefix(inner, "/") {
+		inner = "/" + inner
+	}
+	return normalizeVirtualPath(inner)
 }
 
 func (s *MetadataVFSService) ensureMetadataSubtreeTargetAvailable(ctx context.Context, subtree []*entity.VFSNode, oldPrefix string, newPrefix string) error {

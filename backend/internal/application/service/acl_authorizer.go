@@ -74,6 +74,22 @@ func (a *ACLAuthorizer) AuthorizePath(ctx context.Context, sourceID uint, pathVa
 	return nil
 }
 
+// AuthorizeVirtualPath 按 VFS 虚拟路径/node 判定当前请求是否允许访问。
+func (a *ACLAuthorizer) AuthorizeVirtualPath(ctx context.Context, sourceID uint, virtualPath string, nodeID uint, action ACLAction) error {
+	evaluator, err := a.newEvaluator(ctx, sourceID)
+	if err != nil {
+		return err
+	}
+	allowed, err := evaluator.allowVirtualPathWithNodeID(ctx, virtualPath, nodeID, action)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return ErrACLDenied
+	}
+	return nil
+}
+
 // FilterFileItems 按 read 权限过滤文件项。
 func (a *ACLAuthorizer) FilterFileItems(ctx context.Context, sourceID uint, items []appdto.FileItem) ([]appdto.FileItem, error) {
 	evaluator, err := a.newEvaluator(ctx, sourceID)

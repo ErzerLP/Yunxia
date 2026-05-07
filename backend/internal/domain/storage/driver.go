@@ -27,12 +27,18 @@ type FileDriver interface {
 
 // StorageEntry 表示驱动层抽象出的文件或目录项。
 type StorageEntry struct {
-	Name       string
-	Path       string
-	IsDir      bool
-	Size       int64
-	ETag       string
-	ModifiedAt time.Time
+	Name             string
+	Path             string
+	IsDir            bool
+	Size             int64
+	ETag             string
+	Checksum         string
+	MimeType         string
+	ModifiedAt       time.Time
+	ProviderItemID   string
+	ProviderParentID string
+	LocatorType      string
+	LocatorJSON      string
 }
 
 // RemoteIndexer 定义用于 VFS 懒索引/同步的远端直接子项列举能力。
@@ -62,6 +68,15 @@ type RemoteEntry struct {
 	ProviderParentID string
 	LocatorType      string
 	LocatorJSON      string
+}
+
+// ObjectReader 定义基于 storage object locator 的读取/临时下载能力。
+//
+// 与 FileDriver 的 path-oriented 接口不同，该接口以 StorageObject 作为数据面
+// 身份入口，便于 VFS/分享/WebDAV 在 node rename/move 后继续按 object locator
+// 访问底层对象。
+type ObjectReader interface {
+	PresignObjectDownload(ctx context.Context, source *entity.StorageSource, object *entity.StorageObject, disposition string, ttl time.Duration) (string, time.Time, error)
 }
 
 // UploadDriver 定义直传类存储驱动的上传能力。

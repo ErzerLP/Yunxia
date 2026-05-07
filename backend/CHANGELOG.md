@@ -14,6 +14,14 @@
 
 ## 2026-05-08
 
+### Driver object locator 收敛阶段
+
+- 新增 `ObjectReader` driver capability，FileService/VFS/WebDAV 下载优先通过 metadata VFS node -> `storage_objects.locator` 解析数据面对象；local 继续 ServeContent/Range，S3/PikPak 继续 provider presign/302。
+- `StorageEntry` 增加内部 locator/provider identity 字段，RemoteIndexer bridge 会把 driver 返回的 provider item id / locator 透传给 metadata sync；PikPak list/stat 现在会持久化 `provider_file_id` locator，S3/PikPak 上传完成会尽量回写 path-based locator。
+- metadata VFS rename/move 在已注入 object repo/source repo 时同步更新 path-based object locator，避免真实底层文件已移动而 metadata object 仍指向旧 source inner path。
+- `/api/v2/fs/download` 与 `/api/v2/fs/access-url` 的调用方式不变；目标已索引为 metadata object 时走 object-first，未索引时继续兼容 source/path fallback。
+- WebDAV GET/HEAD 生成短链时同样优先 object-first，前端无需适配。
+- 新增/更新测试覆盖 object locator 本地下载、path-based locator rename 同步、PikPak/S3 locator 透传、WebDAV/VFS 短链兼容；本阶段仅后端内部能力与契约说明变化。
 ### WebDAV metadata VFS 阶段
 
 - WebDAV local / S3 / PikPak 等 source 统一改为 metadata VFS 入口：`PROPFIND` 走 `VFSService.List` 过滤后的 metadata children，不再让 local source 使用物理 `webdav.Dir` 绕过 VFS/ACL。

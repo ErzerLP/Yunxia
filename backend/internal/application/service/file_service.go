@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,16 @@ import (
 	"yunxia/internal/infrastructure/security"
 )
 
+// VFSObjectDownload 表示一次基于 metadata VFS object locator 解析出的下载结果。
+type VFSObjectDownload struct {
+	RedirectURL string
+	File        *os.File
+	Info        os.FileInfo
+	MIMEType    string
+	SourceID    uint
+	InnerPath   string
+}
+
 // FileService 负责文件管理与访问地址生成。
 type FileService struct {
 	sourceRepo       domainrepo.SourceRepository
@@ -36,7 +47,10 @@ type FileService struct {
 	}
 	userRepo            domainrepo.UserRepository
 	fileDrivers         map[string]FileDriver
+	objectReaders       map[string]ObjectReader
 	capabilityProviders map[string]CapabilityProvider
+	metadataReader      metadataVFSReader
+	storageObjectRepo   domainrepo.StorageObjectRepository
 	trashItemRepo       domainrepo.TrashItemRepository
 	localDirWritable    func(string) bool
 	logger              *slog.Logger
@@ -62,6 +76,7 @@ func NewFileService(
 		authTokens:          authTokens,
 		userRepo:            userRepo,
 		fileDrivers:         make(map[string]FileDriver),
+		objectReaders:       make(map[string]ObjectReader),
 		capabilityProviders: make(map[string]CapabilityProvider),
 		localDirWritable:    probeLocalDirectoryWritable,
 		logger:              newServiceLogger("service.file"),
@@ -1183,6 +1198,244 @@ func (s *FileService) ResolveDownloadRedirect(ctx context.Context, sourceID uint
 		return "", err
 	}
 	return redirectURL, nil
+}
+
+// ResolveVFSObjectDownload 优先通过 metadata VFS node -> storage object locator 解析下载。
+//
+// 第二个返回值表示是否已命中 metadata object 通道；为 false 时调用方可回退到
+// source/path 兼容路径。
+func (s *FileService) ResolveVFSObjectDownload(ctx context.Context, virtualPath string, disposition string) (*VFSObjectDownload, bool, error) {
+	if s == nil || s.metadataReader == nil || s.storageObjectRepo == nil {
+		return nil, false, nil
+	}
+	normalizedPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return nil, true, err
+	}
+	node, err := s.metadataReader.ResolveNode(ctx, normalizedPath)
+	if err != nil {
+		if errors.Is(err, ErrFileNotFound) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	if node == nil {
+		return nil, false, nil
+	}
+	if metadataVFSNodeIsDirectory(node) {
+		return nil, true, ErrFileIsDirectory
+	}
+	if metadataVFSNodeUnavailable(node) || node.ObjectID == nil {
+		return nil, true, ErrFileNotFound
+	}
+
+	object, err := s.storageObjectRepo.FindByID(ctx, *node.ObjectID)
+	if err != nil {
+		if errors.Is(err, domainrepo.ErrNotFound) {
+			return nil, true, ErrFileNotFound
+		}
+		return nil, true, err
+	}
+	if object == nil || object.Status != entity.StorageObjectStatusAvailable {
+		return nil, true, ErrFileNotFound
+	}
+	source, err := s.getSource(ctx, object.SourceID)
+	if err != nil {
+		return nil, true, err
+	}
+	innerPath, err := s.storageObjectInnerPath(source, node, object)
+	if err != nil {
+		return nil, true, err
+	}
+	if err := s.authorizeVirtualNode(ctx, source.ID, node, ACLActionRead); err != nil {
+		return nil, true, err
+	}
+
+	if source.DriverType == "local" {
+		file, info, mimeType, err := s.openLocalStorageObject(source, object, innerPath)
+		if err != nil {
+			return nil, true, err
+		}
+		return &VFSObjectDownload{
+			File:      file,
+			Info:      info,
+			MIMEType:  mimeType,
+			SourceID:  source.ID,
+			InnerPath: innerPath,
+		}, true, nil
+	}
+
+	redirectURL, err := s.presignStorageObject(ctx, source, object, innerPath, disposition)
+	if err != nil {
+		return nil, true, err
+	}
+	return &VFSObjectDownload{
+		RedirectURL: redirectURL,
+		SourceID:    source.ID,
+		InnerPath:   innerPath,
+	}, true, nil
+}
+
+// AccessURLByVFSObject 基于 VFS node/object locator 生成短时访问地址。
+func (s *FileService) AccessURLByVFSObject(ctx context.Context, virtualPath string, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, bool, error) {
+	if req.ExpiresIn <= 0 {
+		req.ExpiresIn = 300
+	}
+	download, matched, err := s.ResolveVFSObjectDownload(ctx, virtualPath, req.Disposition)
+	if err != nil || !matched {
+		return nil, matched, err
+	}
+	if download == nil {
+		return nil, true, ErrFileNotFound
+	}
+	if download.File != nil {
+		_ = download.File.Close()
+	}
+	token, expiresAt, err := s.fileAccessTokens.Issue(download.SourceID, download.InnerPath, req.Purpose, req.Disposition, time.Duration(req.ExpiresIn)*time.Second)
+	if err != nil {
+		return nil, true, err
+	}
+	params := url.Values{}
+	params.Set("source_id", fmt.Sprintf("%d", download.SourceID))
+	params.Set("path", download.InnerPath)
+	params.Set("disposition", req.Disposition)
+	params.Set("access_token", token)
+	return &appdto.AccessURLResponse{
+		URL:       "/api/v1/files/download?" + params.Encode(),
+		Method:    "GET",
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+	}, true, nil
+}
+
+func (s *FileService) openLocalStorageObject(source *entity.StorageSource, object *entity.StorageObject, innerPath string) (*os.File, os.FileInfo, string, error) {
+	if object == nil || source == nil {
+		return nil, nil, "", ErrFileNotFound
+	}
+	_, physicalPath, err := resolvePhysicalPath(source, innerPath)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	file, err := os.Open(physicalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, "", ErrFileNotFound
+		}
+		return nil, nil, "", err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, "", err
+	}
+	if info.IsDir() {
+		_ = file.Close()
+		return nil, nil, "", ErrFileIsDirectory
+	}
+	mimeType := strings.TrimSpace(object.MimeType)
+	if mimeType == "" {
+		mimeType = mimeFromName(info.Name())
+	}
+	return file, info, mimeType, nil
+}
+
+func (s *FileService) presignStorageObject(ctx context.Context, source *entity.StorageSource, object *entity.StorageObject, fallbackPath string, disposition string) (string, error) {
+	if disposition == "" {
+		disposition = "attachment"
+	}
+	if reader := s.objectReaders[source.DriverType]; reader != nil {
+		redirectURL, _, err := reader.PresignObjectDownload(ctx, source, object, disposition, 5*time.Minute)
+		if err == nil {
+			return redirectURL, nil
+		}
+		if !errors.Is(err, ErrSourceOperationUnsupported) && !errors.Is(err, ErrSourceDriverUnsupported) {
+			return "", normalizeObjectReadError(err)
+		}
+	}
+	driver, err := s.getFileDriver(source.DriverType)
+	if err != nil {
+		return "", err
+	}
+	redirectURL, _, err := driver.PresignDownload(ctx, source, fallbackPath, disposition, 5*time.Minute)
+	if err != nil {
+		return "", normalizeObjectReadError(err)
+	}
+	return redirectURL, nil
+}
+
+func normalizeObjectReadError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, os.ErrNotExist):
+		return ErrFileNotFound
+	case errors.Is(err, fs.ErrInvalid), errors.Is(err, os.ErrInvalid):
+		return ErrFileIsDirectory
+	default:
+		return err
+	}
+}
+
+func (s *FileService) storageObjectInnerPath(source *entity.StorageSource, node *entity.VFSNode, object *entity.StorageObject) (string, error) {
+	if object != nil {
+		if locatorPath := storageObjectLocatorPath(object); locatorPath != "" {
+			return normalizeVirtualPath(locatorPath)
+		}
+	}
+	if source != nil && node != nil && strings.TrimSpace(source.MountPath) != "" {
+		mountPath, err := normalizeMountPath(source.MountPath)
+		if err == nil && isSubPath(mountPath, node.Path) {
+			inner := strings.TrimPrefix(node.Path, mountPath)
+			if inner == "" {
+				inner = "/"
+			}
+			if !strings.HasPrefix(inner, "/") {
+				inner = "/" + inner
+			}
+			return normalizeVirtualPath(inner)
+		}
+	}
+	if node != nil {
+		return normalizeVirtualPath(node.Path)
+	}
+	return "", ErrPathInvalid
+}
+
+func storageObjectLocatorPath(object *entity.StorageObject) string {
+	if object == nil {
+		return ""
+	}
+	switch strings.TrimSpace(object.LocatorType) {
+	case "local_path", "driver_path", "provider_path":
+	default:
+		return ""
+	}
+	value, ok := storageObjectLocatorString(object.LocatorJSON, "path")
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+func storageObjectLocatorString(locatorJSON string, key string) (string, bool) {
+	var payload map[string]any
+	decoder := json.NewDecoder(strings.NewReader(locatorJSON))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return "", false
+	}
+	raw, ok := payload[key]
+	if !ok {
+		return "", false
+	}
+	value, ok := raw.(string)
+	return strings.TrimSpace(value), ok && strings.TrimSpace(value) != ""
+}
+
+func (s *FileService) authorizeVirtualNode(ctx context.Context, sourceID uint, node *entity.VFSNode, action ACLAction) error {
+	if s.aclAuthorizer == nil || node == nil {
+		return nil
+	}
+	return s.aclAuthorizer.AuthorizeVirtualPath(ctx, sourceID, node.Path, node.ID, action)
 }
 
 // ValidateFileAccessToken 校验短时文件访问令牌。

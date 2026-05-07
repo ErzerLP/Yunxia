@@ -32,6 +32,7 @@ type passwordComparer interface {
 
 type webDAVFileService interface {
 	AccessURL(ctx context.Context, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, error)
+	AccessURLByVFSObject(ctx context.Context, virtualPath string, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, bool, error)
 }
 
 type webDAVUploadService interface {
@@ -304,16 +305,24 @@ func (h *WebDAVHandler) handleVFSDownload(writer http.ResponseWriter, req *http.
 		http.Error(writer, "not found", webDAVStatusFromError(err))
 		return
 	}
-	accessURL, err := h.fileService.AccessURL(req.Context(), appdto.AccessURLRequest{
+	accessReq := appdto.AccessURLRequest{
 		SourceID:    resolved.Source.ID,
 		Path:        resolved.InnerPath,
 		Purpose:     "download",
 		Disposition: "inline",
 		ExpiresIn:   300,
-	})
+	}
+	accessURL, matched, err := h.fileService.AccessURLByVFSObject(req.Context(), vfsPath, accessReq)
 	if err != nil {
 		http.Error(writer, "not found", webDAVStatusFromError(err))
 		return
+	}
+	if !matched {
+		accessURL, err = h.fileService.AccessURL(req.Context(), accessReq)
+		if err != nil {
+			http.Error(writer, "not found", webDAVStatusFromError(err))
+			return
+		}
 	}
 	if accessURL == nil || accessURL.URL == "" {
 		http.Error(writer, "download unavailable", http.StatusNotImplemented)

@@ -10,6 +10,7 @@ type DriverBundle struct {
 	Config         SourceConfigCodec
 	Probe          SourceDriverProbe
 	File           FileDriver
+	ObjectReader   ObjectReader
 	Indexer        RemoteIndexer
 	Upload         UploadDriver
 	Import         ImportDriver
@@ -90,6 +91,9 @@ func (r *StorageDriverRegistry) FileServiceOptions() []FileServiceOption {
 	for _, bundle := range r.Bundles() {
 		if bundle.File != nil {
 			options = append(options, WithFileDriver(bundle.Type, bundle.File))
+		}
+		if bundle.ObjectReader != nil {
+			options = append(options, WithFileObjectReader(bundle.Type, bundle.ObjectReader))
 		}
 		if bundle.Capabilities != nil {
 			options = append(options, WithFileCapabilityProvider(bundle.Type, bundle.Capabilities))

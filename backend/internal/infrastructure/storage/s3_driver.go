@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -102,13 +103,17 @@ func (d *S3Driver) List(ctx context.Context, source *entity.StorageSource, virtu
 		if modifiedAt.IsZero() {
 			modifiedAt = time.Unix(0, 0).UTC()
 		}
+		childPath := joinVirtualPath(virtualPath, childName)
 		items = append(items, domainstorage.StorageEntry{
-			Name:       childName,
-			Path:       joinVirtualPath(virtualPath, childName),
-			IsDir:      false,
-			Size:       aws.ToInt64(object.Size),
-			ETag:       strings.Trim(aws.ToString(object.ETag), `"`),
-			ModifiedAt: modifiedAt,
+			Name:        childName,
+			Path:        childPath,
+			IsDir:       false,
+			Size:        aws.ToInt64(object.Size),
+			ETag:        strings.Trim(aws.ToString(object.ETag), `"`),
+			MimeType:    mime.TypeByExtension(path.Ext(childName)),
+			ModifiedAt:  modifiedAt,
+			LocatorType: "provider_path",
+			LocatorJSON: mustMarshalLocator(map[string]string{"path": childPath}),
 		})
 	}
 
@@ -160,12 +165,15 @@ func (d *S3Driver) SearchByName(ctx context.Context, source *entity.StorageSourc
 				modifiedAt = time.Unix(0, 0).UTC()
 			}
 			items = append(items, domainstorage.StorageEntry{
-				Name:       name,
-				Path:       virtualPath,
-				IsDir:      false,
-				Size:       aws.ToInt64(object.Size),
-				ETag:       strings.Trim(aws.ToString(object.ETag), `"`),
-				ModifiedAt: modifiedAt,
+				Name:        name,
+				Path:        virtualPath,
+				IsDir:       false,
+				Size:        aws.ToInt64(object.Size),
+				ETag:        strings.Trim(aws.ToString(object.ETag), `"`),
+				MimeType:    mime.TypeByExtension(path.Ext(name)),
+				ModifiedAt:  modifiedAt,
+				LocatorType: "provider_path",
+				LocatorJSON: mustMarshalLocator(map[string]string{"path": virtualPath}),
 			})
 		}
 	}
@@ -335,6 +343,15 @@ func (d *S3Driver) PresignDownload(ctx context.Context, source *entity.StorageSo
 	}
 
 	return presigned.URL, expiresAt, nil
+}
+
+// PresignObjectDownload 基于 storage object locator 生成预签名下载地址。
+func (d *S3Driver) PresignObjectDownload(ctx context.Context, source *entity.StorageSource, object *entity.StorageObject, disposition string, ttl time.Duration) (string, time.Time, error) {
+	objectPath := locatorPath(object)
+	if objectPath == "" {
+		return "", time.Time{}, domainstorage.ErrOperationUnsupported
+	}
+	return d.PresignDownload(ctx, source, objectPath, disposition, ttl)
 }
 
 // ImportFile 将本地暂存文件上传到 S3 指定路径。
@@ -523,12 +540,15 @@ func (d *S3Driver) CompleteMultipartUpload(ctx context.Context, source *entity.S
 		modifiedAt = time.Now()
 	}
 	return &domainstorage.StorageEntry{
-		Name:       path.Base(state.VirtualPath),
-		Path:       state.VirtualPath,
-		IsDir:      false,
-		Size:       aws.ToInt64(head.ContentLength),
-		ETag:       strings.Trim(aws.ToString(head.ETag), `"`),
-		ModifiedAt: modifiedAt,
+		Name:        path.Base(state.VirtualPath),
+		Path:        state.VirtualPath,
+		IsDir:       false,
+		Size:        aws.ToInt64(head.ContentLength),
+		ETag:        strings.Trim(aws.ToString(head.ETag), `"`),
+		MimeType:    aws.ToString(head.ContentType),
+		ModifiedAt:  modifiedAt,
+		LocatorType: "provider_path",
+		LocatorJSON: mustMarshalLocator(map[string]string{"path": state.VirtualPath}),
 	}, nil
 }
 
@@ -603,12 +623,15 @@ func (d *S3Driver) renameOrCopy(ctx context.Context, source *entity.StorageSourc
 		modifiedAt = time.Now()
 	}
 	return &domainstorage.StorageEntry{
-		Name:       path.Base(targetPath),
-		Path:       targetPath,
-		IsDir:      false,
-		Size:       aws.ToInt64(head.ContentLength),
-		ETag:       strings.Trim(aws.ToString(head.ETag), `"`),
-		ModifiedAt: modifiedAt,
+		Name:        path.Base(targetPath),
+		Path:        targetPath,
+		IsDir:       false,
+		Size:        aws.ToInt64(head.ContentLength),
+		ETag:        strings.Trim(aws.ToString(head.ETag), `"`),
+		MimeType:    aws.ToString(head.ContentType),
+		ModifiedAt:  modifiedAt,
+		LocatorType: "provider_path",
+		LocatorJSON: mustMarshalLocator(map[string]string{"path": targetPath}),
 	}, nil
 }
 
@@ -664,12 +687,15 @@ func (d *S3Driver) statPathWithClient(ctx context.Context, client *awss3.Client,
 		}
 		return &s3PathInfo{
 			entry: domainstorage.StorageEntry{
-				Name:       path.Base(virtualPath),
-				Path:       virtualPath,
-				IsDir:      false,
-				Size:       aws.ToInt64(head.ContentLength),
-				ETag:       strings.Trim(aws.ToString(head.ETag), `"`),
-				ModifiedAt: modifiedAt,
+				Name:        path.Base(virtualPath),
+				Path:        virtualPath,
+				IsDir:       false,
+				Size:        aws.ToInt64(head.ContentLength),
+				ETag:        strings.Trim(aws.ToString(head.ETag), `"`),
+				MimeType:    aws.ToString(head.ContentType),
+				ModifiedAt:  modifiedAt,
+				LocatorType: "provider_path",
+				LocatorJSON: mustMarshalLocator(map[string]string{"path": virtualPath}),
 			},
 			key:   key,
 			isDir: false,
@@ -900,6 +926,43 @@ func buildContentDisposition(disposition string, filename string) string {
 	}
 	escaped := url.PathEscape(filename)
 	return fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`, disposition, filename, escaped)
+}
+
+func locatorPath(object *entity.StorageObject) string {
+	if object == nil {
+		return ""
+	}
+	switch strings.TrimSpace(object.LocatorType) {
+	case "provider_path", "driver_path", "local_path":
+	default:
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(object.LocatorJSON), &payload); err != nil {
+		return ""
+	}
+	value, _ := payload["path"].(string)
+	return strings.TrimSpace(value)
+}
+
+func locatorFileID(object *entity.StorageObject) string {
+	if object == nil || strings.TrimSpace(object.LocatorType) != "provider_file_id" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(object.LocatorJSON), &payload); err != nil {
+		return ""
+	}
+	value, _ := payload["file_id"].(string)
+	return strings.TrimSpace(value)
+}
+
+func mustMarshalLocator(value map[string]string) string {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func mapS3NotFound(err error) error {

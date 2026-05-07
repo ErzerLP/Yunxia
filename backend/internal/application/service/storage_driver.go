@@ -25,6 +25,9 @@ type RemoteListRequest = domainstorage.RemoteListRequest
 // RemoteEntry 是 domain 层远端条目的别名。
 type RemoteEntry = domainstorage.RemoteEntry
 
+// ObjectReader 是 domain 层基于 storage object locator 的读取接口别名。
+type ObjectReader = domainstorage.ObjectReader
+
 // UploadDriver 是 domain 层上传驱动接口的别名。
 type UploadDriver = domainstorage.UploadDriver
 
@@ -139,6 +142,19 @@ func WithFileDriver(driverType string, driver FileDriver) FileServiceOption {
 	}
 }
 
+// WithFileObjectReader 注册指定 driver 的 object locator 读取器。
+func WithFileObjectReader(driverType string, reader ObjectReader) FileServiceOption {
+	return func(s *FileService) {
+		if driverType == "" || reader == nil {
+			return
+		}
+		if s.objectReaders == nil {
+			s.objectReaders = make(map[string]ObjectReader)
+		}
+		s.objectReaders[driverType] = reader
+	}
+}
+
 // WithFileCapabilityProvider 注册指定 driver 的能力描述器。
 func WithFileCapabilityProvider(driverType string, provider CapabilityProvider) FileServiceOption {
 	return func(s *FileService) {
@@ -163,6 +179,14 @@ func WithTrashItemRepository(repo domainrepo.TrashItemRepository) FileServiceOpt
 func WithFileACLAuthorizer(authorizer *ACLAuthorizer) FileServiceOption {
 	return func(s *FileService) {
 		s.aclAuthorizer = authorizer
+	}
+}
+
+// WithFileMetadataVFSObjectAccess 注册 VFS node/object 读模型，用于 object-first 下载。
+func WithFileMetadataVFSObjectAccess(reader metadataVFSReader, objectRepo domainrepo.StorageObjectRepository) FileServiceOption {
+	return func(s *FileService) {
+		s.metadataReader = reader
+		s.storageObjectRepo = objectRepo
 	}
 }
 

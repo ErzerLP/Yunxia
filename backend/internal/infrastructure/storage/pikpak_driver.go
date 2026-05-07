@@ -262,6 +262,39 @@ func (d *PikPakDriver) PresignDownload(ctx context.Context, source *entity.Stora
 	return downloadURL, time.Now().Add(ttl), nil
 }
 
+// PresignObjectDownload 基于 storage object locator 获取 PikPak 临时下载链接。
+func (d *PikPakDriver) PresignObjectDownload(ctx context.Context, source *entity.StorageSource, object *entity.StorageObject, disposition string, ttl time.Duration) (string, time.Time, error) {
+	if fileID := locatorFileID(object); fileID != "" {
+		var downloadURL string
+		err := d.sessions.withSession(ctx, source, func(session PikPakSession, cfg PikPakConfig) error {
+			usage := "FETCH"
+			if !cfg.DisableMediaLink {
+				usage = "CACHE"
+			}
+			detail, detailErr := d.sessions.client.GetFile(ctx, session, fileID, usage)
+			if detailErr != nil {
+				return detailErr
+			}
+			if detail == nil || detail.isFolder() {
+				return fs.ErrInvalid
+			}
+			downloadURL = pikPakDownloadURL(*detail, cfg.DisableMediaLink)
+			if downloadURL == "" {
+				return os.ErrNotExist
+			}
+			return nil
+		})
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return downloadURL, time.Now().Add(ttl), nil
+	}
+	if objectPath := locatorPath(object); objectPath != "" {
+		return d.PresignDownload(ctx, source, objectPath, disposition, ttl)
+	}
+	return "", time.Time{}, domainstorage.ErrOperationUnsupported
+}
+
 // Capacity 查询 PikPak 容量详情。
 func (d *PikPakDriver) Capacity(ctx context.Context, source *entity.StorageSource) (*domainstorage.CapacityInfo, error) {
 	var info *domainstorage.CapacityInfo
@@ -342,14 +375,21 @@ func (d *PikPakDriver) InitMultipartUpload(ctx context.Context, source *entity.S
 		}
 		targetPath := joinVirtualPath(targetDirPath, req.Filename)
 		if upload == nil || upload.Resumable == nil {
+			completedEntry := domainstorage.StorageEntry{
+				Name:        req.Filename,
+				Path:        targetPath,
+				IsDir:       false,
+				Size:        req.FileSize,
+				MimeType:    contentType,
+				ModifiedAt:  time.Now(),
+				LocatorType: "provider_path",
+				LocatorJSON: mustMarshalLocator(map[string]string{"path": targetPath}),
+			}
+			if upload != nil && upload.File != nil {
+				completedEntry = pikPakFileToStorageEntry(*upload.File, targetPath)
+			}
 			plan = &domainstorage.MultipartUploadPlan{
-				CompletedEntry: &domainstorage.StorageEntry{
-					Name:       req.Filename,
-					Path:       targetPath,
-					IsDir:      false,
-					Size:       req.FileSize,
-					ModifiedAt: time.Now(),
-				},
+				CompletedEntry: &completedEntry,
 			}
 			d.invalidatePikPakPathCache(source.ID, cfg)
 			return nil
@@ -389,11 +429,13 @@ func (d *PikPakDriver) CompleteMultipartUpload(ctx context.Context, source *enti
 		return nil, err
 	}
 	return &domainstorage.StorageEntry{
-		Name:       path.Base(virtualPath),
-		Path:       virtualPath,
-		IsDir:      false,
-		Size:       state.FileSize,
-		ModifiedAt: time.Now(),
+		Name:        path.Base(virtualPath),
+		Path:        virtualPath,
+		IsDir:       false,
+		Size:        state.FileSize,
+		ModifiedAt:  time.Now(),
+		LocatorType: "provider_path",
+		LocatorJSON: mustMarshalLocator(map[string]string{"path": virtualPath}),
 	}, nil
 }
 
@@ -963,13 +1005,32 @@ func pikPakFileToStorageEntry(file PikPakFile, virtualPath string) domainstorage
 		size = parsePikPakSize(file.Size)
 	}
 	return domainstorage.StorageEntry{
-		Name:       file.Name,
-		Path:       virtualPath,
-		IsDir:      file.isFolder(),
-		Size:       size,
-		ETag:       file.Hash,
-		ModifiedAt: modifiedAt,
+		Name:           file.Name,
+		Path:           virtualPath,
+		IsDir:          file.isFolder(),
+		Size:           size,
+		ETag:           file.Hash,
+		Checksum:       file.Hash,
+		ModifiedAt:     modifiedAt,
+		ProviderItemID: file.ID,
+		LocatorType:    pikPakLocatorType(file),
+		LocatorJSON:    pikPakLocatorJSON(file, virtualPath),
 	}
+}
+
+func pikPakLocatorType(file PikPakFile) string {
+	if strings.TrimSpace(file.ID) == "" {
+		return "provider_path"
+	}
+	return "provider_file_id"
+}
+
+func pikPakLocatorJSON(file PikPakFile, virtualPath string) string {
+	payload := map[string]string{"path": virtualPath}
+	if strings.TrimSpace(file.ID) != "" {
+		payload["file_id"] = strings.TrimSpace(file.ID)
+	}
+	return mustMarshalLocator(payload)
 }
 
 func (d *PikPakDriver) pikPakDirectUploadInstruction(params PikPakOSSUploadParams, contentType string, fileSize int64) (domainstorage.MultipartUploadPartInstruction, error) {

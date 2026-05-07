@@ -666,12 +666,18 @@ func (i fileDriverRemoteIndexer) ListRemoteChildren(ctx context.Context, source 
 	items := make([]RemoteEntry, 0, len(entries))
 	for _, entry := range entries {
 		items = append(items, RemoteEntry{
-			Name:       entry.Name,
-			Path:       entry.Path,
-			IsDir:      entry.IsDir,
-			Size:       entry.Size,
-			ETag:       entry.ETag,
-			ModifiedAt: entry.ModifiedAt,
+			Name:             entry.Name,
+			Path:             entry.Path,
+			IsDir:            entry.IsDir,
+			Size:             entry.Size,
+			ETag:             entry.ETag,
+			Checksum:         entry.Checksum,
+			MimeType:         entry.MimeType,
+			ModifiedAt:       entry.ModifiedAt,
+			ProviderItemID:   entry.ProviderItemID,
+			ProviderParentID: entry.ProviderParentID,
+			LocatorType:      entry.LocatorType,
+			LocatorJSON:      entry.LocatorJSON,
 		})
 	}
 	return items, nil

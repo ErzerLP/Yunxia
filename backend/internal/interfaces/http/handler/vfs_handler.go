@@ -35,6 +35,8 @@ type VFSHandler struct {
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
 		AccessURL(ctx context.Context, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, error)
+		AccessURLByVFSObject(ctx context.Context, virtualPath string, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, bool, error)
+		ResolveVFSObjectDownload(ctx context.Context, virtualPath string, disposition string) (*appsvc.VFSObjectDownload, bool, error)
 		ResolveDownload(ctx context.Context, sourceID uint, filePath string) (*os.File, os.FileInfo, string, error)
 		ResolveDownloadRedirect(ctx context.Context, sourceID uint, filePath, disposition string) (string, error)
 		ValidateFileAccessToken(raw string) (*security.FileAccessClaims, error)
@@ -58,6 +60,8 @@ func NewVFSHandler(
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
 		AccessURL(ctx context.Context, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, error)
+		AccessURLByVFSObject(ctx context.Context, virtualPath string, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, bool, error)
+		ResolveVFSObjectDownload(ctx context.Context, virtualPath string, disposition string) (*appsvc.VFSObjectDownload, bool, error)
 		ResolveDownload(ctx context.Context, sourceID uint, filePath string) (*os.File, os.FileInfo, string, error)
 		ResolveDownloadRedirect(ctx context.Context, sourceID uint, filePath, disposition string) (string, error)
 		ValidateFileAccessToken(raw string) (*security.FileAccessClaims, error)
@@ -248,7 +252,24 @@ func (h *VFSHandler) AccessURL(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.fileService.AccessURL(c.Request.Context(), appdto.AccessURLRequest{
+	resp, matched, err := h.fileService.AccessURLByVFSObject(c.Request.Context(), req.Path, appdto.AccessURLRequest{
+		SourceID:    resolved.Source.ID,
+		Path:        resolved.InnerPath,
+		Purpose:     req.Purpose,
+		Disposition: req.Disposition,
+		ExpiresIn:   req.ExpiresIn,
+	})
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	if matched {
+		resp.URL = rewriteVFSAccessURL(resp.URL, req.Path, req.Disposition)
+		httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+		return
+	}
+
+	resp, err = h.fileService.AccessURL(c.Request.Context(), appdto.AccessURLRequest{
 		SourceID:    resolved.Source.ID,
 		Path:        resolved.InnerPath,
 		Purpose:     req.Purpose,
@@ -276,13 +297,15 @@ func (h *VFSHandler) Download(c *gin.Context) {
 	}
 
 	tempToken := c.Query("access_token")
+	var tempClaims *security.FileAccessClaims
 	requestCtx := c.Request.Context()
 	if tempToken != "" {
 		claims, claimErr := h.fileService.ValidateFileAccessToken(tempToken)
-		if claimErr != nil || claims.SourceID != resolved.Source.ID || claims.Path != resolved.InnerPath {
+		if claimErr != nil {
 			httpresp.Error(c, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "invalid access token", nil)
 			return
 		}
+		tempClaims = claims
 	} else {
 		authHeader := c.GetHeader("Authorization")
 		if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -295,6 +318,40 @@ func (h *VFSHandler) Download(c *gin.Context) {
 			return
 		}
 		requestCtx = security.WithRequestAuth(requestCtx, *auth)
+	}
+
+	objectDownload, objectMatched, err := h.fileService.ResolveVFSObjectDownload(requestCtx, virtualPath, disposition)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	if objectMatched && objectDownload != nil {
+		if tempClaims != nil && (tempClaims.SourceID != objectDownload.SourceID || tempClaims.Path != objectDownload.InnerPath) {
+			if objectDownload.File != nil {
+				_ = objectDownload.File.Close()
+			}
+			httpresp.Error(c, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "invalid access token", nil)
+			return
+		}
+		if objectDownload.RedirectURL != "" {
+			c.Redirect(http.StatusFound, objectDownload.RedirectURL)
+			return
+		}
+		if objectDownload.File == nil || objectDownload.Info == nil {
+			h.writeError(c, appsvc.ErrFileNotFound)
+			return
+		}
+		defer objectDownload.File.Close()
+		c.Header("Content-Type", objectDownload.MIMEType)
+		c.Header("Content-Disposition", disposition+`; filename="`+objectDownload.Info.Name()+`"`)
+		c.Header("Accept-Ranges", "bytes")
+		http.ServeContent(c.Writer, c.Request, objectDownload.Info.Name(), objectDownload.Info.ModTime(), objectDownload.File)
+		return
+	}
+
+	if tempClaims != nil && (tempClaims.SourceID != resolved.Source.ID || tempClaims.Path != resolved.InnerPath) {
+		httpresp.Error(c, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "invalid access token", nil)
+		return
 	}
 
 	redirectURL, err := h.fileService.ResolveDownloadRedirect(requestCtx, resolved.Source.ID, resolved.InnerPath, disposition)

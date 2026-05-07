@@ -124,7 +124,7 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, target resol
 		if hashErr == nil && hash == req.FileHash {
 			info, _ := os.Stat(targetPhysical)
 			item := buildFileItem(target.source.ID, targetVirtual, info)
-			resultNodeID, err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item)
+			resultNodeID, err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -235,7 +235,7 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 	}
 	if plan.CompletedEntry != nil {
 		item := buildStorageEntryItem(target.source.ID, *plan.CompletedEntry)
-		resultNodeID, err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item)
+		resultNodeID, err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item, plan.CompletedEntry)
 		if err != nil {
 			return nil, err
 		}
@@ -699,7 +699,7 @@ func (s *UploadService) finishLocal(ctx context.Context, source *entity.StorageS
 		return nil, err
 	}
 	item := buildFileItem(source.ID, targetVirtual, info)
-	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item)
+	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -739,7 +739,7 @@ func (s *UploadService) finishWithUploadDriver(ctx context.Context, source *enti
 		return nil, err
 	}
 	item := buildStorageEntryItem(source.ID, *entry)
-	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item)
+	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item, entry)
 	if err != nil {
 		return nil, err
 	}
@@ -806,7 +806,7 @@ func (s *UploadService) finishWithImportDriver(ctx context.Context, source *enti
 		Size:       session.FileSize,
 		ModifiedAt: time.Now(),
 	})
-	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item)
+	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -866,7 +866,7 @@ func (s *UploadService) chunkFilePath(uploadID string, index int) string {
 	return filepath.Join(s.sessionTempDir(uploadID), fmt.Sprintf("chunk-%06d.part", index))
 }
 
-func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession, item appdto.FileItem) (uint, error) {
+func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession, item appdto.FileItem, entry *StorageEntry) (uint, error) {
 	if s.metadataCommitter == nil {
 		return 0, nil
 	}
@@ -886,7 +886,7 @@ func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, sou
 		resolvedInnerParentPath = item.ParentPath
 	}
 	actorID := session.UserID
-	result, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+	commitReq := MetadataVFSFileObjectCommitRequest{
 		Source:                  source,
 		VirtualParentPath:       virtualParentPath,
 		ResolvedInnerParentPath: resolvedInnerParentPath,
@@ -897,7 +897,9 @@ func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, sou
 		ETag:                    item.Etag,
 		Checksum:                session.FileHash,
 		ActorID:                 &actorID,
-	})
+	}
+	applyStorageEntryLocatorToCommitRequest(&commitReq, entry)
+	result, err := s.metadataCommitter.CommitFileObject(ctx, commitReq)
 	if err != nil {
 		s.recordUploadMetadataCommitFailure(ctx, source, &actorID, session.TargetVFSParentNodeID, virtualParentPath, item.Path, filename, err)
 		return 0, maskMetadataVFSCommitError(err)
@@ -911,7 +913,7 @@ func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, sou
 	return result.Node.ID, nil
 }
 
-func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID uint, target resolvedUploadInitTarget, filename string, checksum string, item appdto.FileItem) (uint, error) {
+func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID uint, target resolvedUploadInitTarget, filename string, checksum string, item appdto.FileItem, entry *StorageEntry) (uint, error) {
 	if s.metadataCommitter == nil {
 		return 0, nil
 	}
@@ -929,7 +931,7 @@ func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID
 	if innerParentPath == "" {
 		innerParentPath = item.ParentPath
 	}
-	result, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+	commitReq := MetadataVFSFileObjectCommitRequest{
 		Source:                  target.source,
 		VirtualParentPath:       virtualParentPath,
 		ResolvedInnerParentPath: innerParentPath,
@@ -940,7 +942,9 @@ func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID
 		ETag:                    item.Etag,
 		Checksum:                checksum,
 		ActorID:                 &userID,
-	})
+	}
+	applyStorageEntryLocatorToCommitRequest(&commitReq, entry)
+	result, err := s.metadataCommitter.CommitFileObject(ctx, commitReq)
 	if err != nil {
 		s.recordUploadMetadataCommitFailure(ctx, target.source, &userID, target.targetVFSParentNodeID, virtualParentPath, item.Path, item.Name, err)
 		return 0, maskMetadataVFSCommitError(err)
@@ -951,6 +955,22 @@ func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID
 		return 0, maskMetadataVFSCommitError(err)
 	}
 	return result.Node.ID, nil
+}
+
+func applyStorageEntryLocatorToCommitRequest(req *MetadataVFSFileObjectCommitRequest, entry *StorageEntry) {
+	if req == nil || entry == nil {
+		return
+	}
+	if strings.TrimSpace(entry.LocatorType) != "" && strings.TrimSpace(entry.LocatorJSON) != "" {
+		req.LocatorType = entry.LocatorType
+		req.LocatorJSON = entry.LocatorJSON
+	}
+	if strings.TrimSpace(entry.Checksum) != "" && strings.TrimSpace(req.Checksum) == "" {
+		req.Checksum = entry.Checksum
+	}
+	if strings.TrimSpace(entry.MimeType) != "" && strings.TrimSpace(req.MimeType) == "" {
+		req.MimeType = entry.MimeType
+	}
 }
 
 func maskMetadataVFSCommitError(err error) error {
