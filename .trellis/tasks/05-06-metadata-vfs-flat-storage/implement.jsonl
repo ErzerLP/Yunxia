@@ -1,0 +1,6 @@
+{"file": ".trellis\\spec\\backend\\index.md", "reason": "Backend spec index for VFS/storage refactor"}
+{"file": ".trellis\\spec\\backend\\directory-structure.md", "reason": "Layering and driver registry constraints"}
+{"file": ".trellis\\spec\\backend\\database-guidelines.md", "reason": "New metadata tables and repositories"}
+{"file": ".trellis\\spec\\backend\\error-handling.md", "reason": "Stable error mapping"}
+{"file": ".trellis\\spec\\backend\\quality-guidelines.md", "reason": "Tests and documentation gates"}
+{"file": "docs\\research\\metadata-vfs-flat-storage-architecture.md", "reason": "Target architecture and phased plan"}

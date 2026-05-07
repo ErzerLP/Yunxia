@@ -14,6 +14,22 @@
 
 ## 2026-05-06
 
+### 元数据化 VFS 与扁平数据面重构方案
+
+- 新增元数据化 VFS 设计任务与 PRD：
+  - `.trellis/tasks/05-06-metadata-vfs-flat-storage/prd.md`
+- 新增固定架构文档：
+  - `docs/research/metadata-vfs-flat-storage-architecture.md`
+- 明确后续后端重构目标：
+  - 控制面完全虚拟化：目录、挂载、ACL、分享、标签、上传/离线下载/RSS 任务目标走 Yunxia VFS 元数据。
+  - 数据面扁平化抽象：local / S3 / PikPak 等底层 source 只负责对象/文件内容读写、远端列举、直链、导入和 provider 原生能力。
+  - 第三方网盘已有目录通过实时 list + 懒索引 + 后台同步进入 VFS，而不是全量扫描后才可见。
+- 文档索引同步：
+  - 更新 `DOCS-INDEX.md`
+  - 更新 `docs/README.md`
+
+---
+
 ### PostgreSQL-only 数据库迁移
 
 - 后端数据库从 SQLite 干净切换为 PostgreSQL-only：
