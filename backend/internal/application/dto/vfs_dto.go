@@ -2,6 +2,7 @@ package dto
 
 // VFSItem 表示统一虚拟目录树中的条目。
 type VFSItem struct {
+	ID           uint   `json:"id,omitempty"`
 	Name         string `json:"name"`
 	Path         string `json:"path"`
 	ParentPath   string `json:"parent_path"`

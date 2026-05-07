@@ -518,7 +518,9 @@ func metadataVFSNodeMatchesKeyword(node *entity.VFSNode, keyword string) bool {
 func metadataVFSItemFromNode(node *entity.VFSNode) appdto.VFSItem {
 	itemPath := "/"
 	name := ""
+	nodeID := uint(0)
 	if node != nil {
+		nodeID = node.ID
 		itemPath = node.Path
 		name = node.Name
 	}
@@ -577,6 +579,7 @@ func metadataVFSItemFromNode(node *entity.VFSNode) appdto.VFSItem {
 	}
 
 	return appdto.VFSItem{
+		ID:           nodeID,
 		Name:         name,
 		Path:         itemPath,
 		ParentPath:   parentPath,

@@ -43,6 +43,7 @@
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
 | 待适配 | 2026-05-08 | 分享 | 分享管理页、公开分享页、下载跳转 | P2 | `/api/v1/shares*`、`/s/:token`、`/api/v2/fs/download` | [详情](#handoff-2026-05-08-share-node-first) |
+| 待适配 | 2026-05-08 | ACL | 权限配置页、文件/VFS 页、挂载导航 | P2 | `/api/v1/acl/rules*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-acl-node-first) |
 | 待适配 | 2026-05-08 | 上传/任务/RSS | 上传完成、离线任务页、RSS 条目列表/告警 | P2 | `/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-node-first-completion) |
 | 待适配 | 2026-05-07 | VFS 刷新 | 文件/VFS 页、目录刷新按钮、错误提示 | P2 | `POST /api/v2/fs/refresh`、`GET /api/v2/fs/list` | [详情](#handoff-2026-05-07-vfs-refresh-sync) |
 | 待适配 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
@@ -1040,3 +1041,25 @@ type PikPakSecretPatch = {
 - 删除/missing 等不可用 node 收敛为稳定 `404 FILE_NOT_FOUND`，避免回退到旧 path 快照误读旧文件。
 
 完整契约见 `backend/API_CONTRACT.md` 的 `3.12 shares`、`3.14 统一虚拟目录树 V2` 和 `4.5 ShareView`。
+
+<a id="handoff-2026-05-08-acl-node-first"></a>
+
+### [P2][待适配][ACL] 2026-05-08 ACL node-first 规则配置
+
+#### 前端适配 checklist
+
+- [ ] 权限配置页选择 VFS 目录/文件时，优先读取 `/api/v2/fs/list` 返回项的 `id`，创建/更新 ACL 时传 `vfs_node_id`。
+- [ ] 保留旧 `source_id + path` 提交流程作为兼容 fallback；但新 UI 不要把 path 当长期身份，rename/move 后只有 `vfs_node_id` 规则会跟随 node。
+- [ ] ACL 列表/详情类型接收可选 `vfs_node_id` 与 `virtual_path`；`virtual_path` 是创建/更新时快照，适合展示/审计，不适合作为长期身份。
+- [ ] 处理新增错误码 `VFS_NODE_NOT_FOUND`：所选 node 已删除或不可解析时提示重新选择路径。
+- [ ] 文件/VFS 页和挂载导航只展示后端 `/api/v2/fs/list` 返回的条目；不要用本地缓存补回后端已过滤的未授权节点或挂载点名称。
+
+#### 本次后端行为变化
+
+- `POST/PUT /api/v1/acl/rules` 新增可选 `vfs_node_id`；传入时后端解析当前 metadata VFS node，保存 node id、`virtual_path` 快照和 source/path 兼容快照。
+- 旧 `source_id + path` 创建方式仍可用；后端会 best-effort 解析 metadata node 并保存 `vfs_node_id`，解析不到时仍按 path 快照兼容。
+- 运行时 ACL 优先按 node/ancestor 判定：显式 node ACL 在 rename/move 后继续跟随同一 node；继承权限按当前父级重新计算。
+- `/api/v2/fs/list` / `/api/v2/fs/search` 服务端过滤未授权 metadata 节点，普通用户不会收到未授权节点名称或挂载点名称。
+- 同一最高优先级命中的规则内 deny 优先于 allow；既有 priority/order 语义保持。
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.4 ACL`、`3.14 统一虚拟目录树 V2` 和 `4.6 VFSItem`。

@@ -3016,6 +3016,434 @@ func TestACLAuthorizerPrefersVirtualPathRule(t *testing.T) {
 	}
 }
 
+func TestACLServiceCreateWithVFSNodeIDPersistsSnapshot(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	sourceRepo := gorm.NewSourceRepository(db)
+	userRepo := gorm.NewUserRepository(db)
+	aclRepo := gorm.NewACLRuleRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	metadataSvc := NewMetadataVFSService(nodeRepo, WithMetadataVFSTransactor(gorm.NewTransactor(db)))
+
+	source := createACLNodeFirstSourceForTest(t, sourceRepo, "/docs")
+	user := createACLNodeFirstUserForTest(t, userRepo, "acl-node-snapshot")
+	root, err := metadataSvc.EnsureRoot(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRoot() error = %v", err)
+	}
+	docs := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "docs",
+		Path:      "/docs",
+		Kind:      entity.VFSNodeKindMount,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	team := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &docs.ID,
+		Name:      "team",
+		Path:      "/docs/team",
+		Kind:      entity.VFSNodeKindDir,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+
+	svc := NewACLService(sourceRepo, userRepo, aclRepo, WithACLMetadataReader(metadataSvc))
+	created, err := svc.Create(ctx, appdto.CreateACLRuleRequest{
+		VFSNodeID:   &team.ID,
+		SubjectType: "user",
+		SubjectID:   user.ID,
+		Effect:      "allow",
+		Priority:    100,
+		Permissions: appdto.ACLPermissions{Read: true},
+	})
+	if err != nil {
+		t.Fatalf("Create(node-bound) error = %v", err)
+	}
+	if created.SourceID != source.ID || created.VFSNodeID == nil || *created.VFSNodeID != team.ID {
+		t.Fatalf("expected source/node snapshot, got %+v", created)
+	}
+	if created.Path != "/team" || created.VirtualPath != "/docs/team" {
+		t.Fatalf("expected inner/virtual snapshots, got %+v", created)
+	}
+	persisted, err := aclRepo.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID(created) error = %v", err)
+	}
+	if persisted.VFSNodeID == nil || *persisted.VFSNodeID != team.ID {
+		t.Fatalf("expected persisted vfs_node_id=%d, got %#v", team.ID, persisted)
+	}
+
+	compatCreated, err := svc.Create(ctx, appdto.CreateACLRuleRequest{
+		SourceID:    source.ID,
+		Path:        "/team",
+		SubjectType: "user",
+		SubjectID:   user.ID,
+		Effect:      "allow",
+		Priority:    90,
+		Permissions: appdto.ACLPermissions{Read: true},
+	})
+	if err != nil {
+		t.Fatalf("Create(source/path compat) error = %v", err)
+	}
+	if compatCreated.VFSNodeID == nil || *compatCreated.VFSNodeID != team.ID {
+		t.Fatalf("expected source/path create to resolve vfs_node_id=%d, got %+v", team.ID, compatCreated)
+	}
+}
+
+func TestACLAuthorizerNodeFirstFollowsNodeAndRecomputesInheritance(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	configRepo := gorm.NewSystemConfigRepository(db)
+	sourceRepo := gorm.NewSourceRepository(db)
+	userRepo := gorm.NewUserRepository(db)
+	aclRepo := gorm.NewACLRuleRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	metadataSvc := NewMetadataVFSService(nodeRepo, WithMetadataVFSTransactor(gorm.NewTransactor(db)))
+
+	if err := configRepo.Upsert(ctx, aclNodeFirstSystemConfigForTest()); err != nil {
+		t.Fatalf("configRepo.Upsert() error = %v", err)
+	}
+	source := createACLNodeFirstSourceForTest(t, sourceRepo, "/")
+	user := createACLNodeFirstUserForTest(t, userRepo, "acl-node-reader")
+	root, err := metadataSvc.EnsureRoot(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRoot() error = %v", err)
+	}
+	root.SourceID = &source.ID
+	if err := nodeRepo.Update(ctx, root); err != nil {
+		t.Fatalf("nodeRepo.Update(root source) error = %v", err)
+	}
+	team := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "team",
+		Path:      "/team",
+		Kind:      entity.VFSNodeKindDir,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	archive := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "archive",
+		Path:      "/archive",
+		Kind:      entity.VFSNodeKindDir,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	secret := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &team.ID,
+		Name:      "secret.txt",
+		Path:      "/team/secret.txt",
+		Kind:      entity.VFSNodeKindFile,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	inherited := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &team.ID,
+		Name:      "inherited.txt",
+		Path:      "/team/inherited.txt",
+		Kind:      entity.VFSNodeKindFile,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+
+	createACLRuleEntityForTest(t, aclRepo, &entity.ACLRule{
+		SourceID:          source.ID,
+		VFSNodeID:         &team.ID,
+		Path:              "/team",
+		VirtualPath:       "/team",
+		SubjectType:       "user",
+		SubjectID:         user.ID,
+		Effect:            "allow",
+		Priority:          100,
+		Read:              true,
+		InheritToChildren: true,
+	})
+	createACLRuleEntityForTest(t, aclRepo, &entity.ACLRule{
+		SourceID:    source.ID,
+		VFSNodeID:   &secret.ID,
+		Path:        "/team/secret.txt",
+		VirtualPath: "/team/secret.txt",
+		SubjectType: "user",
+		SubjectID:   user.ID,
+		Effect:      "allow",
+		Priority:    100,
+		Read:        true,
+	})
+
+	authorizer := NewACLAuthorizer(configRepo, aclRepo, sourceRepo, WithACLAuthorizerMetadataReader(metadataSvc))
+	authCtx := security.WithRequestAuth(ctx, security.RequestAuth{
+		UserID:  user.ID,
+		RoleKey: permission.RoleUser,
+		Status:  permission.StatusActive,
+	})
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/team/inherited.txt", ACLActionRead); err != nil {
+		t.Fatalf("expected inherited node under /team to be readable, got %v", err)
+	}
+	if _, _, err := metadataSvc.Move(ctx, MetadataVFSMoveRequest{Path: inherited.Path, TargetParentPath: archive.Path}); err != nil {
+		t.Fatalf("Move(inherited to archive) error = %v", err)
+	}
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/archive/inherited.txt", ACLActionRead); !errors.Is(err, ErrACLDenied) {
+		t.Fatalf("expected moved child to lose inherited ACL, got %v", err)
+	}
+
+	if _, _, err := metadataSvc.Move(ctx, MetadataVFSMoveRequest{Path: secret.Path, TargetParentPath: archive.Path}); err != nil {
+		t.Fatalf("Move(secret to archive) error = %v", err)
+	}
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/archive/secret.txt", ACLActionRead); err != nil {
+		t.Fatalf("expected explicit node-bound ACL to follow moved node, got %v", err)
+	}
+	updatedSecret, err := metadataSvc.ResolveNode(ctx, "/archive/secret.txt")
+	if err != nil {
+		t.Fatalf("ResolveNode(moved secret) error = %v", err)
+	}
+	createACLRuleEntityForTest(t, aclRepo, &entity.ACLRule{
+		SourceID:    source.ID,
+		VFSNodeID:   &updatedSecret.ID,
+		Path:        "/archive/secret.txt",
+		VirtualPath: "/archive/secret.txt",
+		SubjectType: "user",
+		SubjectID:   user.ID,
+		Effect:      "deny",
+		Priority:    100,
+		Read:        true,
+	})
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/archive/secret.txt", ACLActionRead); !errors.Is(err, ErrACLDenied) {
+		t.Fatalf("expected same-priority deny to beat allow, got %v", err)
+	}
+}
+
+func TestACLAuthorizerNodeBoundRuleDoesNotAllowOldSnapshotAfterRename(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	configRepo := gorm.NewSystemConfigRepository(db)
+	sourceRepo := gorm.NewSourceRepository(db)
+	userRepo := gorm.NewUserRepository(db)
+	aclRepo := gorm.NewACLRuleRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	metadataSvc := NewMetadataVFSService(nodeRepo, WithMetadataVFSTransactor(gorm.NewTransactor(db)))
+
+	if err := configRepo.Upsert(ctx, aclNodeFirstSystemConfigForTest()); err != nil {
+		t.Fatalf("configRepo.Upsert() error = %v", err)
+	}
+	source := createACLNodeFirstSourceForTest(t, sourceRepo, "/")
+	user := createACLNodeFirstUserForTest(t, userRepo, "acl-node-rename-reader")
+	root, err := metadataSvc.EnsureRoot(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRoot() error = %v", err)
+	}
+	root.SourceID = &source.ID
+	if err := nodeRepo.Update(ctx, root); err != nil {
+		t.Fatalf("nodeRepo.Update(root source) error = %v", err)
+	}
+	file := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "old.txt",
+		Path:      "/old.txt",
+		Kind:      entity.VFSNodeKindFile,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	createACLRuleEntityForTest(t, aclRepo, &entity.ACLRule{
+		SourceID:    source.ID,
+		VFSNodeID:   &file.ID,
+		Path:        "/old.txt",
+		VirtualPath: "/old.txt",
+		SubjectType: "user",
+		SubjectID:   user.ID,
+		Effect:      "allow",
+		Priority:    100,
+		Read:        true,
+	})
+
+	authorizer := NewACLAuthorizer(configRepo, aclRepo, sourceRepo, WithACLAuthorizerMetadataReader(metadataSvc))
+	authCtx := security.WithRequestAuth(ctx, security.RequestAuth{
+		UserID:  user.ID,
+		RoleKey: permission.RoleUser,
+		Status:  permission.StatusActive,
+	})
+	if _, _, err := metadataSvc.Rename(ctx, MetadataVFSRenameRequest{Path: "/old.txt", NewName: "new.txt"}); err != nil {
+		t.Fatalf("Rename(old.txt) error = %v", err)
+	}
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/new.txt", ACLActionRead); err != nil {
+		t.Fatalf("expected node-bound ACL to follow renamed node, got %v", err)
+	}
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/old.txt", ACLActionRead); !errors.Is(err, ErrACLDenied) {
+		t.Fatalf("expected node-bound ACL not to allow old path snapshot after rename, got %v", err)
+	}
+}
+
+func TestACLAuthorizerPathFallbackRemainsSnapshotBound(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	configRepo := gorm.NewSystemConfigRepository(db)
+	sourceRepo := gorm.NewSourceRepository(db)
+	userRepo := gorm.NewUserRepository(db)
+	aclRepo := gorm.NewACLRuleRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	metadataSvc := NewMetadataVFSService(nodeRepo, WithMetadataVFSTransactor(gorm.NewTransactor(db)))
+
+	if err := configRepo.Upsert(ctx, aclNodeFirstSystemConfigForTest()); err != nil {
+		t.Fatalf("configRepo.Upsert() error = %v", err)
+	}
+	source := createACLNodeFirstSourceForTest(t, sourceRepo, "/")
+	user := createACLNodeFirstUserForTest(t, userRepo, "acl-path-reader")
+	root, err := metadataSvc.EnsureRoot(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRoot() error = %v", err)
+	}
+	root.SourceID = &source.ID
+	if err := nodeRepo.Update(ctx, root); err != nil {
+		t.Fatalf("nodeRepo.Update(root source) error = %v", err)
+	}
+	folder := createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "path-only",
+		Path:      "/path-only",
+		Kind:      entity.VFSNodeKindDir,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	_ = createACLNodeFirstNodeForTest(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &folder.ID,
+		Name:      "file.txt",
+		Path:      "/path-only/file.txt",
+		Kind:      entity.VFSNodeKindFile,
+		SourceID:  &source.ID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+	})
+	createACLRuleEntityForTest(t, aclRepo, &entity.ACLRule{
+		SourceID:          source.ID,
+		Path:              "/path-only",
+		VirtualPath:       "/path-only",
+		SubjectType:       "user",
+		SubjectID:         user.ID,
+		Effect:            "allow",
+		Priority:          100,
+		Read:              true,
+		InheritToChildren: true,
+	})
+
+	authorizer := NewACLAuthorizer(configRepo, aclRepo, sourceRepo, WithACLAuthorizerMetadataReader(metadataSvc))
+	authCtx := security.WithRequestAuth(ctx, security.RequestAuth{
+		UserID:  user.ID,
+		RoleKey: permission.RoleUser,
+		Status:  permission.StatusActive,
+	})
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/path-only/file.txt", ACLActionRead); err != nil {
+		t.Fatalf("expected path fallback rule to allow original snapshot, got %v", err)
+	}
+	if _, _, err := metadataSvc.Rename(ctx, MetadataVFSRenameRequest{Path: "/path-only", NewName: "renamed"}); err != nil {
+		t.Fatalf("Rename(path-only) error = %v", err)
+	}
+	if err := authorizer.AuthorizePath(authCtx, source.ID, "/renamed/file.txt", ACLActionRead); !errors.Is(err, ErrACLDenied) {
+		t.Fatalf("expected path fallback not to follow renamed node, got %v", err)
+	}
+}
+
+func createACLNodeFirstSourceForTest(t *testing.T, sourceRepo domainrepo.SourceRepository, mountPath string) *entity.StorageSource {
+	t.Helper()
+	configJSON, err := marshalLocalSourceConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	slug := "acl-node" + strings.ReplaceAll(strings.Trim(mountPath, "/"), "/", "-")
+	if slug == "acl-node" {
+		slug = "acl-node-root"
+	}
+	source := &entity.StorageSource{
+		Name:            slug,
+		DriverType:      "local",
+		Status:          "online",
+		IsEnabled:       true,
+		IsWebDAVExposed: false,
+		WebDAVReadOnly:  true,
+		WebDAVSlug:      slug,
+		MountPath:       mountPath,
+		RootPath:        "/",
+		SortOrder:       0,
+		ConfigJSON:      configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create(%s) error = %v", mountPath, err)
+	}
+	return source
+}
+
+func createACLNodeFirstUserForTest(t *testing.T, userRepo domainrepo.UserRepository, username string) *entity.User {
+	t.Helper()
+	user := &entity.User{
+		Username:     username,
+		Email:        username + "@example.com",
+		PasswordHash: "hashed",
+		RoleKey:      permission.RoleUser,
+		Status:       permission.StatusActive,
+		TokenVersion: 0,
+	}
+	if err := userRepo.Create(context.Background(), user); err != nil {
+		t.Fatalf("userRepo.Create(%s) error = %v", username, err)
+	}
+	return user
+}
+
+func createACLNodeFirstNodeForTest(t *testing.T, nodeRepo domainrepo.VFSNodeRepository, node *entity.VFSNode) *entity.VFSNode {
+	t.Helper()
+	now := time.Now().UTC()
+	if node.SyncState == "" {
+		node.SyncState = entity.VFSNodeSyncStateIndexed
+	}
+	if node.CreatedAt.IsZero() {
+		node.CreatedAt = now
+	}
+	if node.UpdatedAt.IsZero() {
+		node.UpdatedAt = now
+	}
+	if node.IndexedAt == nil {
+		node.IndexedAt = &now
+	}
+	if err := nodeRepo.Create(context.Background(), node); err != nil {
+		t.Fatalf("nodeRepo.Create(%s) error = %v", node.Path, err)
+	}
+	return node
+}
+
+func createACLRuleEntityForTest(t *testing.T, aclRepo domainrepo.ACLRuleRepository, rule *entity.ACLRule) *entity.ACLRule {
+	t.Helper()
+	now := time.Now().UTC()
+	if rule.CreatedAt.IsZero() {
+		rule.CreatedAt = now
+	}
+	if rule.UpdatedAt.IsZero() {
+		rule.UpdatedAt = now
+	}
+	if err := aclRepo.Create(context.Background(), rule); err != nil {
+		t.Fatalf("aclRepo.Create(%s) error = %v", rule.VirtualPath, err)
+	}
+	return rule
+}
+
+func aclNodeFirstSystemConfigForTest() *entity.SystemConfig {
+	return &entity.SystemConfig{
+		SiteName:         "测试",
+		MultiUserEnabled: true,
+		MaxUploadSize:    1024,
+		DefaultChunkSize: 256,
+		WebDAVEnabled:    true,
+		WebDAVPrefix:     "/dav",
+		Theme:            "system",
+		Language:         "zh-CN",
+		TimeZone:         "Asia/Shanghai",
+	}
+}
+
 func newSourceServiceWithS3Fixture(t *testing.T) *SourceService {
 	t.Helper()
 

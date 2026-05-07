@@ -45,9 +45,19 @@ func (r *ACLRuleRepository) FindByID(ctx context.Context, id uint) (*entity.ACLR
 
 // List 返回筛选后的规则列表。
 func (r *ACLRuleRepository) List(ctx context.Context, filter domainrepo.ACLRuleFilter) ([]*entity.ACLRule, error) {
-	query := dbFor(ctx, r.db).Model(&ACLRuleModel{}).Where("source_id = ?", filter.SourceID)
+	query := dbFor(ctx, r.db).Model(&ACLRuleModel{})
+	if filter.AnySource {
+		// no source_id predicate
+	} else if filter.IncludeGlobal && filter.SourceID != 0 {
+		query = query.Where("source_id IN ?", []uint{filter.SourceID, 0})
+	} else {
+		query = query.Where("source_id = ?", filter.SourceID)
+	}
 	if path := strings.TrimSpace(filter.Path); path != "" {
 		query = query.Where("path = ?", path)
+	}
+	if filter.VFSNodeID != nil {
+		query = query.Where("vfs_node_id = ?", *filter.VFSNodeID)
 	}
 
 	var models []ACLRuleModel
@@ -95,6 +105,7 @@ func aclRuleModelFromEntity(rule *entity.ACLRule) *ACLRuleModel {
 	return &ACLRuleModel{
 		ID:                rule.ID,
 		SourceID:          rule.SourceID,
+		VFSNodeID:         rule.VFSNodeID,
 		Path:              rule.Path,
 		VirtualPath:       rule.VirtualPath,
 		SubjectType:       rule.SubjectType,
@@ -115,6 +126,7 @@ func aclRuleEntityFromModel(model *ACLRuleModel) *entity.ACLRule {
 	return &entity.ACLRule{
 		ID:                model.ID,
 		SourceID:          model.SourceID,
+		VFSNodeID:         model.VFSNodeID,
 		Path:              model.Path,
 		VirtualPath:       model.VirtualPath,
 		SubjectType:       model.SubjectType,

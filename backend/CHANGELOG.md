@@ -14,6 +14,14 @@
 
 ## 2026-05-08
 
+### ACL node-first 阶段
+
+- ACL 规则新增可选 `vfs_node_id`；GORM model、domain entity、DTO、repo filter 与 API 响应均可持久化/暴露 node 绑定关系。
+- `POST/PUT /api/v1/acl/rules` 传入 `vfs_node_id` 时优先解析 metadata VFS node，保存 node id、`virtual_path` 快照和 source/path 兼容快照；旧 `source_id + path` 创建方式继续可用，并会 best-effort 解析保存 `vfs_node_id`。
+- `ACLAuthorizer` 接入 metadata VFS reader，运行时优先按 node/ancestor 判定；显式 node ACL 在 rename/move 后跟随同一 node，继承权限按当前父级重新计算，path 仅作为旧规则/未索引兼容 fallback。
+- `/api/v2/fs/list` / `/api/v2/fs/search` 对 metadata VFS item 做 node-aware ACL 过滤；普通用户不会收到未授权节点名称或未授权挂载点名称；同一最高优先级命中时 deny 优先于 allow。
+- 测试覆盖 node-bound ACL 持久化、source/path best-effort 解析、rename/move 跟随与继承重算、path fallback、deny 优先，以及根目录列表不泄露未授权挂载点；文档同步更新 `backend/API_CONTRACT.md` 与固定 `backend/FRONTEND_HANDOFF.md`。
+
 ### Share high-concurrency node-first 阶段
 
 - 公开分享打开改为优先按 `target_vfs_node_id` 解析 metadata VFS node；rename/move 后文件分享下载和目录分享列表使用 node 当前 path，旧 path/source 快照仅作为缺少 node id 时的兼容 fallback。

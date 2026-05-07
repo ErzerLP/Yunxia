@@ -110,6 +110,8 @@ func (h *ACLHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusBadRequest, "ACL_PERMISSIONS_INVALID", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrPathInvalid):
 		httpresp.Error(c, http.StatusBadRequest, "PATH_INVALID", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrFileNotFound):
+		httpresp.Error(c, http.StatusNotFound, "VFS_NODE_NOT_FOUND", err.Error(), nil)
 	default:
 		httpresp.Error(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

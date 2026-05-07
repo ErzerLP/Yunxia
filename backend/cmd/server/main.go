@@ -178,7 +178,16 @@ func main() {
 	}
 	systemServiceOptions = append(systemServiceOptions, storageDrivers.SystemServiceOptions()...)
 	systemSvc := appsvc.NewSystemService(systemConfigRepo, options, systemServiceOptions...)
-	aclAuthorizer := appsvc.NewACLAuthorizer(systemConfigRepo, aclRepo, sourceRepo)
+	metadataVFSReader := appsvc.NewMetadataVFSService(
+		vfsNodeRepo,
+		appsvc.WithMetadataVFSTransactor(transactor),
+	)
+	aclAuthorizer := appsvc.NewACLAuthorizer(
+		systemConfigRepo,
+		aclRepo,
+		sourceRepo,
+		appsvc.WithACLAuthorizerMetadataReader(metadataVFSReader),
+	)
 	sourceServiceOptions := []appsvc.SourceServiceOption{
 		appsvc.WithSourceAuditRecorder(auditRecorder),
 		appsvc.WithSourceACLAuthorizer(aclAuthorizer),
@@ -208,7 +217,13 @@ func main() {
 		)
 	}
 	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
-	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
+	aclSvc := appsvc.NewACLService(
+		sourceRepo,
+		userRepo,
+		aclRepo,
+		appsvc.WithACLAuditRecorder(auditRecorder),
+		appsvc.WithACLMetadataReader(metadataVFSReader),
+	)
 	fileServiceOptions := []appsvc.FileServiceOption{
 		appsvc.WithFileAuditRecorder(auditRecorder),
 		appsvc.WithFileACLAuthorizer(aclAuthorizer),
@@ -222,10 +237,6 @@ func main() {
 	}
 	trashServiceOptions = append(trashServiceOptions, storageDrivers.TrashServiceOptions()...)
 	trashSvc := appsvc.NewTrashService(sourceRepo, trashRepo, trashServiceOptions...)
-	metadataVFSReader := appsvc.NewMetadataVFSService(
-		vfsNodeRepo,
-		appsvc.WithMetadataVFSTransactor(transactor),
-	)
 	metadataVFSSyncOptions := []appsvc.MetadataVFSSyncServiceOption{
 		appsvc.WithMetadataVFSSyncMountRepository(vfsMountRepo),
 		appsvc.WithMetadataVFSSyncTransactor(transactor),

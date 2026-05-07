@@ -6,6 +6,7 @@ import "time"
 type ACLRule struct {
 	ID                uint
 	SourceID          uint
+	VFSNodeID         *uint
 	Path              string
 	VirtualPath       string
 	SubjectType       string

@@ -343,9 +343,9 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 
 | 方法 | 路径 | 权限 | 主要输入 | 成功返回 |
 |---|---|---|---|---|
-| GET | `/acl/rules` | `acl.read` | query: `source_id,path` | 200，`{items[]}` |
-| POST | `/acl/rules` | `acl.manage` | `source_id,path,subject_type,subject_id,effect,priority,permissions,inherit_to_children` | 201，`{rule}` |
-| PUT | `/acl/rules/:id` | `acl.manage` | `path,subject_type,subject_id,effect,priority,permissions,inherit_to_children` | 200，`{rule}` |
+| GET | `/acl/rules` | `acl.read` | query: `source_id,path,vfs_node_id`；`source_id` 或 `vfs_node_id` 至少一个 | 200，`{items[]}` |
+| POST | `/acl/rules` | `acl.manage` | `vfs_node_id?` 优先；兼容 `source_id,path`；另含 `subject_type,subject_id,effect,priority,permissions,inherit_to_children` | 201，`{rule}` |
+| PUT | `/acl/rules/:id` | `acl.manage` | `vfs_node_id?` 优先；兼容 `source_id?,path`；另含 `subject_type,subject_id,effect,priority,permissions,inherit_to_children` | 200，`{rule}` |
 | DELETE | `/acl/rules/:id` | `acl.manage` | - | 200，`{}` |
 
 `permissions` 结构：
@@ -358,6 +358,15 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
   "share": false
 }
 ```
+
+`ACLRuleView` 关键字段：
+
+- `vfs_node_id`：可选。存在时为 node-first 规则，运行时优先按 VFS node 当前身份匹配；`inherit_to_children=true` 时按当前父子关系继承，rename/move 后会重新计算。
+- `virtual_path`：创建/更新时保存的 VFS path 快照，用于展示、审计和缺少 node id / metadata reader 时的兼容 fallback。
+- `source_id,path`：保留旧 source 内路径创建方式。后端会 best-effort 解析对应 metadata VFS node，成功时内部保存 `vfs_node_id + virtual_path`；解析失败但 path 合法时仍按旧路径快照规则保存。
+- 显式绑定 node 的 ACL 在 node rename/move 后继续跟随该 node；仅 path-bound 的旧规则不跟随 rename/move。
+- 同一最高优先级命中的规则内 `deny` 优先于 `allow`；不同优先级仍按 `priority desc, id asc` 的既有顺序判定。
+- `/api/v2/fs/list` / `/api/v2/fs/search` 在服务端按 ACL 过滤 metadata VFS 节点；普通用户不会收到未授权节点名称或未授权挂载点名称。
 
 ### 3.5 sources（`/api/v1`）
 
@@ -1206,6 +1215,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 补充：
 
 - `VFSItem` 关键字段：
+  - `id`: metadata VFS node id；旧式/未索引条目可能省略
   - `entry_kind`: `file` / `directory`
   - `is_virtual`
   - `is_mount_point`
@@ -1447,6 +1457,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 
 ```json
 {
+  "id": 123,
   "name": "team",
   "path": "/docs/team",
   "parent_path": "/docs",
@@ -1528,6 +1539,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `USER_ROLE_INVALID`
 - `USER_STATUS_INVALID`
 - `ACL_RULE_NOT_FOUND`
+- `VFS_NODE_NOT_FOUND`
 - `ACL_SUBJECT_TYPE_INVALID`
 - `ACL_EFFECT_INVALID`
 - `ACL_PERMISSIONS_INVALID`
@@ -1626,16 +1638,17 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 9. 离线下载默认先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3 / PikPak；但目标解析到 PikPak source 时会优先使用 `pikpak_native` provider 原生离线下载，完成后文件已在 PikPak 中，不再走 staging。
 10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
 11. `/api/v2/fs/list` / `/api/v2/fs/search` 已切到 metadata VFS 读模型，并会按 ACL 过滤挂载点、纯虚拟父目录和真实子项；前端不要自行展示后端未返回的文件。
-12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
-13. 分享公开下载现在先 302 到 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`；前端/浏览器直接跳转即可，不要用 JSON client 解析，也不要把创建时 `target_virtual_path` 当成 rename/move 后的真实路径。
-14. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
-15. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
-16. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
-17. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
-18. RSS 条目批量动作返回 `RSSItemBatchActionResponse.items[]`，每项都有 `success` 与可选 `item/error_code/error_message`；不要按单条接口的 `{item}` 包装解析，也不要因为 HTTP 200/202 就假设全部成功。
-19. RSS 订阅批量启停返回 `RSSSubscriptionBatchStateResponse.items[]`，每项都有 `subscription_id/success` 与可选 `subscription/error_code/error_message`；复制订阅返回 201 `{subscription}`，不会修改原订阅。
-20. RSS 导入返回 `RSSImportResponse`，HTTP 200 只代表请求已处理；前端必须检查 `sources.items[]`、`subscriptions.items[]` 和 `failed` 计数。`dry_run=true` 的 `created` 是“将创建”数量，不代表已落库。
-21. 通知事件 HTTP 200/202 只代表请求处理成功；Webhook 投递结果要看 `NotificationEventView.status`。`event_types=[]` 表示通道接收全部支持事件。
+12. ACL 配置页优先使用 `/api/v2/fs/list` 返回的 `VFSItem.id` 作为 `vfs_node_id` 创建规则；旧 `source_id + path` 仍兼容但只作为 path 快照 fallback。
+13. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
+14. 分享公开下载现在先 302 到 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`；前端/浏览器直接跳转即可，不要用 JSON client 解析，也不要把创建时 `target_virtual_path` 当成 rename/move 后的真实路径。
+15. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
+16. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
+17. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
+18. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+19. RSS 条目批量动作返回 `RSSItemBatchActionResponse.items[]`，每项都有 `success` 与可选 `item/error_code/error_message`；不要按单条接口的 `{item}` 包装解析，也不要因为 HTTP 200/202 就假设全部成功。
+20. RSS 订阅批量启停返回 `RSSSubscriptionBatchStateResponse.items[]`，每项都有 `subscription_id/success` 与可选 `subscription/error_code/error_message`；复制订阅返回 201 `{subscription}`，不会修改原订阅。
+21. RSS 导入返回 `RSSImportResponse`，HTTP 200 只代表请求已处理；前端必须检查 `sources.items[]`、`subscriptions.items[]` 和 `failed` 计数。`dry_run=true` 的 `created` 是“将创建”数量，不代表已落库。
+22. 通知事件 HTTP 200/202 只代表请求处理成功；Webhook 投递结果要看 `NotificationEventView.status`。`event_types=[]` 表示通道接收全部支持事件。
 
 ## 7. 前端常见页面调用流程
 

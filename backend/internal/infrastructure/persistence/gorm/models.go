@@ -304,6 +304,7 @@ type TrashItemModel struct {
 type ACLRuleModel struct {
 	ID                uint      `gorm:"primaryKey"`
 	SourceID          uint      `gorm:"index;not null"`
+	VFSNodeID         *uint     `gorm:"column:vfs_node_id;index"`
 	Path              string    `gorm:"size:1024;index;not null"`
 	VirtualPath       string    `gorm:"size:1024;index;not null;default:''"`
 	SubjectType       string    `gorm:"size:32;not null"`

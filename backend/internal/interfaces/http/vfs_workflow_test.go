@@ -583,6 +583,98 @@ func TestVFSRootListHidesUnauthorizedVirtualMountParents(t *testing.T) {
 	}
 }
 
+func TestVFSRootListNodeBoundACLDoesNotLeakUnauthorizedMounts(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, _ := bootstrapAdmin(t, engine)
+
+	_ = createLocalSourceWithMountForTest(t, engine, adminToken, "acl-node-allowed", "/acl-node-allowed")
+	_ = createLocalSourceWithMountForTest(t, engine, adminToken, "acl-node-secret", "/acl-node-secret")
+
+	rec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/", nil, adminToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin root list expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	adminListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	allowedNodeID := requireVFSItemIDByName(t, adminListed.Items, "acl-node-allowed")
+
+	enableMultiUserForTest(t, engine, adminToken)
+	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "node-acl-reader", "strong-password-123")
+	rec = performRequest(t, engine, http.MethodPost, "/api/v1/acl/rules", map[string]any{
+		"vfs_node_id":         allowedNodeID,
+		"subject_type":        "user",
+		"subject_id":          userID,
+		"effect":              "allow",
+		"priority":            100,
+		"permissions":         map[string]any{"read": true, "write": false, "delete": false, "share": false},
+		"inherit_to_children": true,
+	}, adminToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create node-bound acl expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	created := decodeEnvelope[map[string]any](t, rec.Body.Bytes())
+	rule := created["rule"].(map[string]any)
+	if int(rule["vfs_node_id"].(float64)) != allowedNodeID {
+		t.Fatalf("expected response vfs_node_id=%d, got %+v", allowedNodeID, rule)
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/", nil, userToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user root list expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	names := collectMapNames(listed.Items)
+	if !containsString(names, "acl-node-allowed") {
+		t.Fatalf("expected authorized mount visible, got %+v", listed.Items)
+	}
+	if containsString(names, "acl-node-secret") || strings.Contains(rec.Body.String(), "acl-node-secret") {
+		t.Fatalf("unauthorized mount name leaked in root list: %s", rec.Body.String())
+	}
+}
+
+func TestVFSRootListDenyPreventsPureVirtualParentLeak(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, _ := bootstrapAdmin(t, engine)
+
+	deniedSourceID := createLocalSourceWithMountForTest(t, engine, adminToken, "acl-deny-source", "/acl-deny-parent/secret")
+	rec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/", nil, adminToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin root list expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	adminListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	denyParentNodeID := requireVFSItemIDByName(t, adminListed.Items, "acl-deny-parent")
+
+	enableMultiUserForTest(t, engine, adminToken)
+	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "deny-parent-reader", "strong-password-123")
+	rec = performRequest(t, engine, http.MethodPost, "/api/v1/acl/rules", map[string]any{
+		"vfs_node_id":         denyParentNodeID,
+		"subject_type":        "user",
+		"subject_id":          userID,
+		"effect":              "allow",
+		"priority":            100,
+		"permissions":         map[string]any{"read": true, "write": false, "delete": false, "share": false},
+		"inherit_to_children": true,
+	}, adminToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create parent allow acl expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	createACLRuleForTest(t, engine, adminToken, deniedSourceID, userID, "/", map[string]any{
+		"read":   true,
+		"write":  false,
+		"delete": false,
+		"share":  false,
+	}, "deny", 200, true)
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/", nil, userToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("user root list expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	names := collectMapNames(listed.Items)
+	if containsString(names, "acl-deny-parent") || strings.Contains(rec.Body.String(), "acl-deny-parent") {
+		t.Fatalf("deny-shadowed pure virtual parent leaked in root list: %s", rec.Body.String())
+	}
+}
+
 func TestVFSMkdirRejectsPureVirtualParent(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, _ := bootstrapAdmin(t, engine)
@@ -690,4 +782,20 @@ func collectMapNames(items []map[string]any) []string {
 		names = append(names, item["name"].(string))
 	}
 	return names
+}
+
+func requireVFSItemIDByName(t *testing.T, items []map[string]any, name string) int {
+	t.Helper()
+	for _, item := range items {
+		if item["name"] != name {
+			continue
+		}
+		rawID, ok := item["id"].(float64)
+		if !ok || rawID <= 0 {
+			t.Fatalf("expected item %s to expose positive id, got %+v", name, item)
+		}
+		return int(rawID)
+	}
+	t.Fatalf("item %s not found in %+v", name, items)
+	return 0
 }

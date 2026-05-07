@@ -568,7 +568,16 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithSystemStatsDependencies(userRepo, sourceRepo, gormrepo.NewTaskRepository(db)),
 		appsvc.WithSystemStatsFileDriver("s3", fakeS3),
 	)
-	aclAuthorizer := appsvc.NewACLAuthorizer(configRepo, aclRepo, sourceRepo)
+	metadataVFSReader := appsvc.NewMetadataVFSService(
+		vfsNodeRepo,
+		appsvc.WithMetadataVFSTransactor(transactor),
+	)
+	aclAuthorizer := appsvc.NewACLAuthorizer(
+		configRepo,
+		aclRepo,
+		sourceRepo,
+		appsvc.WithACLAuthorizerMetadataReader(metadataVFSReader),
+	)
 	sourceSvc := appsvc.NewSourceService(
 		sourceRepo,
 		configRepo,
@@ -579,7 +588,13 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithSourceTransactor(transactor),
 	)
 	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
-	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
+	aclSvc := appsvc.NewACLService(
+		sourceRepo,
+		userRepo,
+		aclRepo,
+		appsvc.WithACLAuditRecorder(auditRecorder),
+		appsvc.WithACLMetadataReader(metadataVFSReader),
+	)
 	fileSvc := appsvc.NewFileService(
 		sourceRepo,
 		fileAccessSvc,
@@ -596,10 +611,6 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithTrashAuditRecorder(auditRecorder),
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashFileDriver("s3", fakeS3),
-	)
-	metadataVFSReader := appsvc.NewMetadataVFSService(
-		vfsNodeRepo,
-		appsvc.WithMetadataVFSTransactor(transactor),
 	)
 	metadataVFSSyncSvc := appsvc.NewMetadataVFSSyncService(
 		vfsNodeRepo,

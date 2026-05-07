@@ -47,6 +47,13 @@ func WithACLAuditRecorder(recorder *appaudit.Recorder) ACLServiceOption {
 	}
 }
 
+// WithACLMetadataReader 为 ACLService 注入 metadata VFS 读模型。
+func WithACLMetadataReader(reader metadataVFSReader) ACLServiceOption {
+	return func(s *ACLService) {
+		s.metadataReader = reader
+	}
+}
+
 // WithSystemAuditRecorder 为 SystemService 注入审计记录器。
 func WithSystemAuditRecorder(recorder *appaudit.Recorder) SystemServiceOption {
 	return func(s *SystemService) {
@@ -249,6 +256,8 @@ func sourceErrorCode(err error) string {
 		return "METADATA_VFS_MOUNT_SYNC_FAILED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
+	case errors.Is(err, ErrFileNotFound):
+		return "VFS_NODE_NOT_FOUND"
 	default:
 		return "INTERNAL_ERROR"
 	}
@@ -261,6 +270,7 @@ func aclRuleAuditView(rule *entity.ACLRule) map[string]any {
 	return map[string]any{
 		"id":                  rule.ID,
 		"source_id":           rule.SourceID,
+		"vfs_node_id":         rule.VFSNodeID,
 		"path":                rule.Path,
 		"virtual_path":        rule.VirtualPath,
 		"subject_type":        rule.SubjectType,
@@ -287,6 +297,8 @@ func aclErrorCode(err error) string {
 		return "ACL_PERMISSIONS_INVALID"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
+	case errors.Is(err, ErrFileNotFound):
+		return "VFS_NODE_NOT_FOUND"
 	default:
 		return "INTERNAL_ERROR"
 	}

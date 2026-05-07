@@ -8,8 +8,11 @@ import (
 
 // ACLRuleFilter 定义 ACL 规则查询条件。
 type ACLRuleFilter struct {
-	SourceID uint
-	Path     string
+	SourceID      uint
+	Path          string
+	VFSNodeID     *uint
+	IncludeGlobal bool
+	AnySource     bool
 }
 
 // ACLRuleRepository 定义 ACL 规则持久化能力。

@@ -10,14 +10,16 @@ type ACLPermissions struct {
 
 // ACLRuleListQuery 表示 ACL 规则列表查询。
 type ACLRuleListQuery struct {
-	SourceID uint   `form:"source_id" binding:"required"`
-	Path     string `form:"path"`
+	SourceID  uint   `form:"source_id"`
+	VFSNodeID *uint  `form:"vfs_node_id"`
+	Path      string `form:"path"`
 }
 
 // ACLRuleView 表示 ACL 规则响应结构。
 type ACLRuleView struct {
 	ID                uint           `json:"id"`
 	SourceID          uint           `json:"source_id"`
+	VFSNodeID         *uint          `json:"vfs_node_id,omitempty"`
 	Path              string         `json:"path"`
 	VirtualPath       string         `json:"virtual_path,omitempty"`
 	SubjectType       string         `json:"subject_type"`
@@ -35,8 +37,9 @@ type ACLRuleListResponse struct {
 
 // CreateACLRuleRequest 表示创建 ACL 规则请求。
 type CreateACLRuleRequest struct {
-	SourceID          uint           `json:"source_id" binding:"required"`
-	Path              string         `json:"path" binding:"required"`
+	SourceID          uint           `json:"source_id"`
+	VFSNodeID         *uint          `json:"vfs_node_id"`
+	Path              string         `json:"path"`
 	SubjectType       string         `json:"subject_type" binding:"required"`
 	SubjectID         uint           `json:"subject_id" binding:"required"`
 	Effect            string         `json:"effect" binding:"required"`
@@ -47,7 +50,9 @@ type CreateACLRuleRequest struct {
 
 // UpdateACLRuleRequest 表示更新 ACL 规则请求。
 type UpdateACLRuleRequest struct {
-	Path              string         `json:"path" binding:"required"`
+	SourceID          uint           `json:"source_id"`
+	VFSNodeID         *uint          `json:"vfs_node_id"`
+	Path              string         `json:"path"`
 	SubjectType       string         `json:"subject_type" binding:"required"`
 	SubjectID         uint           `json:"subject_id" binding:"required"`
 	Effect            string         `json:"effect" binding:"required"`
