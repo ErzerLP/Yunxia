@@ -62,6 +62,80 @@ type StorageSourceModel struct {
 	UpdatedAt       time.Time `gorm:"not null"`
 }
 
+// VFSNodeModel 表示元数据化 VFS 控制面节点表。
+type VFSNodeModel struct {
+	ID               uint      `gorm:"primaryKey"`
+	ParentID         *uint     `gorm:"index;uniqueIndex:idx_vfs_node_parent_name_active,priority:1,where:is_deleted = false"`
+	Name             string    `gorm:"size:255;not null;uniqueIndex:idx_vfs_node_parent_name_active,priority:2,where:is_deleted = false"`
+	Path             string    `gorm:"size:1024;index;not null;uniqueIndex:idx_vfs_node_path_active,where:is_deleted = false"`
+	Kind             string    `gorm:"index;size:32;not null"`
+	MountID          *uint     `gorm:"index"`
+	ObjectID         *uint     `gorm:"index"`
+	SourceID         *uint     `gorm:"index"`
+	ProviderItemID   *string   `gorm:"size:512;index"`
+	ProviderParentID *string   `gorm:"size:512;index"`
+	Size             int64     `gorm:"not null;default:0"`
+	MimeType         string    `gorm:"size:255;not null;default:''"`
+	ETag             string    `gorm:"column:etag;size:255;not null;default:''"`
+	Checksum         string    `gorm:"size:255;not null;default:''"`
+	SyncState        string    `gorm:"index;size:32;not null"`
+	IsDeleted        bool      `gorm:"index;not null;default:false"`
+	CreatedBy        *uint     `gorm:"index"`
+	UpdatedBy        *uint     `gorm:"index"`
+	CreatedAt        time.Time `gorm:"not null"`
+	UpdatedAt        time.Time `gorm:"not null"`
+	IndexedAt        *time.Time
+	LastSeenAt       *time.Time
+}
+
+// StorageObjectModel 表示数据面对象引用表。
+type StorageObjectModel struct {
+	ID          uint      `gorm:"primaryKey"`
+	SourceID    uint      `gorm:"index;not null"`
+	DriverType  string    `gorm:"index;size:32;not null"`
+	LocatorType string    `gorm:"index;size:64;not null"`
+	LocatorJSON string    `gorm:"type:jsonb;not null"`
+	Size        int64     `gorm:"not null;default:0"`
+	ETag        string    `gorm:"column:etag;size:255;not null;default:''"`
+	Checksum    string    `gorm:"size:255;not null;default:''"`
+	MimeType    string    `gorm:"size:255;not null;default:''"`
+	Status      string    `gorm:"index;size:32;not null"`
+	CreatedAt   time.Time `gorm:"not null"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+
+// VFSMountModel 表示 VFS 挂载点元数据表。
+type VFSMountModel struct {
+	ID              uint      `gorm:"primaryKey"`
+	SourceID        uint      `gorm:"index;not null"`
+	NodeID          uint      `gorm:"uniqueIndex;not null"`
+	MountPath       string    `gorm:"uniqueIndex;size:1024;not null"`
+	RootLocatorJSON string    `gorm:"type:jsonb;not null"`
+	Mode            string    `gorm:"index;size:32;not null"`
+	IsEnabled       bool      `gorm:"index;not null"`
+	SortOrder       int       `gorm:"not null;default:0"`
+	CreatedAt       time.Time `gorm:"not null"`
+	UpdatedAt       time.Time `gorm:"not null"`
+}
+
+// VFSTagModel 表示 VFS 标签表。
+type VFSTagModel struct {
+	ID          uint      `gorm:"primaryKey"`
+	OwnerUserID uint      `gorm:"index;not null;default:0;uniqueIndex:idx_vfs_tag_owner_name,priority:1"`
+	Name        string    `gorm:"size:128;not null;uniqueIndex:idx_vfs_tag_owner_name,priority:2"`
+	Color       string    `gorm:"size:32;not null;default:''"`
+	CreatedAt   time.Time `gorm:"not null"`
+	UpdatedAt   time.Time `gorm:"not null"`
+}
+
+// VFSNodeTagModel 表示 VFS node 与 tag 的绑定表。
+type VFSNodeTagModel struct {
+	NodeID    uint `gorm:"primaryKey;autoIncrement:false;index"`
+	TagID     uint `gorm:"primaryKey;autoIncrement:false;index"`
+	CreatedBy *uint
+	CreatedAt time.Time `gorm:"not null"`
+}
+
 // UploadSessionModel 表示上传会话表。
 type UploadSessionModel struct {
 	UploadID                string    `gorm:"primaryKey;size:64"`

@@ -12,6 +12,23 @@
 
 ---
 
+## 2026-05-07
+
+### 元数据化 VFS Schema / Repository 阶段
+
+- 新增元数据化 VFS 控制面最小持久化基础：
+  - domain entity：`VFSNode`、`StorageObject`、`VFSMount`、`VFSTag`、`VFSNodeTag`
+  - repository interface/filter：VFS node/object/mount/tag 基础 CRUD、path 查询、parent 子节点列表、path/mount/tag upsert、node/tag 绑定
+  - GORM models 与 AutoMigrate 列表：新增 VFS node、storage object、mount、tag、node_tag 持久化模型
+- 持久化约束与约定：
+  - storage object locator 与 mount root locator 使用 PostgreSQL `jsonb`
+  - VFS node 保留 `parent_id + name` 与 `path` 快照双模型，并通过未删除节点的 partial unique index 保护 path / sibling 名称冲突
+  - VFS node repository 的 `Delete` 语义为软删除节点及其 path 子树，避免硬删导致活跃子节点悬空，并允许同父同名节点在软删除后重新创建
+  - repository 实现继续使用 `dbFor(ctx, db)`、`normalizeGormError`、`Select/Omit` 更新模式
+- 本阶段仅新增后端 schema/repository 能力，未暴露新 HTTP API，因此 `backend/API_CONTRACT.md` 暂不变更。
+
+---
+
 ## 2026-05-06
 
 ### 元数据化 VFS 与扁平数据面重构方案
