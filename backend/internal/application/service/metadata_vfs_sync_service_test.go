@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -121,6 +123,44 @@ func TestMetadataVFSSyncRemoteDeleteMarksMissing(t *testing.T) {
 	}
 	if object.Status != entity.StorageObjectStatusMissing {
 		t.Fatalf("object status = %q, want missing", object.Status)
+	}
+}
+
+func TestMetadataVFSSyncPreservesControlChildren(t *testing.T) {
+	ctx := context.Background()
+	env := newMetadataVFSSyncTestEnv(t)
+	now := fixedMetadataVFSTime()
+	nestedSourceID := uint(99)
+	mountID := uint(100)
+	control := mustCreateMetadataVFSNode(t, env.nodeRepo, &entity.VFSNode{
+		ParentID:  &env.mountNode.ID,
+		Name:      "nested",
+		Path:      "/cloud/nested",
+		Kind:      entity.VFSNodeKindMount,
+		MountID:   &mountID,
+		SourceID:  &nestedSourceID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	env.indexer.entries = []RemoteEntry{
+		{Name: "nested", IsDir: true, ProviderItemID: "real-dir-with-same-name"},
+		{Name: "readme.txt", IsDir: false, Size: 10, ProviderItemID: "file-readme"},
+	}
+
+	result, err := env.syncSvc.RefreshPath(ctx, "/cloud")
+	if err != nil {
+		t.Fatalf("RefreshPath() error = %v", err)
+	}
+	if result.Indexed != 1 || result.Missing != 0 {
+		t.Fatalf("unexpected refresh result = %#v", result)
+	}
+	stored, err := env.nodeRepo.FindByID(ctx, control.ID)
+	if err != nil {
+		t.Fatalf("FindByID(control) error = %v", err)
+	}
+	if stored.Kind != entity.VFSNodeKindMount || stored.SyncState != entity.VFSNodeSyncStateIndexed || stored.SourceID == nil || *stored.SourceID != nestedSourceID {
+		t.Fatalf("control mount child should not be overwritten or marked missing: %#v", stored)
 	}
 }
 
@@ -252,6 +292,76 @@ func TestMetadataVFSSyncFileDriverBridgeIndexesStorageEntries(t *testing.T) {
 	}
 	if object.LocatorType != "provider_path" || object.LocatorJSON != `{"path":"/bridge.txt"}` {
 		t.Fatalf("unexpected bridge object locator = %#v", object)
+	}
+}
+
+func TestMetadataVFSSyncDefaultLocalIndexerIndexesFilesystem(t *testing.T) {
+	ctx := context.Background()
+	now := fixedMetadataVFSTime()
+	nodeRepo := newFakeVFSNodeRepository()
+	objectRepo := newFakeStorageObjectRepository()
+	basePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(basePath, "visible.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(basePath, ".trash"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.trash) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(basePath, ".trash", "hidden.txt"), []byte("hidden"), 0o644); err != nil {
+		t.Fatalf("WriteFile(hidden) error = %v", err)
+	}
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	sourceID := uint(31)
+	source := &entity.StorageSource{
+		ID:         sourceID,
+		Name:       "local",
+		DriverType: "local",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	sourceRepo := newFakeMetadataVFSSyncSourceRepository(source)
+	metadataSvc := NewMetadataVFSService(nodeRepo, WithMetadataVFSClock(func() time.Time { return now }))
+	root, err := metadataSvc.EnsureRoot(ctx)
+	if err != nil {
+		t.Fatalf("EnsureRoot() error = %v", err)
+	}
+	mountID := uint(32)
+	mustCreateMetadataVFSNode(t, nodeRepo, &entity.VFSNode{
+		ParentID:  &root.ID,
+		Name:      "local",
+		Path:      "/local",
+		Kind:      entity.VFSNodeKindMount,
+		MountID:   &mountID,
+		SourceID:  &sourceID,
+		SyncState: entity.VFSNodeSyncStateIndexed,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	syncSvc := NewMetadataVFSSyncService(nodeRepo, objectRepo, sourceRepo)
+
+	result, err := syncSvc.RefreshPath(ctx, "/local")
+	if err != nil {
+		t.Fatalf("RefreshPath(local) error = %v", err)
+	}
+	if result.Indexed != 1 {
+		t.Fatalf("unexpected local refresh result = %#v", result)
+	}
+	file, err := nodeRepo.FindByPath(ctx, "/local/visible.txt")
+	if err != nil {
+		t.Fatalf("FindByPath(visible) error = %v", err)
+	}
+	if file.ObjectID == nil || file.Size != 5 || file.MimeType != "text/plain; charset=utf-8" {
+		t.Fatalf("local file metadata mismatch: %#v", file)
+	}
+	if _, err := nodeRepo.FindByPath(ctx, "/local/.trash"); !errors.Is(err, domainrepo.ErrNotFound) {
+		t.Fatalf("hidden .trash should not be indexed, err = %v", err)
 	}
 }
 

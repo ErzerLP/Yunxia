@@ -98,7 +98,9 @@ func NewMetadataVFSSyncService(
 		nodeRepo:   nodeRepo,
 		objectRepo: objectRepo,
 		sourceRepo: sourceRepo,
-		indexers:   make(map[string]RemoteIndexer),
+		indexers: map[string]RemoteIndexer{
+			"local": localFilesystemRemoteIndexer{},
+		},
 		now: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -349,6 +351,10 @@ func (s *MetadataVFSSyncService) applyRemoteEntries(
 			result.Seen++
 
 			existing := childrenByName[name]
+			if metadataVFSChildIsControlNode(existing) {
+				// 挂载点 / 纯虚拟目录属于 Yunxia 控制面，不被底层同名对象覆盖。
+				continue
+			}
 			if metadataVFSRemoteIdentityConflicts(existing, entry) {
 				if err := s.markChildConflict(txCtx, existing, now); err != nil {
 					result.Errors++
@@ -386,6 +392,9 @@ func (s *MetadataVFSSyncService) applyRemoteEntries(
 
 		for _, child := range children {
 			if _, seen := seenNames[child.Name]; seen {
+				continue
+			}
+			if metadataVFSChildIsControlNode(child) {
 				continue
 			}
 			child.SyncState = entity.VFSNodeSyncStateMissing
@@ -605,6 +614,47 @@ type fileDriverRemoteIndexer struct {
 	driver FileDriver
 }
 
+type localFilesystemRemoteIndexer struct{}
+
+func (localFilesystemRemoteIndexer) ListRemoteChildren(_ context.Context, source *entity.StorageSource, req RemoteListRequest) ([]RemoteEntry, error) {
+	if source == nil {
+		return nil, ErrFileNotFound
+	}
+	_, physicalPath, err := resolvePhysicalPath(source, req.ParentPath)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(physicalPath)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]RemoteEntry, 0, len(entries))
+	for _, entry := range entries {
+		entryPath := joinVirtualPath(req.ParentPath, entry.Name())
+		if isHiddenVirtualPath(entryPath) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		item := RemoteEntry{
+			Name:       entry.Name(),
+			Path:       entryPath,
+			IsDir:      entry.IsDir(),
+			ModifiedAt: info.ModTime(),
+		}
+		if !entry.IsDir() {
+			item.Size = info.Size()
+			item.ETag = buildEtag(info)
+			item.MimeType = remoteEntryMimeType(item)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
 func (i fileDriverRemoteIndexer) ListRemoteChildren(ctx context.Context, source *entity.StorageSource, req RemoteListRequest) ([]RemoteEntry, error) {
 	if i.driver == nil {
 		return nil, ErrSourceDriverUnsupported
@@ -748,6 +798,11 @@ func metadataVFSRemoteIdentityConflicts(existing *entity.VFSNode, entry RemoteEn
 		return false
 	}
 	return *existing.ProviderItemID != entry.ProviderItemID
+}
+
+func metadataVFSChildIsControlNode(node *entity.VFSNode) bool {
+	return node != nil &&
+		(node.Kind == entity.VFSNodeKindMount || node.Kind == entity.VFSNodeKindVirtualDir)
 }
 
 func metadataVFSNodeChangedByRemote(existing *entity.VFSNode, next *entity.VFSNode) bool {

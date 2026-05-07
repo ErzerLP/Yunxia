@@ -522,6 +522,10 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
+	vfsNodeRepo := gormrepo.NewVFSNodeRepository(db)
+	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
+	vfsMountRepo := gormrepo.NewVFSMountRepository(db)
+	transactor := gormrepo.NewTransactor(db)
 	hasher := security.NewBcryptHasher(4)
 	tokenSvc := security.NewJWTTokenService("router-secret", 15*time.Minute, 7*24*time.Hour)
 	fileAccessSvc := security.NewFileAccessTokenService("router-secret")
@@ -537,6 +541,12 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	options.TempDir = filepath.Join(root, "temp")
 
 	fakeS3 := newFakeS3Driver()
+	metadataVFSMountSvc := appsvc.NewMetadataVFSMountService(
+		vfsNodeRepo,
+		vfsMountRepo,
+		sourceRepo,
+		appsvc.WithMetadataVFSMountTransactor(transactor),
+	)
 	setupSvc := appsvc.NewSetupService(
 		userRepo,
 		refreshRepo,
@@ -546,6 +556,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		tokenSvc,
 		options,
 		appsvc.WithSetupAuditRecorder(auditRecorder),
+		appsvc.WithSetupSourceMountSyncer(metadataVFSMountSvc),
 	)
 	authSvc := appsvc.NewAuthService(userRepo, refreshRepo, hasher, tokenSvc)
 	systemSvc := appsvc.NewSystemService(
@@ -562,6 +573,8 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithSourceAuditRecorder(auditRecorder),
 		appsvc.WithSourceACLAuthorizer(aclAuthorizer),
 		appsvc.WithSourceDriverProbe("s3", fakeS3),
+		appsvc.WithSourceMountSyncer(metadataVFSMountSvc),
+		appsvc.WithSourceTransactor(transactor),
 	)
 	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
 	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
@@ -582,11 +595,24 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithTrashACLAuthorizer(aclAuthorizer),
 		appsvc.WithTrashFileDriver("s3", fakeS3),
 	)
+	metadataVFSReader := appsvc.NewMetadataVFSService(
+		vfsNodeRepo,
+		appsvc.WithMetadataVFSTransactor(transactor),
+	)
+	metadataVFSSyncSvc := appsvc.NewMetadataVFSSyncService(
+		vfsNodeRepo,
+		storageObjectRepo,
+		sourceRepo,
+		appsvc.WithMetadataVFSSyncMountRepository(vfsMountRepo),
+		appsvc.WithMetadataVFSSyncFileDriver("s3", fakeS3),
+		appsvc.WithMetadataVFSSyncTransactor(transactor),
+	)
 	vfsSvc := appsvc.NewVFSService(
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", fakeS3),
 		appsvc.WithVFSFileOperator(fileSvc),
 		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
+		appsvc.WithVFSMetadataServices(metadataVFSReader, metadataVFSSyncSvc),
 	)
 	uploadSvc := appsvc.NewUploadService(
 		sourceRepo,

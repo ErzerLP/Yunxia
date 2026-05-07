@@ -220,9 +220,25 @@ func main() {
 	}
 	trashServiceOptions = append(trashServiceOptions, storageDrivers.TrashServiceOptions()...)
 	trashSvc := appsvc.NewTrashService(sourceRepo, trashRepo, trashServiceOptions...)
+	metadataVFSReader := appsvc.NewMetadataVFSService(
+		vfsNodeRepo,
+		appsvc.WithMetadataVFSTransactor(transactor),
+	)
+	metadataVFSSyncOptions := []appsvc.MetadataVFSSyncServiceOption{
+		appsvc.WithMetadataVFSSyncMountRepository(vfsMountRepo),
+		appsvc.WithMetadataVFSSyncTransactor(transactor),
+	}
+	metadataVFSSyncOptions = append(metadataVFSSyncOptions, storageDrivers.MetadataVFSSyncServiceOptions()...)
+	metadataVFSSyncSvc := appsvc.NewMetadataVFSSyncService(
+		vfsNodeRepo,
+		storageObjectRepo,
+		sourceRepo,
+		metadataVFSSyncOptions...,
+	)
 	vfsServiceOptions := []appsvc.VFSServiceOption{
 		appsvc.WithVFSFileOperator(fileSvc),
 		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
+		appsvc.WithVFSMetadataServices(metadataVFSReader, metadataVFSSyncSvc),
 	}
 	vfsServiceOptions = append(vfsServiceOptions, storageDrivers.VFSServiceOptions()...)
 	vfsSvc := appsvc.NewVFSService(sourceRepo, vfsServiceOptions...)

@@ -128,6 +128,24 @@ func TestVFSAccessURLByVirtualPath(t *testing.T) {
 	}
 }
 
+func TestVFSSearchUsesMetadataIndex(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	sourceID := createLocalSourceWithMountForTest(t, engine, accessToken, "docs-search", "/docs-search")
+	uploadLocalObjectForTest(t, engine, accessToken, sourceID, "/", "metadata-search-hit.txt", []byte("hello metadata search"))
+
+	rec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/search?path=/docs-search&keyword=metadata-search", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs search expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	names := collectMapNames(listed.Items)
+	if !containsString(names, "metadata-search-hit.txt") {
+		t.Fatalf("expected metadata-backed search hit, got %+v", listed.Items)
+	}
+}
+
 func TestVFSUploadInitToMappedPath(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, _ := bootstrapAdmin(t, engine)
@@ -319,6 +337,35 @@ func TestVFSListFiltersUnauthorizedMountedChildren(t *testing.T) {
 		if item["can_delete"] == true || item["can_download"] == true {
 			t.Fatalf("expected read-only directory capabilities constrained, got %+v", item)
 		}
+	}
+}
+
+func TestVFSRootListHidesUnauthorizedVirtualMountParents(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, _ := bootstrapAdmin(t, engine)
+
+	visibleSourceID := createLocalSourceWithMountForTest(t, engine, adminToken, "visible-nested", "/visible-parent/allowed")
+	_ = createLocalSourceWithMountForTest(t, engine, adminToken, "hidden-nested", "/hidden-parent/secret")
+
+	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "vfs-root-reader", "strong-password-123")
+	createACLRuleForTest(t, engine, adminToken, visibleSourceID, userID, "/", map[string]any{
+		"read":   true,
+		"write":  false,
+		"delete": false,
+		"share":  false,
+	}, "allow", 100, true)
+
+	rec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/", nil, userToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs root list expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	names := collectMapNames(listed.Items)
+	if !containsString(names, "visible-parent") {
+		t.Fatalf("expected authorized virtual parent visible, got %+v", listed.Items)
+	}
+	if containsString(names, "hidden-parent") {
+		t.Fatalf("expected unauthorized virtual parent hidden, got %+v", listed.Items)
 	}
 }
 

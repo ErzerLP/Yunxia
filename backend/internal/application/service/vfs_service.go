@@ -44,6 +44,17 @@ func (unsupportedVFSFileOperator) Delete(context.Context, appdto.DeleteFileReque
 	return time.Time{}, ErrSourceDriverUnsupported
 }
 
+type metadataVFSReader interface {
+	EnsureRoot(ctx context.Context) (*entity.VFSNode, error)
+	ResolveNode(ctx context.Context, virtualPath string) (*entity.VFSNode, error)
+	ListChildren(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error)
+	Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error)
+}
+
+type metadataVFSRefreshService interface {
+	RefreshPath(ctx context.Context, targetPath string) (*MetadataVFSRefreshResult, error)
+}
+
 // VFSService 提供统一虚拟目录树的路径解析能力。
 type VFSService struct {
 	registry            *MountRegistry
@@ -51,6 +62,8 @@ type VFSService struct {
 	capabilityProviders map[string]CapabilityProvider
 	fileOp              vfsFileOperator
 	aclAuthorizer       *ACLAuthorizer
+	metadataReader      metadataVFSReader
+	metadataRefresh     metadataVFSRefreshService
 	localDirWritable    func(string) bool
 }
 
@@ -94,6 +107,14 @@ func WithVFSFileOperator(fileOp vfsFileOperator) VFSServiceOption {
 func WithVFSACLAuthorizer(authorizer *ACLAuthorizer) VFSServiceOption {
 	return func(s *VFSService) {
 		s.aclAuthorizer = authorizer
+	}
+}
+
+// WithVFSMetadataServices 注册 metadata VFS 读模型与懒刷新服务。
+func WithVFSMetadataServices(reader metadataVFSReader, refresh metadataVFSRefreshService) VFSServiceOption {
+	return func(s *VFSService) {
+		s.metadataReader = reader
+		s.metadataRefresh = refresh
 	}
 }
 
@@ -246,6 +267,46 @@ func (s *VFSService) ResolvePath(ctx context.Context, virtualPath string) (Resol
 
 // List 列出统一虚拟目录树中的当前目录内容。
 func (s *VFSService) List(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error) {
+	if s.metadataReader != nil {
+		return s.listMetadata(ctx, currentPath)
+	}
+	return s.listLegacy(ctx, currentPath)
+}
+
+// Search 在统一虚拟目录树中搜索 metadata VFS 读模型。
+func (s *VFSService) Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error) {
+	if s.metadataReader == nil {
+		return nil, ErrSourceDriverUnsupported
+	}
+	normalizedPrefix, err := normalizeVirtualPath(pathPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureMetadataRoot(ctx); err != nil {
+		return nil, err
+	}
+	prefixNode, err := s.metadataReader.ResolveNode(ctx, normalizedPrefix)
+	if err != nil {
+		return nil, err
+	}
+	if metadataVFSNodeIsDirectory(prefixNode) {
+		_ = s.refreshMetadataPathBestEffort(ctx, prefixNode)
+	}
+
+	resp, err := s.metadataReader.Search(ctx, normalizedPrefix, keyword)
+	if err != nil {
+		return nil, err
+	}
+	filtered, err := s.filterMetadataVFSItems(ctx, resp.Items)
+	if err != nil {
+		return nil, err
+	}
+	sortMetadataVFSItems(filtered)
+	resp.Items = filtered
+	return resp, nil
+}
+
+func (s *VFSService) listLegacy(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error) {
 	normalizedCurrentPath, err := normalizeVirtualPath(currentPath)
 	if err != nil {
 		return nil, err
@@ -299,6 +360,38 @@ func (s *VFSService) List(ctx context.Context, currentPath string) (*appdto.VFSL
 		Items:       items,
 		CurrentPath: normalizedCurrentPath,
 	}, nil
+}
+
+func (s *VFSService) listMetadata(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error) {
+	normalizedCurrentPath, err := normalizeVirtualPath(currentPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureMetadataRoot(ctx); err != nil {
+		return nil, err
+	}
+
+	currentNode, err := s.metadataReader.ResolveNode(ctx, normalizedCurrentPath)
+	if err != nil {
+		return nil, err
+	}
+	if !metadataVFSNodeIsDirectory(currentNode) {
+		return nil, ErrPathInvalid
+	}
+
+	_ = s.refreshMetadataPathBestEffort(ctx, currentNode)
+	resp, err := s.metadataReader.ListChildren(ctx, currentNode.Path)
+	if err != nil {
+		return nil, err
+	}
+	filtered, err := s.filterMetadataVFSItems(ctx, resp.Items)
+	if err != nil {
+		return nil, err
+	}
+	sortMetadataVFSItems(filtered)
+	resp.Items = filtered
+	resp.CurrentPath = normalizedCurrentPath
+	return resp, nil
 }
 
 func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyRequest, removeSource bool) (string, string, error) {
@@ -556,6 +649,137 @@ func (s *VFSService) filterVisibleMounts(ctx context.Context, mounts []MountEntr
 		}
 	}
 	return filtered, nil
+}
+
+func (s *VFSService) ensureMetadataRoot(ctx context.Context) error {
+	if s.metadataReader == nil {
+		return ErrSourceDriverUnsupported
+	}
+	if _, err := s.metadataReader.ResolveNode(ctx, "/"); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrFileNotFound) {
+		return err
+	}
+	_, err := s.metadataReader.EnsureRoot(ctx)
+	return err
+}
+
+func (s *VFSService) refreshMetadataPathBestEffort(ctx context.Context, node *entity.VFSNode) error {
+	if s.metadataRefresh == nil || node == nil || node.SourceID == nil {
+		return nil
+	}
+	if _, err := s.metadataRefresh.RefreshPath(ctx, node.Path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *VFSService) filterMetadataVFSItems(ctx context.Context, items []appdto.VFSItem) ([]appdto.VFSItem, error) {
+	mounts, err := s.registry.ListEnabledMounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	visibleMounts, err := s.filterVisibleMounts(ctx, mounts)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := make([]appdto.VFSItem, 0, len(items))
+	for _, item := range items {
+		if item.SourceID == nil {
+			if metadataVirtualItemVisible(item, visibleMounts, s.aclAuthorizer == nil) {
+				filtered = append(filtered, item)
+			}
+			continue
+		}
+
+		visibleSource, err := s.metadataItemSourceVisible(ctx, *item.SourceID)
+		if err != nil {
+			return nil, err
+		}
+		if !visibleSource {
+			continue
+		}
+		item, ok, err := s.applyMetadataItemCapabilities(ctx, item, visibleMounts)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if s.aclAuthorizer != nil {
+			allowed, err := s.aclAuthorizer.FilterVFSItems(ctx, *item.SourceID, []appdto.VFSItem{item})
+			if err != nil {
+				return nil, err
+			}
+			if len(allowed) == 0 {
+				continue
+			}
+			item = allowed[0]
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
+}
+
+func (s *VFSService) metadataItemSourceVisible(ctx context.Context, sourceID uint) (bool, error) {
+	if s.aclAuthorizer == nil {
+		return true, nil
+	}
+	return s.aclAuthorizer.CanSeeSource(ctx, sourceID)
+}
+
+func (s *VFSService) applyMetadataItemCapabilities(ctx context.Context, item appdto.VFSItem, visibleMounts []MountEntry) (appdto.VFSItem, bool, error) {
+	if item.SourceID == nil {
+		return item, true, nil
+	}
+	resolved, err := resolveVirtualPathByLongestPrefix(item.Path, visibleMounts)
+	if err != nil {
+		return item, false, err
+	}
+	if !resolved.IsRealMount || resolved.Source == nil || resolved.Source.ID != *item.SourceID {
+		return item, false, nil
+	}
+
+	if resolved.Source.DriverType == "local" && item.CanDelete {
+		parentInnerPath := path.Dir(resolved.InnerPath)
+		if parentInnerPath == "." {
+			parentInnerPath = "/"
+		}
+		_, parentPhysicalPath, err := resolvePhysicalPath(resolved.Source, parentInnerPath)
+		if err != nil {
+			return item, false, err
+		}
+		item.CanDelete = item.CanDelete && s.canWriteLocalDir(parentPhysicalPath)
+	}
+
+	capabilities, err := s.driverCapabilities(ctx, resolved.Source)
+	if err != nil {
+		return item, false, err
+	}
+	if capabilities != nil {
+		item.CanDownload = item.CanDownload && capabilities.CanDownload
+		item.CanDelete = item.CanDelete && capabilities.CanDelete
+	}
+	return item, true, nil
+}
+
+func metadataVirtualItemVisible(item appdto.VFSItem, visibleMounts []MountEntry, bypassACL bool) bool {
+	if bypassACL {
+		return true
+	}
+	if item.SourceID != nil {
+		return true
+	}
+	if !item.IsVirtual || item.EntryKind != string(VirtualEntryKindDirectory) {
+		return false
+	}
+	for _, mount := range visibleMounts {
+		if mount.MountPath != item.Path && isSubPath(item.Path, mount.MountPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *VFSService) canWriteLocalDir(dir string) bool {

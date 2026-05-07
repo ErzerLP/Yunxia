@@ -29,6 +29,7 @@ type VFSHandler struct {
 		Move(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
 		Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
 		Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
+		Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error)
 	}
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
@@ -50,6 +51,7 @@ func NewVFSHandler(
 		Move(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
 		Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
 		Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
+		Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error)
 	},
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
@@ -197,40 +199,12 @@ func (h *VFSHandler) Search(c *gin.Context) {
 		query.Path = "/"
 	}
 
-	resolved, err := h.vfsService.ResolvePath(c.Request.Context(), query.Path)
+	resp, err := h.vfsService.Search(c.Request.Context(), query.Path, query.Keyword)
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-
-	resp, _, _, _, _, err := h.fileService.Search(c.Request.Context(), appdto.FileSearchQuery{
-		SourceID:   resolved.Source.ID,
-		Keyword:    query.Keyword,
-		PathPrefix: resolved.InnerPath,
-		Page:       query.Page,
-		PageSize:   query.PageSize,
-	})
-	if err != nil {
-		h.writeError(c, err)
-		return
-	}
-
-	items := make([]appdto.VFSItem, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		virtualPath := mergeMountAndInnerPathForHTTP(resolved.MatchedMountPath, item.Path)
-		if virtualPath == "" {
-			continue
-		}
-		item.Path = virtualPath
-		item.ParentPath = mergeMountAndInnerPathForHTTP(resolved.MatchedMountPath, item.ParentPath)
-		items = append(items, buildVFSItemFromFileItemForHTTP(item, false, false))
-	}
-
-	httpresp.JSON(c, http.StatusOK, "OK", "ok", &appdto.VFSSearchResponse{
-		Items:      items,
-		PathPrefix: query.Path,
-		Keyword:    query.Keyword,
-	})
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
 }
 
 // AccessURL 生成统一虚拟目录的短时访问地址。

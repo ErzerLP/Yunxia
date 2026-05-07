@@ -1196,6 +1196,8 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `/fs/list` 可能返回：
   - 实际文件 / 目录
   - 由 mount 组合出来的纯虚拟目录节点
+- `/fs/list` 与 `/fs/search` 现在以 metadata VFS 读模型为准；进入挂载目录时后端会按需懒刷新当前目录的直接子项，再从 DB 返回列表 / 搜索结果
+- 懒刷新失败时后端优先保留已有 metadata 视图，避免 provider 短暂不可用导致目录完全不可读；不可下载 / 冲突 / 缺失状态的文件会通过 `can_download=false` 收敛给前端
 - 多用户开启后，`/fs/list?path=/` 只投影当前用户可见的挂载源；未授权 source 的挂载点名称不会出现在根目录
 - 本地挂载目录探测为不可写时，列表项 `can_delete=false`；写操作返回 `403 SOURCE_READ_ONLY`
 - 纯虚拟目录上的写操作（mkdir / rename / move / copy / delete / upload init）如果没有唯一 backing storage，返回 `409 NO_BACKING_STORAGE`
@@ -1532,7 +1534,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 8. 离线下载创建任务也已支持 `target_virtual_parent_path`；前端推荐传当前 VFS 目录作为目标父目录。
 9. 离线下载默认先落 backend 与下载器共享的 staging，完成后由后端导入 local / S3 / PikPak；但目标解析到 PikPak source 时会优先使用 `pikpak_native` provider 原生离线下载，完成后文件已在 PikPak 中，不再走 staging。
 10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
-11. `/api/v2/fs/list` 会按 ACL 过滤真实挂载目录下的子项；前端不要自行展示后端未返回的文件。
+11. `/api/v2/fs/list` / `/api/v2/fs/search` 已切到 metadata VFS 读模型，并会按 ACL 过滤挂载点、纯虚拟父目录和真实子项；前端不要自行展示后端未返回的文件。
 12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
 13. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
 14. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。

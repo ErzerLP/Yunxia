@@ -14,6 +14,15 @@
 
 ## 2026-05-07
 
+### 元数据化 VFS API 读路径切换阶段
+
+- `/api/v2/fs/list` 开始优先使用 metadata VFS 读模型：根目录 / 纯虚拟目录从 `vfs_nodes` 返回，挂载目录进入时按需懒刷新当前目录直接子项，再从 DB 输出。
+- `/api/v2/fs/search` 改为基于 metadata VFS path prefix 搜索，不再直接调用底层 source search；搜索前会对目标目录做一次 best-effort 懒刷新。
+- 新增内置 local metadata indexer，使本地源已有文件可以通过 metadata VFS 懒刷新入库；S3/PikPak 继续通过已注册 `FileDriver` bridge 进入 metadata sync。
+- 懒刷新时保护控制面节点：`mount` / `virtual_dir` 不会被底层同名文件覆盖，也不会因为底层 list 未返回而被标记 missing，从而支持 root/local 源子目录继续挂载其他存储源。
+- VFS metadata 列表继续执行 ACL 过滤与能力收敛：未授权挂载点及其纯虚拟父目录不展示，本地只读目录返回 `can_delete=false`，driver capability 会约束 `can_download/can_delete`。
+- 更新 `backend/API_CONTRACT.md` 中 VFS list/search 的 metadata 读模型说明。
+
 ### 元数据化 VFS Source Mount 控制面阶段
 
 - 新增 `MetadataVFSMountService`，在 source mount 同步时维护父级 `virtual_dir`、挂载点 `vfs_nodes(kind=mount)` 与 `vfs_mounts` 记录，`root_locator_json` 只保存 source/root/config-root 快照并过滤 secret。

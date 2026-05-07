@@ -305,6 +305,13 @@ func (s *MetadataVFSMountService) ensureSourceMountNode(
 }
 
 func (s *MetadataVFSMountService) ensureMountRoot(ctx context.Context, now time.Time) (*entity.VFSNode, error) {
+	existing, err := s.nodeRepo.FindByPath(ctx, "/")
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, domainrepo.ErrNotFound) {
+		return nil, normalizeMetadataVFSError(err)
+	}
 	root := &entity.VFSNode{
 		Name:      "",
 		Path:      "/",

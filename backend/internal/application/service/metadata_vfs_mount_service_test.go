@@ -186,6 +186,52 @@ func TestMetadataVFSMountServiceRenameDisablesOldMountAndDisabledSourceDisablesC
 	}
 }
 
+func TestMetadataVFSMountServicePreservesRootMountWhenSyncingNestedMount(t *testing.T) {
+	ctx := context.Background()
+	now := fixedMetadataVFSTime()
+	nodeRepo := newFakeVFSNodeRepository()
+	mountRepo := newFakeVFSMountRepository()
+	sourceRepo := newFakeMetadataVFSSyncSourceRepository()
+	svc := NewMetadataVFSMountService(
+		nodeRepo,
+		mountRepo,
+		sourceRepo,
+		WithMetadataVFSMountClock(func() time.Time { return now }),
+	)
+	rootSource := &entity.StorageSource{
+		ID:         21,
+		Name:       "root",
+		DriverType: "local",
+		IsEnabled:  true,
+		MountPath:  "/",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	nestedSource := &entity.StorageSource{
+		ID:         22,
+		Name:       "nested",
+		DriverType: "local",
+		IsEnabled:  true,
+		MountPath:  "/cloud",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if _, err := svc.SyncSourceMount(ctx, rootSource); err != nil {
+		t.Fatalf("SyncSourceMount(root) error = %v", err)
+	}
+	if _, err := svc.SyncSourceMount(ctx, nestedSource); err != nil {
+		t.Fatalf("SyncSourceMount(nested) error = %v", err)
+	}
+	root := mustFindVFSNodeByPath(t, nodeRepo, "/")
+	if root.SourceID == nil || *root.SourceID != rootSource.ID {
+		t.Fatalf("root mount source should be preserved after nested sync: %#v", root)
+	}
+}
+
 func TestMetadataVFSMountServiceSyncAllContinuesAfterBadSource(t *testing.T) {
 	ctx := context.Background()
 	now := fixedMetadataVFSTime()
