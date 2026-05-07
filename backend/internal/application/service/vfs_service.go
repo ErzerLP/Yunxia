@@ -49,6 +49,7 @@ func (unsupportedVFSFileOperator) Delete(context.Context, appdto.DeleteFileReque
 type metadataVFSReader interface {
 	EnsureRoot(ctx context.Context) (*entity.VFSNode, error)
 	ResolveNode(ctx context.Context, virtualPath string) (*entity.VFSNode, error)
+	ResolveNodeByID(ctx context.Context, id uint) (*entity.VFSNode, error)
 	ListChildren(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error)
 	Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error)
 }

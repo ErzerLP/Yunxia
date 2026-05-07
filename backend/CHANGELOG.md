@@ -14,6 +14,14 @@
 
 ## 2026-05-08
 
+### Share high-concurrency node-first 阶段
+
+- 公开分享打开改为优先按 `target_vfs_node_id` 解析 metadata VFS node；rename/move 后文件分享下载和目录分享列表使用 node 当前 path，旧 path/source 快照仅作为缺少 node id 时的兼容 fallback。
+- 文件分享返回 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...` 短期令牌 302，后续复用统一下载入口的 local Range 流式与 S3/PikPak presign/provider 302，避免 `/s/:token` 长时间承载大文件流量。
+- 目录分享列表优先读取 metadata VFS children，公开 DTO 不暴露 `source_id`、provider locator、provider file id 或底层路径，并隐藏 missing/error/pending/conflict 等不可用子节点；保留 legacy FileDriver/local fallback 仅用于旧分享兼容。
+- 目标 node 删除、missing/error/conflict、node id 不存在或目标 source 已不可解析时，公开打开稳定返回 `FILE_NOT_FOUND`；分享自身不存在仍为 `SHARE_NOT_FOUND`。
+- 测试覆盖 share node-first rename/move/delete、metadata 目录公开列表，以及 HTTP public share → v2 download → provider/local 302/Range 链路；文档同步更新 `backend/API_CONTRACT.md` 与固定 `backend/FRONTEND_HANDOFF.md`。
+
 ### Upload/task/RSS node-first 完成语义补强
 
 - 上传完成、fast-upload、server_chunk import、direct multipart 完成路径继续以 metadata VFS commit 成功为 `completed` 前置条件；commit 失败时返回/记录安全哨兵 `METADATA_VFS_COMMIT_FAILED`，不返回 completed 响应、不写入 result node。

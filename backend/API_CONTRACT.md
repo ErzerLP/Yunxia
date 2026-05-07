@@ -202,7 +202,7 @@ refresh 成功后替换本地 access / refresh token；refresh 失败再跳登�
 |---|---|
 | `GET /api/v1/files/download` | local：200 文件流；S3/PikPak：302 到 provider 临时 URL |
 | `GET /api/v2/fs/download` | local：200 文件流；S3/PikPak：302 到 provider 临时 URL |
-| `GET /s/:token` | 文件：302 到下载地址；目录：200 JSON |
+| `GET /s/:token` | 文件：302 到 `/api/v2/fs/download` 短期 access_token 地址；目录：200 metadata JSON |
 | `WebDAV` | 标准 WebDAV / XML / 文件流响应，不走 JSON 包络 |
 
 ### 1.6 审计与日志约定
@@ -1160,6 +1160,12 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - `target_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_path`
+- 打开分享时后端优先按 `target_vfs_node_id` 解析当前 metadata VFS node；旧分享缺少 node id 时才兼容回退到 `target_virtual_path` / `source_id+path` 快照。
+- 文件分享不会直接由 `/s/:token` 长时间流式返回大文件；成功校验分享密码/过期后返回 `302 Location: /api/v2/fs/download?path=<当前虚拟路径>&access_token=<短期令牌>&disposition=...`。短期令牌 TTL 默认为 5 分钟，且不会超过分享链接过期剩余时间。
+- `/api/v2/fs/download` 会继续复用现有下载入口：local 返回文件流并支持 HTTP Range；S3/PikPak 等支持 presign 的 driver 返回 provider 临时 URL 302。
+- rename / move 后分享继续跟随同一个 `target_vfs_node_id`；公开打开时使用 node 的当前 `path` 生成下载地址或目录列表。管理端列表中的 `target_virtual_path` / `resolved_inner_path` 仍是创建时快照字段，前端不要把它当成长期身份。
+- 目标 node 被删除、标记 missing/error/conflict 等不可下载状态，或 node id 找不到时，公开打开返回 `404 FILE_NOT_FOUND`；分享自身不存在仍返回 `404 SHARE_NOT_FOUND`。
+- 目录分享列表优先读取 metadata VFS children，并只返回 `PublicShareEntry` 字段（`name/path/parent_path/is_dir/preview_type/size/mime_type/...`），不会暴露 `source_id`、provider locator、provider file id 或底层路径；missing/error/pending/conflict 等不可用子节点不会出现在公开列表中。
 - 普通用户默认仅能管理自己的分享
 - 具备 `share.read_all` / `share.manage_all` capability 的角色可跨用户治理
 - 目录分享的 `query.path` 是**相对分享根路径**
@@ -1205,6 +1211,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - `is_mount_point`
   - `source_id`（纯虚拟节点时可能为空）
   - `sync_state`: `indexed` / `pending` / `syncing` / `stale` / `missing` / `conflict` / `error`；旧式/未索引条目可能省略
+- `GET /api/v2/fs/download` 可作为分享和普通下载的统一数据面入口：传 `access_token` 时仍会先按当前 VFS path 解析 source/inner path，再校验 token 中的 source/path；local 文件由 Go `ServeContent` 处理 Range，支持 presign 的 provider 继续 302。
 - `POST /fs/refresh` 请求示例：
   ```json
   { "path": "/pikpak/anime", "mode": "sync" }
@@ -1434,6 +1441,8 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 }
 ```
 
+说明：`target_vfs_node_id` 是长期追踪身份；`path`、`target_virtual_path`、`resolved_inner_path` 是兼容/展示快照。公开打开分享时，后端会按 node 当前路径生成目录响应或 `/api/v2/fs/download` 302，因此 rename/move 后公开访问可能看到新的当前路径。
+
 ### 4.6 VFSItem
 
 ```json
@@ -1618,14 +1627,15 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 10. RSS 订阅第一版只自动处理 `magnet:?` 和 `.torrent`，并要求 qBittorrent 可用；普通 HTTP RSS 条目不会自动入队。
 11. `/api/v2/fs/list` / `/api/v2/fs/search` 已切到 metadata VFS 读模型，并会按 ACL 过滤挂载点、纯虚拟父目录和真实子项；前端不要自行展示后端未返回的文件。
 12. `mount_path` 已是存储源模型的一部分，默认本地源当前挂载在 `/local`。
-13. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
-14. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
-15. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
-16. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
-17. RSS 条目批量动作返回 `RSSItemBatchActionResponse.items[]`，每项都有 `success` 与可选 `item/error_code/error_message`；不要按单条接口的 `{item}` 包装解析，也不要因为 HTTP 200/202 就假设全部成功。
-18. RSS 订阅批量启停返回 `RSSSubscriptionBatchStateResponse.items[]`，每项都有 `subscription_id/success` 与可选 `subscription/error_code/error_message`；复制订阅返回 201 `{subscription}`，不会修改原订阅。
-19. RSS 导入返回 `RSSImportResponse`，HTTP 200 只代表请求已处理；前端必须检查 `sources.items[]`、`subscriptions.items[]` 和 `failed` 计数。`dry_run=true` 的 `created` 是“将创建”数量，不代表已落库。
-20. 通知事件 HTTP 200/202 只代表请求处理成功；Webhook 投递结果要看 `NotificationEventView.status`。`event_types=[]` 表示通道接收全部支持事件。
+13. 分享公开下载现在先 302 到 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`；前端/浏览器直接跳转即可，不要用 JSON client 解析，也不要把创建时 `target_virtual_path` 当成 rename/move 后的真实路径。
+14. 当前已经存在并可用的统一虚拟目录接口：`/api/v2/fs/*`。
+15. 审计查询接口当前已经存在：`GET /api/v1/audit/logs`、`GET /api/v1/audit/logs/:id`，并要求 `audit.read`。
+16. `audit.read_sensitive` 目前只是预留能力位，前端不要基于它假设会返回更多敏感字段。
+17. WebDAV 写操作当前也会落审计，但审计失败不会影响主请求成功状态。
+18. RSS 条目批量动作返回 `RSSItemBatchActionResponse.items[]`，每项都有 `success` 与可选 `item/error_code/error_message`；不要按单条接口的 `{item}` 包装解析，也不要因为 HTTP 200/202 就假设全部成功。
+19. RSS 订阅批量启停返回 `RSSSubscriptionBatchStateResponse.items[]`，每项都有 `subscription_id/success` 与可选 `subscription/error_code/error_message`；复制订阅返回 201 `{subscription}`，不会修改原订阅。
+20. RSS 导入返回 `RSSImportResponse`，HTTP 200 只代表请求已处理；前端必须检查 `sources.items[]`、`subscriptions.items[]` 和 `failed` 计数。`dry_run=true` 的 `created` 是“将创建”数量，不代表已落库。
+21. 通知事件 HTTP 200/202 只代表请求处理成功；Webhook 投递结果要看 `NotificationEventView.status`。`event_types=[]` 表示通道接收全部支持事件。
 
 ## 7. 前端常见页面调用流程
 

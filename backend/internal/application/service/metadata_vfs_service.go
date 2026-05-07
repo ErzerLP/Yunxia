@@ -125,6 +125,21 @@ func (s *MetadataVFSService) ResolveNode(ctx context.Context, virtualPath string
 	return node, nil
 }
 
+// ResolveNodeByID 按 node id 解析未删除且可用的 VFS node。
+func (s *MetadataVFSService) ResolveNodeByID(ctx context.Context, id uint) (*entity.VFSNode, error) {
+	if s == nil || s.nodeRepo == nil {
+		return nil, ErrSourceDriverUnsupported
+	}
+	node, err := s.nodeRepo.FindByID(ctx, id)
+	if err != nil {
+		return nil, normalizeMetadataVFSError(err)
+	}
+	if node.IsDeleted {
+		return nil, ErrFileNotFound
+	}
+	return node, nil
+}
+
 // ListChildren 列出指定目录的 DB metadata 子节点。
 func (s *MetadataVFSService) ListChildren(ctx context.Context, currentPath string) (*appdto.VFSListResponse, error) {
 	parent, err := s.ResolveNode(ctx, currentPath)

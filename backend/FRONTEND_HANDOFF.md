@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待适配 | 2026-05-08 | 分享 | 分享管理页、公开分享页、下载跳转 | P2 | `/api/v1/shares*`、`/s/:token`、`/api/v2/fs/download` | [详情](#handoff-2026-05-08-share-node-first) |
 | 待适配 | 2026-05-08 | 上传/任务/RSS | 上传完成、离线任务页、RSS 条目列表/告警 | P2 | `/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-node-first-completion) |
 | 待适配 | 2026-05-07 | VFS 刷新 | 文件/VFS 页、目录刷新按钮、错误提示 | P2 | `POST /api/v2/fs/refresh`、`GET /api/v2/fs/list` | [详情](#handoff-2026-05-07-vfs-refresh-sync) |
 | 待适配 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
@@ -1017,3 +1018,25 @@ type PikPakSecretPatch = {
 - RSS backlink 收敛：task completed 但没有 result node 不再把 item 标为 completed，而是进入 `needs_attention`。
 
 完整字段和错误码见 `backend/API_CONTRACT.md` 的 `3.7 upload`、`3.9 tasks`、`3.10 rss`。
+
+<a id="handoff-2026-05-08-share-node-first"></a>
+
+### [P2][待适配][分享] 2026-05-08 Share node-first 与公开下载 302
+
+#### 前端适配 checklist
+
+- [ ] 分享管理页继续展示 `ShareView.target_vfs_node_id`；把它视为长期身份，`target_virtual_path` / `resolved_inner_path` 只作为创建时快照或兼容展示。
+- [ ] 公开分享文件下载直接使用浏览器跳转 `/s/:token?...` 或后端返回的 `Location`；不要用 JSON API client 解析 302。
+- [ ] 如果前端自行展示分享下载地址，接受 `Location` 变为 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`，不再假设 `/api/v1/files/download?source_id=...&path=...`。
+- [ ] 目录分享列表只消费 `PublicShareEntry` 字段；不要期待或展示 `source_id`、provider file id、locator、底层路径等 provider 细节。
+- [ ] 目录分享中 missing/error/pending/conflict 等不可用子节点不会返回；前端不要用旧缓存补回后端已隐藏的条目。
+- [ ] 错误展示：分享目标被删除、missing/error/conflict 或 node 不存在时，公开打开返回 `FILE_NOT_FOUND`；分享链接不存在仍是 `SHARE_NOT_FOUND`。
+
+#### 本次后端行为变化
+
+- 分享公开打开优先按 `target_vfs_node_id` 解析 metadata VFS node，rename/move 后继续跟随同一 node 的当前路径。
+- 文件分享先返回 `/api/v2/fs/download` 短期 access-token 302；后续由统一下载入口处理 local Range 流式或 S3/PikPak provider 302/presign。
+- 目录分享优先读取 metadata VFS children 并做相对路径输出，隐藏 missing/error/pending/conflict 等不可用子节点；保留 legacy source/path fallback 仅用于旧分享或未注入 metadata reader 的兼容场景。
+- 删除/missing 等不可用 node 收敛为稳定 `404 FILE_NOT_FOUND`，避免回退到旧 path 快照误读旧文件。
+
+完整契约见 `backend/API_CONTRACT.md` 的 `3.12 shares`、`3.14 统一虚拟目录树 V2` 和 `4.5 ShareView`。

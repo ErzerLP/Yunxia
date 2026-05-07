@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +43,16 @@ type ShareService struct {
 type ShareOpenResult struct {
 	RedirectURL string
 	Data        *appdto.PublicShareOpenResponse
+}
+
+type shareTargetResolution struct {
+	Node        *entity.VFSNode
+	Source      *entity.StorageSource
+	VirtualPath string
+	InnerPath   string
+	Name        string
+	IsDir       bool
+	NodeFirst   bool
 }
 
 // NewShareService 创建分享服务。
@@ -394,47 +405,47 @@ func (s *ShareService) Open(ctx context.Context, token, password, relativePath, 
 		return nil, err
 	}
 
-	source, err := s.sourceRepo.FindByID(ctx, share.SourceID)
+	rootTarget, err := s.resolveShareTarget(ctx, share)
 	if err != nil {
 		return nil, err
 	}
 
-	if !share.IsDir {
-		redirectURL, redirectErr := s.buildShareDownloadURL(source.ID, share.Path, disposition, share.ExpiresAt)
+	if !rootTarget.IsDir {
+		redirectURL, redirectErr := s.buildShareDownloadURL(rootTarget.Source.ID, rootTarget.InnerPath, rootTarget.VirtualPath, disposition, share.ExpiresAt)
 		if redirectErr != nil {
 			return nil, redirectErr
 		}
 		return &ShareOpenResult{RedirectURL: redirectURL}, nil
 	}
 
-	actualPath, currentPath, err := resolveShareTargetPath(share.Path, relativePath)
+	actualPath, currentPath, err := resolveShareTargetPath(rootTarget.VirtualPath, relativePath)
 	if err != nil {
 		return nil, err
 	}
 
-	_, _, isDir, err := s.inspectTarget(ctx, source, actualPath)
+	currentTarget, err := s.resolveSharePathTarget(ctx, rootTarget, actualPath)
 	if err != nil {
 		return nil, err
 	}
-	if !isDir {
-		redirectURL, redirectErr := s.buildShareDownloadURL(source.ID, actualPath, disposition, share.ExpiresAt)
+	if !currentTarget.IsDir {
+		redirectURL, redirectErr := s.buildShareDownloadURL(currentTarget.Source.ID, currentTarget.InnerPath, currentTarget.VirtualPath, disposition, share.ExpiresAt)
 		if redirectErr != nil {
 			return nil, redirectErr
 		}
 		return &ShareOpenResult{RedirectURL: redirectURL}, nil
 	}
 
-	items, total, totalPages, err := s.listPublicDirectory(ctx, source, share.Path, actualPath, sortBy, sortOrder, page, pageSize)
+	items, total, totalPages, err := s.listPublicDirectory(ctx, rootTarget, currentTarget, sortBy, sortOrder, page, pageSize)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ShareOpenResult{
 		Data: &appdto.PublicShareOpenResponse{
-			Share:       toShareView(share),
+			Share:       toShareViewWithTarget(share, rootTarget),
 			CurrentPath: currentPath,
-			CurrentDir:  buildPublicShareCurrentDir(share.Name, currentPath),
-			Breadcrumbs: buildPublicShareBreadcrumbs(share.Name, currentPath),
+			CurrentDir:  buildPublicShareCurrentDir(rootTarget.Name, currentPath),
+			Breadcrumbs: buildPublicShareBreadcrumbs(rootTarget.Name, currentPath),
 			Pagination: appdto.PublicSharePagination{
 				Page:       pageValue(page),
 				PageSize:   pageSizeValue(pageSize),
@@ -444,6 +455,173 @@ func (s *ShareService) Open(ctx context.Context, token, password, relativePath, 
 			Items: items,
 		},
 	}, nil
+}
+
+func (s *ShareService) resolveShareTarget(ctx context.Context, share *entity.ShareLink) (*shareTargetResolution, error) {
+	node, err := s.resolveShareTargetNode(ctx, share)
+	if err != nil {
+		return nil, err
+	}
+	if node != nil {
+		return s.shareTargetFromNode(ctx, node)
+	}
+	return s.resolveLegacyShareTarget(ctx, share)
+}
+
+func (s *ShareService) resolveShareTargetNode(ctx context.Context, share *entity.ShareLink) (*entity.VFSNode, error) {
+	if s.metadataReader == nil {
+		return nil, nil
+	}
+	if share.TargetVFSNodeID > 0 {
+		node, err := s.metadataReader.ResolveNodeByID(ctx, share.TargetVFSNodeID)
+		if err != nil {
+			return nil, ErrFileNotFound
+		}
+		if metadataVFSNodeUnavailable(node) {
+			return nil, ErrFileNotFound
+		}
+		return node, nil
+	}
+
+	targetVirtualPath := share.TargetVirtualPath
+	if strings.TrimSpace(targetVirtualPath) == "" {
+		source, err := s.shareTargetSourceByID(ctx, share.SourceID)
+		if err != nil {
+			return nil, err
+		}
+		targetVirtualPath = mergeMountAndInnerPath(source.MountPath, share.Path)
+	}
+	if strings.TrimSpace(targetVirtualPath) == "" {
+		return nil, ErrPathInvalid
+	}
+	normalizedPath, err := normalizeVirtualPath(targetVirtualPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.refreshShareTargetMetadata(ctx, normalizedPath); err != nil {
+		return nil, err
+	}
+	node, err := s.metadataReader.ResolveNode(ctx, normalizedPath)
+	if err != nil {
+		return nil, nil
+	}
+	if metadataVFSNodeUnavailable(node) {
+		return nil, ErrFileNotFound
+	}
+	return node, nil
+}
+
+func (s *ShareService) shareTargetFromNode(ctx context.Context, node *entity.VFSNode) (*shareTargetResolution, error) {
+	if node == nil || node.SourceID == nil || metadataVFSNodeUnavailable(node) {
+		return nil, ErrFileNotFound
+	}
+	source, err := s.shareTargetSourceByID(ctx, *node.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	innerPath, err := shareInnerPathForSource(source, node.Path)
+	if err != nil {
+		return nil, err
+	}
+	name := node.Name
+	if name == "" && node.Path != "/" {
+		name = path.Base(node.Path)
+	}
+	return &shareTargetResolution{
+		Node:        node,
+		Source:      source,
+		VirtualPath: node.Path,
+		InnerPath:   innerPath,
+		Name:        name,
+		IsDir:       metadataVFSNodeIsDirectory(node),
+		NodeFirst:   true,
+	}, nil
+}
+
+func (s *ShareService) resolveLegacyShareTarget(ctx context.Context, share *entity.ShareLink) (*shareTargetResolution, error) {
+	sourceID := share.ResolvedSourceID
+	if sourceID == 0 {
+		sourceID = share.SourceID
+	}
+	source, err := s.shareTargetSourceByID(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	innerPath := share.ResolvedInnerPath
+	if strings.TrimSpace(innerPath) == "" {
+		innerPath = share.Path
+	}
+	virtualPath, name, isDir, err := s.inspectTarget(ctx, source, innerPath)
+	if err != nil {
+		return nil, err
+	}
+	targetVirtualPath := share.TargetVirtualPath
+	if strings.TrimSpace(targetVirtualPath) == "" {
+		targetVirtualPath = mergeMountAndInnerPath(source.MountPath, virtualPath)
+	}
+	if strings.TrimSpace(targetVirtualPath) == "" {
+		targetVirtualPath = virtualPath
+	}
+	return &shareTargetResolution{
+		Source:      source,
+		VirtualPath: targetVirtualPath,
+		InnerPath:   virtualPath,
+		Name:        name,
+		IsDir:       isDir,
+		NodeFirst:   false,
+	}, nil
+}
+
+func (s *ShareService) resolveSharePathTarget(ctx context.Context, root *shareTargetResolution, targetVirtualPath string) (*shareTargetResolution, error) {
+	if root == nil || root.Source == nil {
+		return nil, ErrFileNotFound
+	}
+	normalizedPath, err := normalizeVirtualPath(targetVirtualPath)
+	if err != nil {
+		return nil, err
+	}
+	if !isWithinShareRoot(root.VirtualPath, normalizedPath) {
+		return nil, ErrPathInvalid
+	}
+	if root.NodeFirst && s.metadataReader != nil {
+		_ = s.refreshShareMetadataPath(ctx, parentVirtualPath(normalizedPath))
+		node, err := s.metadataReader.ResolveNode(ctx, normalizedPath)
+		if err != nil {
+			return nil, ErrFileNotFound
+		}
+		if metadataVFSNodeUnavailable(node) {
+			return nil, ErrFileNotFound
+		}
+		return s.shareTargetFromNode(ctx, node)
+	}
+
+	innerPath, err := shareInnerPathForSource(root.Source, normalizedPath)
+	if err != nil {
+		return nil, err
+	}
+	virtualPath, name, isDir, err := s.inspectTarget(ctx, root.Source, innerPath)
+	if err != nil {
+		return nil, err
+	}
+	return &shareTargetResolution{
+		Source:      root.Source,
+		VirtualPath: normalizedPath,
+		InnerPath:   virtualPath,
+		Name:        name,
+		IsDir:       isDir,
+		NodeFirst:   false,
+	}, nil
+}
+
+func (s *ShareService) shareTargetSourceByID(ctx context.Context, sourceID uint) (*entity.StorageSource, error) {
+	source, err := s.sourceRepo.FindByID(ctx, sourceID)
+	if err != nil {
+		if errors.Is(err, domainrepo.ErrNotFound) {
+			return nil, ErrFileNotFound
+		}
+		return nil, err
+	}
+	return source, nil
 }
 
 func (s *ShareService) inspectTarget(ctx context.Context, source *entity.StorageSource, pathValue string) (string, string, bool, error) {
@@ -535,7 +713,24 @@ func (s *ShareService) refreshShareMetadataPath(ctx context.Context, virtualPath
 	return nil
 }
 
-func (s *ShareService) listPublicDirectory(ctx context.Context, source *entity.StorageSource, shareRootPath string, actualPath string, sortBy, sortOrder string, page, pageSize int) ([]appdto.PublicShareEntry, int, int, error) {
+func (s *ShareService) listPublicDirectory(ctx context.Context, root *shareTargetResolution, current *shareTargetResolution, sortBy, sortOrder string, page, pageSize int) ([]appdto.PublicShareEntry, int, int, error) {
+	if root == nil || current == nil || current.Source == nil {
+		return nil, 0, 0, ErrFileNotFound
+	}
+	if current.NodeFirst && s.metadataReader != nil {
+		_ = s.refreshShareMetadataPath(ctx, current.VirtualPath)
+		resp, err := s.metadataReader.ListChildren(ctx, current.VirtualPath)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		entriesView := toPublicShareEntriesFromVFSItems(resp.Items, root.VirtualPath)
+		sortPublicShareEntries(entriesView, sortBy, sortOrder)
+		pageItems, total, totalPages := paginateItems(entriesView, page, pageSize)
+		return pageItems, total, totalPages, nil
+	}
+
+	source := current.Source
+	actualPath := current.InnerPath
 	if source.DriverType != "local" {
 		driver, err := s.getFileDriver(source.DriverType)
 		if err != nil {
@@ -556,7 +751,7 @@ func (s *ShareService) listPublicDirectory(ctx context.Context, source *entity.S
 			items = append(items, buildStorageEntryItem(source.ID, entry))
 		}
 		sortFileItems(items, sortBy, sortOrder)
-		entriesView := toPublicShareEntries(items, shareRootPath)
+		entriesView := toPublicShareEntries(items, root.InnerPath)
 		pageItems, total, totalPages := paginateItems(entriesView, page, pageSize)
 		return pageItems, total, totalPages, nil
 	}
@@ -589,7 +784,7 @@ func (s *ShareService) listPublicDirectory(ctx context.Context, source *entity.S
 		items = append(items, buildFileItem(source.ID, itemPath, info))
 	}
 	sortFileItems(items, sortBy, sortOrder)
-	entriesView := toPublicShareEntries(items, shareRootPath)
+	entriesView := toPublicShareEntries(items, root.InnerPath)
 	pageItems, total, totalPages := paginateItems(entriesView, page, pageSize)
 	return pageItems, total, totalPages, nil
 }
@@ -672,13 +867,34 @@ func toShareView(share *entity.ShareLink) appdto.ShareView {
 	}
 }
 
-func (s *ShareService) buildShareDownloadURL(sourceID uint, filePath, disposition string, expiresAt *time.Time) (string, error) {
+func toShareViewWithTarget(share *entity.ShareLink, target *shareTargetResolution) appdto.ShareView {
+	view := toShareView(share)
+	if target == nil || target.Source == nil {
+		return view
+	}
+	view.SourceID = target.Source.ID
+	view.Path = target.InnerPath
+	view.TargetVFSNodeID = share.TargetVFSNodeID
+	if target.Node != nil {
+		view.TargetVFSNodeID = target.Node.ID
+	}
+	view.TargetVirtualPath = target.VirtualPath
+	view.ResolvedSourceID = target.Source.ID
+	view.ResolvedInnerPath = target.InnerPath
+	if target.Name != "" {
+		view.Name = target.Name
+	}
+	view.IsDir = target.IsDir
+	return view
+}
+
+func (s *ShareService) buildShareDownloadURL(sourceID uint, filePath, virtualPath, disposition string, expiresAt *time.Time) (string, error) {
 	if disposition == "" {
 		disposition = "attachment"
 	}
 	tokenTTL := 5 * time.Minute
 	if expiresAt != nil {
-		remaining := time.Until(*expiresAt)
+		remaining := expiresAt.Sub(s.now())
 		if remaining <= 0 {
 			return "", ErrShareExpired
 		}
@@ -687,17 +903,25 @@ func (s *ShareService) buildShareDownloadURL(sourceID uint, filePath, dispositio
 		}
 	}
 
-	fileToken, _, err := s.fileAccessTokens.Issue(sourceID, filePath, "share", disposition, tokenTTL)
+	normalizedFilePath, err := normalizeVirtualPath(filePath)
+	if err != nil {
+		return "", err
+	}
+	normalizedVirtualPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return "", err
+	}
+
+	fileToken, _, err := s.fileAccessTokens.Issue(sourceID, normalizedFilePath, "share", disposition, tokenTTL)
 	if err != nil {
 		return "", err
 	}
 
 	params := url.Values{}
-	params.Set("source_id", fmt.Sprintf("%d", sourceID))
-	params.Set("path", filePath)
+	params.Set("path", normalizedVirtualPath)
 	params.Set("disposition", disposition)
 	params.Set("access_token", fileToken)
-	return "/api/v1/files/download?" + params.Encode(), nil
+	return "/api/v2/fs/download?" + params.Encode(), nil
 }
 
 func resolveShareTargetPath(shareRootPath string, requestedPath string) (string, string, error) {
@@ -738,6 +962,34 @@ func normalizeShareRelativePath(input string) (string, error) {
 	return normalizeVirtualPath(input)
 }
 
+func shareInnerPathForSource(source *entity.StorageSource, virtualPath string) (string, error) {
+	if source == nil {
+		return "", ErrFileNotFound
+	}
+	normalizedPath, err := normalizeVirtualPath(virtualPath)
+	if err != nil {
+		return "", err
+	}
+	mountPath, err := normalizeMountPath(source.MountPath)
+	if err != nil {
+		return "", err
+	}
+	if !isSubPath(mountPath, normalizedPath) {
+		return "", ErrFileNotFound
+	}
+	if mountPath == "/" {
+		return normalizedPath, nil
+	}
+	innerPath := strings.TrimPrefix(normalizedPath, mountPath)
+	if innerPath == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(innerPath, "/") {
+		innerPath = "/" + innerPath
+	}
+	return normalizeVirtualPath(innerPath)
+}
+
 func isWithinShareRoot(rootPath string, targetPath string) bool {
 	if rootPath == "/" {
 		return strings.HasPrefix(targetPath, "/")
@@ -751,6 +1003,9 @@ func isWithinShareRoot(rootPath string, targetPath string) bool {
 func toPublicShareEntries(items []appdto.FileItem, shareRootPath string) []appdto.PublicShareEntry {
 	entries := make([]appdto.PublicShareEntry, 0, len(items))
 	for _, item := range items {
+		if isHiddenPublicShareEntryName(item.Name) {
+			continue
+		}
 		relativePath := publicShareRelativePath(shareRootPath, item.Path)
 		entries = append(entries, appdto.PublicShareEntry{
 			Name:         item.Name,
@@ -771,22 +1026,116 @@ func toPublicShareEntries(items []appdto.FileItem, shareRootPath string) []appdt
 	return entries
 }
 
+func toPublicShareEntriesFromVFSItems(items []appdto.VFSItem, shareRootPath string) []appdto.PublicShareEntry {
+	entries := make([]appdto.PublicShareEntry, 0, len(items))
+	for _, item := range items {
+		if isHiddenPublicShareEntryName(item.Name) || isUnavailablePublicShareVFSItem(item) {
+			continue
+		}
+		isDir := item.EntryKind == string(VirtualEntryKindDirectory)
+		relativePath := publicShareRelativePath(shareRootPath, item.Path)
+		thumbnail := (*string)(nil)
+		entries = append(entries, appdto.PublicShareEntry{
+			Name:         item.Name,
+			Path:         relativePath,
+			ParentPath:   publicShareParentPath(relativePath),
+			IsDir:        isDir,
+			PreviewType:  publicSharePreviewTypeFromParts(isDir, item.MimeType),
+			Size:         item.Size,
+			MimeType:     item.MimeType,
+			Extension:    item.Extension,
+			ModifiedAt:   item.ModifiedAt,
+			CreatedAt:    item.CreatedAt,
+			CanPreview:   item.CanPreview,
+			CanDownload:  item.CanDownload,
+			ThumbnailURL: thumbnail,
+		})
+	}
+	return entries
+}
+
+func isUnavailablePublicShareVFSItem(item appdto.VFSItem) bool {
+	switch item.SyncState {
+	case entity.VFSNodeSyncStateMissing,
+		entity.VFSNodeSyncStateError,
+		entity.VFSNodeSyncStatePending,
+		entity.VFSNodeSyncStateSyncing,
+		entity.VFSNodeSyncStateConflict:
+		return true
+	default:
+		return false
+	}
+}
+
+func sortPublicShareEntries(entries []appdto.PublicShareEntry, sortBy, sortOrder string) {
+	desc := strings.EqualFold(sortOrder, "desc")
+	if sortBy == "" {
+		sortBy = "name"
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		var cmp int
+		switch sortBy {
+		case "size":
+			cmp = compareInt64(entries[i].Size, entries[j].Size)
+		case "name":
+			cmp = strings.Compare(strings.ToLower(entries[i].Name), strings.ToLower(entries[j].Name))
+		default:
+			cmp = strings.Compare(entries[i].ModifiedAt, entries[j].ModifiedAt)
+		}
+		if cmp == 0 {
+			cmp = strings.Compare(strings.ToLower(entries[i].Name), strings.ToLower(entries[j].Name))
+		}
+		if cmp == 0 {
+			cmp = strings.Compare(entries[i].Path, entries[j].Path)
+		}
+		if desc {
+			return cmp > 0
+		}
+		return cmp < 0
+	})
+}
+
+func compareInt64(left int64, right int64) int {
+	switch {
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func isHiddenPublicShareEntryName(name string) bool {
+	return strings.HasPrefix(name, ".trash") || strings.HasPrefix(name, ".system")
+}
+
 func publicSharePreviewType(item appdto.FileItem) string {
 	if item.IsDir {
 		return "directory"
 	}
+	return publicSharePreviewTypeFromParts(false, item.MimeType)
+}
+
+func publicSharePreviewTypeFromParts(isDir bool, mimeType string) string {
+	if isDir {
+		return "directory"
+	}
 	switch {
-	case strings.HasPrefix(item.MimeType, "image/"):
+	case strings.HasPrefix(mimeType, "image/"):
 		return "image"
-	case strings.HasPrefix(item.MimeType, "video/"):
+	case strings.HasPrefix(mimeType, "video/"):
 		return "video"
-	case strings.HasPrefix(item.MimeType, "audio/"):
+	case strings.HasPrefix(mimeType, "audio/"):
 		return "audio"
-	case item.MimeType == "application/pdf":
+	case mimeType == "application/pdf":
 		return "pdf"
-	case strings.HasSuffix(item.MimeType, "json"):
+	case strings.HasSuffix(mimeType, "json"):
 		return "json"
-	case strings.HasPrefix(item.MimeType, "text/"):
+	case strings.HasPrefix(mimeType, "text/"):
 		return "text"
 	default:
 		return "binary"

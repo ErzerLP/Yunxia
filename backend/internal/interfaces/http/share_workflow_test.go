@@ -94,6 +94,13 @@ func TestShareFileLifecycle(t *testing.T) {
 	if location == "" {
 		t.Fatalf("expected redirect location, got headers=%v", publicRec.Header())
 	}
+	parsedLocation, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("url.Parse(location) error = %v", err)
+	}
+	if parsedLocation.Path != "/api/v2/fs/download" || parsedLocation.Query().Get("path") != "/local/docs/hello.txt" {
+		t.Fatalf("expected public file share to redirect through v2 current VFS path, got %s", location)
+	}
 
 	downloadRec := performRequest(t, engine, http.MethodGet, location, nil, "")
 	if downloadRec.Code != http.StatusOK {
@@ -602,11 +609,24 @@ func TestS3ShareDirectoryBrowseAndRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("url.Parse(location) error = %v", err)
 	}
-	if parsed.Query().Get("path") != "/movies/demo.mp4" {
-		t.Fatalf("unexpected s3 shared redirect path = %s", location)
+	expectedVFSPath := created.Share["target_virtual_path"].(string) + "/demo.mp4"
+	if parsed.Path != "/api/v2/fs/download" || parsed.Query().Get("path") != expectedVFSPath {
+		t.Fatalf("unexpected s3 shared backend redirect path = %s, want %s", location, expectedVFSPath)
 	}
 	if parsed.Query().Get("disposition") != "inline" {
 		t.Fatalf("unexpected s3 shared redirect disposition = %s", location)
+	}
+	downloadRec := performRequest(t, engine, http.MethodGet, location, nil, "")
+	if downloadRec.Code != http.StatusFound {
+		t.Fatalf("s3 shared backend download expected provider 302, got %d body=%s", downloadRec.Code, downloadRec.Body.String())
+	}
+	providerLocation := downloadRec.Header().Get("Location")
+	providerURL, err := url.Parse(providerLocation)
+	if err != nil {
+		t.Fatalf("url.Parse(provider location) error = %v", err)
+	}
+	if providerURL.Query().Get("path") != "/movies/demo.mp4" {
+		t.Fatalf("unexpected provider redirect path = %s", providerLocation)
 	}
 
 	sortedRec := performRequest(t, engine, http.MethodGet, link+"?sort_by=name&sort_order=desc&page=1&page_size=10", nil, "")
