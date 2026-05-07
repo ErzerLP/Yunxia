@@ -49,6 +49,8 @@ var (
 	ErrMetadataVFSCommitFailed = errors.New("metadata vfs commit failed")
 	// ErrMetadataVFSMountSyncFailed 表示存储源挂载同步到 metadata VFS 控制面失败。
 	ErrMetadataVFSMountSyncFailed = errors.New("metadata vfs mount sync failed")
+	// ErrMetadataVFSMutationSyncFailed 表示 VFS 写操作成功后同步 metadata VFS 控制面失败。
+	ErrMetadataVFSMutationSyncFailed = errors.New("metadata vfs mutation sync failed")
 	// ErrTagInvalid 表示 VFS tag 参数非法。
 	ErrTagInvalid = errors.New("tag invalid")
 	// ErrTagForbidden 表示当前用户不能操作指定 tag。

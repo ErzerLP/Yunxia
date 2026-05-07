@@ -1205,6 +1205,9 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - 由 mount 组合出来的纯虚拟目录节点
 - `/fs/list` 与 `/fs/search` 现在以 metadata VFS 读模型为准；进入挂载目录时后端会按需懒刷新当前目录的直接子项，再从 DB 返回列表 / 搜索结果
 - 懒刷新失败时后端优先保留已有 metadata 视图，避免 provider 短暂不可用导致目录完全不可读；不可下载 / 冲突 / 缺失状态的文件会通过 `can_download=false` 收敛给前端
+- `/fs/mkdir`、`/fs/rename`、`/fs/move`、`/fs/delete` 在底层 driver / file operator 成功后同步更新 metadata VFS 控制面；`/fs/copy` 在底层复制成功后刷新目标父目录，确保后续 `/fs/list` 以 metadata 视图立即可见
+- 若底层写操作失败，metadata VFS 不会被修改；若底层已成功但 metadata 同步失败，接口返回 `500 METADATA_VFS_MUTATION_SYNC_FAILED`，响应 message 固定为 `metadata vfs mutation sync failed`，不会暴露物理路径、SQL 细节或 provider 原始 payload
+- 跨 source `move/copy` 本阶段只保留既有 local-to-local 同步能力；非 local 跨 source 仍返回稳定 `422 SOURCE_DRIVER_UNSUPPORTED` / `SOURCE_OPERATION_UNSUPPORTED`，不会伪装为全量 transfer 已完成
 - 多用户开启后，`/fs/list?path=/` 只投影当前用户可见的挂载源；未授权 source 的挂载点名称不会出现在根目录
 - 本地挂载目录探测为不可写时，列表项 `can_delete=false`；写操作返回 `403 SOURCE_READ_ONLY`
 - 纯虚拟目录上的写操作（mkdir / rename / move / copy / delete / upload init）如果没有唯一 backing storage，返回 `409 NO_BACKING_STORAGE`
@@ -1527,6 +1530,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `UPLOAD_TOO_LARGE`
 - `TRASH_ITEM_NOT_FOUND`
 - `TRASH_RESTORE_CONFLICT`
+- `METADATA_VFS_MUTATION_SYNC_FAILED`
 - `TAG_INVALID`
 - `TAG_NOT_FOUND`
 - `TAG_BINDING_NOT_FOUND`

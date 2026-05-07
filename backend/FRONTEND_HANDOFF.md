@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待适配 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
 | 待适配 | 2026-05-07 | VFS 标签 | 文件/VFS 页、文件详情/右键菜单、后续筛选入口 | P2 | `/api/v1/tags*`、`/api/v2/fs/tags*` | [详情](#handoff-2026-05-07-vfs-tags) |
 | 待联调 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页、上传入口、离线任务/RSS 目标选择 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
 | 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
@@ -956,3 +957,19 @@ type PikPakSecretPatch = {
   - `POST /api/v2/fs/tags/detach { path, tag_id }`
 - 标签按当前登录用户隔离；普通用户只能管理和绑定自己的标签。
 - 完整字段、示例和错误码见 `backend/API_CONTRACT.md` 的 `3.15 VFS 标签`。
+
+<a id="handoff-2026-05-07-vfs-mutation-metadata-sync"></a>
+
+### [P2][待适配][VFS 写操作] 2026-05-07 Metadata VFS 写后同步错误码
+
+#### 前端适配 checklist
+
+- [ ] `/api/v2/fs` 写操作成功后直接按现有流程刷新列表；后端已保证 metadata list 立即反映 `mkdir`、`rename`、`move`、`copy`、`delete` 结果。
+- [ ] 新增错误码处理：`METADATA_VFS_MUTATION_SYNC_FAILED`（HTTP 500），提示“文件已写入底层存储，但同步目录索引失败，请刷新目录或稍后重试”，不要展示原始 `message` 之外的低层详情。
+- [ ] 跨 source `move/copy` 仍按现有 unsupported 错误处理；不要在 UI 中提示已创建完整跨源传输任务。
+
+#### 本次后端行为变化
+
+- `mkdir` / `rename` / `move` / `delete` 在底层操作成功后同步 metadata VFS mutation。
+- `copy` 在底层复制成功后刷新目标父目录，确保 `/api/v2/fs/list` 立即可见。
+- 底层失败不会修改 metadata；metadata 同步失败只返回稳定错误码，详见 `backend/API_CONTRACT.md` 的 `3.14 统一虚拟目录树 V2`。

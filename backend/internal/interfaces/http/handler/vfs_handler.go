@@ -342,6 +342,8 @@ func (h *VFSHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusForbidden, "SOURCE_READ_ONLY", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrNoBackingStorage):
 		httpresp.Error(c, http.StatusConflict, "NO_BACKING_STORAGE", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrMetadataVFSMutationSyncFailed):
+		httpresp.Error(c, http.StatusInternalServerError, "METADATA_VFS_MUTATION_SYNC_FAILED", appsvc.ErrMetadataVFSMutationSyncFailed.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudAuthFailed):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "CLOUD_AUTH_FAILED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrCloudTokenInvalid):

@@ -12,6 +12,7 @@ import (
 
 	appdto "yunxia/internal/application/dto"
 	"yunxia/internal/domain/entity"
+	"yunxia/internal/infrastructure/security"
 )
 
 type vfsFileOperator interface {
@@ -55,6 +56,13 @@ type metadataVFSRefreshService interface {
 	RefreshPath(ctx context.Context, targetPath string) (*MetadataVFSRefreshResult, error)
 }
 
+type metadataVFSMutationService interface {
+	Mkdir(ctx context.Context, req MetadataVFSMkdirRequest) (*appdto.VFSItem, error)
+	Rename(ctx context.Context, req MetadataVFSRenameRequest) (string, *appdto.VFSItem, error)
+	Move(ctx context.Context, req MetadataVFSMoveRequest) (string, *appdto.VFSItem, error)
+	Delete(ctx context.Context, virtualPath string) (time.Time, error)
+}
+
 // VFSService 提供统一虚拟目录树的路径解析能力。
 type VFSService struct {
 	registry            *MountRegistry
@@ -64,6 +72,7 @@ type VFSService struct {
 	aclAuthorizer       *ACLAuthorizer
 	metadataReader      metadataVFSReader
 	metadataRefresh     metadataVFSRefreshService
+	metadataMutation    metadataVFSMutationService
 	localDirWritable    func(string) bool
 }
 
@@ -115,6 +124,16 @@ func WithVFSMetadataServices(reader metadataVFSReader, refresh metadataVFSRefres
 	return func(s *VFSService) {
 		s.metadataReader = reader
 		s.metadataRefresh = refresh
+		if mutation, ok := reader.(metadataVFSMutationService); ok {
+			s.metadataMutation = mutation
+		}
+	}
+}
+
+// WithVFSMetadataMutationService 注册 VFS 写操作后的 metadata 控制面同步服务。
+func WithVFSMetadataMutationService(mutation metadataVFSMutationService) VFSServiceOption {
+	return func(s *VFSService) {
+		s.metadataMutation = mutation
 	}
 }
 
@@ -185,6 +204,11 @@ func (s *VFSService) Mkdir(ctx context.Context, req appdto.VFSMkdirRequest) (*ap
 	}
 
 	view := rewriteFileItemToVFSItem(resolved.MatchedMountPath, *item)
+	if metadataItem, err := s.syncMetadataMkdir(ctx, req.ParentPath, req.Name); err != nil {
+		return nil, err
+	} else if metadataItem != nil {
+		return metadataItem, nil
+	}
 	return &view, nil
 }
 
@@ -216,6 +240,11 @@ func (s *VFSService) Rename(ctx context.Context, req appdto.VFSRenameRequest) (s
 	virtualOldPath := mergeMountAndInnerPath(resolvedPath.MatchedMountPath, oldPath)
 	virtualNewPath := mergeMountAndInnerPath(resolvedPath.MatchedMountPath, newPath)
 	view := rewriteFileItemToVFSItem(resolvedPath.MatchedMountPath, *item)
+	if metadataItem, err := s.syncMetadataRename(ctx, virtualOldPath, req.NewName, virtualNewPath); err != nil {
+		return "", "", nil, err
+	} else if metadataItem != nil {
+		view = *metadataItem
+	}
 	return virtualOldPath, virtualNewPath, &view, nil
 }
 
@@ -243,6 +272,9 @@ func (s *VFSService) Delete(ctx context.Context, req appdto.VFSDeleteRequest) (t
 	})
 	if err != nil {
 		return time.Time{}, normalizeVFSWriteError(err)
+	}
+	if err := s.syncMetadataDelete(ctx, resolvedPath.VirtualPath); err != nil {
+		return time.Time{}, err
 	}
 	return deletedAt, nil
 }
@@ -420,7 +452,12 @@ func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyReque
 			if moveErr != nil {
 				return "", "", normalizeVFSWriteError(moveErr)
 			}
-			return mergeMountAndInnerPath(sourceResolved.MatchedMountPath, oldPath), mergeMountAndInnerPath(targetResolved.MatchedMountPath, newPath), nil
+			virtualOldPath := mergeMountAndInnerPath(sourceResolved.MatchedMountPath, oldPath)
+			virtualNewPath := mergeMountAndInnerPath(targetResolved.MatchedMountPath, newPath)
+			if err := s.syncMetadataMove(ctx, virtualOldPath, parentVirtualPath(virtualNewPath), virtualNewPath); err != nil {
+				return "", "", err
+			}
+			return virtualOldPath, virtualNewPath, nil
 		}
 
 		sourcePath, newPath, copyErr := s.requireFileOperator().Copy(ctx, appdto.MoveCopyRequest{
@@ -431,7 +468,12 @@ func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyReque
 		if copyErr != nil {
 			return "", "", normalizeVFSWriteError(copyErr)
 		}
-		return mergeMountAndInnerPath(sourceResolved.MatchedMountPath, sourcePath), mergeMountAndInnerPath(targetResolved.MatchedMountPath, newPath), nil
+		virtualSourcePath := mergeMountAndInnerPath(sourceResolved.MatchedMountPath, sourcePath)
+		virtualNewPath := mergeMountAndInnerPath(targetResolved.MatchedMountPath, newPath)
+		if err := s.syncMetadataRefreshParent(ctx, virtualNewPath); err != nil {
+			return "", "", err
+		}
+		return virtualSourcePath, virtualNewPath, nil
 	}
 
 	oldPath, newPath, err := s.copyAcrossSources(sourceResolved, targetResolved)
@@ -440,6 +482,14 @@ func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyReque
 	}
 	if removeSource {
 		if err := s.removeLocalResolvedPath(sourceResolved); err != nil {
+			return "", "", err
+		}
+	}
+	if err := s.syncMetadataRefreshParent(ctx, newPath); err != nil {
+		return "", "", err
+	}
+	if removeSource {
+		if err := s.syncMetadataDelete(ctx, oldPath); err != nil {
 			return "", "", err
 		}
 	}
@@ -463,7 +513,7 @@ func (s *VFSService) copyAcrossSources(sourceResolved ResolvedPath, targetResolv
 		if errors.Is(err, os.ErrNotExist) {
 			return "", "", ErrFileNotFound
 		}
-		return "", "", err
+		return "", "", normalizeLocalWriteError(err)
 	}
 
 	targetParentPath, _, err := splitParentName(targetResolved.InnerPath)
@@ -479,7 +529,7 @@ func (s *VFSService) copyAcrossSources(sourceResolved ResolvedPath, targetResolv
 		if errors.Is(err, os.ErrNotExist) {
 			return "", "", ErrPathInvalid
 		}
-		return "", "", err
+		return "", "", normalizeLocalWriteError(err)
 	}
 	if !targetParentInfo.IsDir() {
 		return "", "", ErrPathInvalid
@@ -495,7 +545,7 @@ func (s *VFSService) copyAcrossSources(sourceResolved ResolvedPath, targetResolv
 	if _, err := os.Stat(targetPhysicalPath); err == nil {
 		return "", "", ErrNameConflict
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", "", err
+		return "", "", normalizeLocalWriteError(err)
 	}
 
 	if sourceInfo.IsDir() {
@@ -674,6 +724,123 @@ func (s *VFSService) refreshMetadataPathBestEffort(ctx context.Context, node *en
 	return nil
 }
 
+func (s *VFSService) syncMetadataMkdir(ctx context.Context, parentPath string, name string) (*appdto.VFSItem, error) {
+	if s.metadataMutation == nil {
+		return nil, nil
+	}
+	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
+		return nil, err
+	}
+	item, err := s.metadataMutation.Mkdir(ctx, MetadataVFSMkdirRequest{
+		ParentPath: parentPath,
+		Name:       name,
+		ActorID:    currentMetadataMutationActorID(ctx),
+	})
+	if err != nil {
+		return nil, maskMetadataVFSMutationSyncError(err)
+	}
+	return item, nil
+}
+
+func (s *VFSService) syncMetadataRename(ctx context.Context, oldPath string, newName string, newPath string) (*appdto.VFSItem, error) {
+	if s.metadataMutation == nil {
+		return nil, nil
+	}
+	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
+		return nil, err
+	}
+	_, item, err := s.metadataMutation.Rename(ctx, MetadataVFSRenameRequest{
+		Path:    oldPath,
+		NewName: newName,
+		ActorID: currentMetadataMutationActorID(ctx),
+	})
+	if err == nil {
+		return item, nil
+	}
+	if errors.Is(err, ErrFileNotFound) {
+		if refreshErr := s.syncMetadataRefreshParent(ctx, newPath); refreshErr != nil {
+			return nil, refreshErr
+		}
+		return nil, nil
+	}
+	return nil, maskMetadataVFSMutationSyncError(err)
+}
+
+func (s *VFSService) syncMetadataMove(ctx context.Context, oldPath string, targetParentPath string, newPath string) error {
+	if s.metadataMutation == nil {
+		return nil
+	}
+	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
+		return err
+	}
+	if _, _, err := s.metadataMutation.Move(ctx, MetadataVFSMoveRequest{
+		Path:             oldPath,
+		TargetParentPath: targetParentPath,
+		ActorID:          currentMetadataMutationActorID(ctx),
+	}); err != nil {
+		if errors.Is(err, ErrFileNotFound) {
+			if refreshErr := s.syncMetadataRefreshParent(ctx, newPath); refreshErr != nil {
+				return refreshErr
+			}
+			if parent := parentVirtualPath(oldPath); parent != parentVirtualPath(newPath) {
+				if refreshErr := s.syncMetadataRefreshPath(ctx, parent); refreshErr != nil {
+					return refreshErr
+				}
+			}
+			return nil
+		}
+		return maskMetadataVFSMutationSyncError(err)
+	}
+	return nil
+}
+
+func (s *VFSService) syncMetadataDelete(ctx context.Context, targetPath string) error {
+	if s.metadataMutation == nil {
+		return nil
+	}
+	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
+		return err
+	}
+	if _, err := s.metadataMutation.Delete(ctx, targetPath); err != nil {
+		if errors.Is(err, ErrFileNotFound) {
+			return nil
+		}
+		return maskMetadataVFSMutationSyncError(err)
+	}
+	return nil
+}
+
+func (s *VFSService) syncMetadataRefreshParent(ctx context.Context, itemPath string) error {
+	parentPath := parentVirtualPath(itemPath)
+	return s.syncMetadataRefreshPath(ctx, parentPath)
+}
+
+func (s *VFSService) syncMetadataRefreshPath(ctx context.Context, targetPath string) error {
+	if s.metadataRefresh == nil {
+		if s.metadataReader == nil && s.metadataMutation == nil {
+			return nil
+		}
+		return ErrMetadataVFSMutationSyncFailed
+	}
+	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
+		return err
+	}
+	if _, err := s.metadataRefresh.RefreshPath(ctx, targetPath); err != nil {
+		return maskMetadataVFSMutationSyncError(err)
+	}
+	return nil
+}
+
+func (s *VFSService) ensureMetadataReadyForMutation(ctx context.Context) error {
+	if s.metadataReader == nil {
+		return nil
+	}
+	if err := s.ensureMetadataRoot(ctx); err != nil {
+		return maskMetadataVFSMutationSyncError(err)
+	}
+	return nil
+}
+
 func (s *VFSService) filterMetadataVFSItems(ctx context.Context, items []appdto.VFSItem) ([]appdto.VFSItem, error) {
 	mounts, err := s.registry.ListEnabledMounts(ctx)
 	if err != nil {
@@ -787,6 +954,29 @@ func (s *VFSService) canWriteLocalDir(dir string) bool {
 		return true
 	}
 	return s.localDirWritable(dir)
+}
+
+func currentMetadataMutationActorID(ctx context.Context) *uint {
+	auth, ok := security.RequestAuthFromContext(ctx)
+	if !ok || auth.UserID == 0 {
+		return nil
+	}
+	return &auth.UserID
+}
+
+func maskMetadataVFSMutationSyncError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return ErrMetadataVFSMutationSyncFailed
+}
+
+func parentVirtualPath(itemPath string) string {
+	parentPath := path.Dir(itemPath)
+	if parentPath == "." {
+		return "/"
+	}
+	return parentPath
 }
 
 func normalizeVFSWriteError(err error) error {

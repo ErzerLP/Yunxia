@@ -14,6 +14,17 @@
 
 ## 2026-05-07
 
+### VFS Mutation Metadata Sync 阶段
+
+- `/api/v2/fs` 写操作在底层 driver / file operator 成功后同步 metadata VFS 控制面：
+  - `mkdir` 调用 metadata mkdir 创建目录节点
+  - `rename` / `move` 调用 metadata rename/move 更新节点 path 快照
+  - `delete` 调用 metadata soft delete
+  - `copy` 刷新目标父目录，让 metadata list 立即可见
+- 底层写操作失败时不会触发 metadata mutation；metadata 同步失败统一返回安全哨兵 `ErrMetadataVFSMutationSyncFailed` / HTTP `METADATA_VFS_MUTATION_SYNC_FAILED`，避免泄露物理路径、SQL 或 provider payload。
+- 跨 source `move/copy` 继续只保留既有 local-to-local 能力；非 local 跨 source 不伪装为完整 transfer，仍按稳定 unsupported 错误返回。
+- 更新 `backend/API_CONTRACT.md`、`backend/FRONTEND_HANDOFF.md` 与测试：新增 service 覆盖底层失败不改 metadata、metadata 失败脱敏、copy refresh；HTTP workflow 覆盖 mkdir/rename/move/copy/delete 后 metadata list 可见。
+
 ### 上传 / 下载任务 / RSS VFS Node 快照阶段
 
 - `UploadSessionView` / `DownloadTaskView` / `RSSSubscriptionView` 新增 `target_vfs_parent_node_id` 快照字段；后端在目标父目录已存在于 metadata VFS 时保存对应 node id，上层可继续保留 path 快照兼容展示。

@@ -278,6 +278,14 @@ func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("vfs mkdir expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/docs", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list docs after mkdir expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	docsListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	if !containsString(collectMapNames(docsListed.Items), "notes") {
+		t.Fatalf("expected /docs to contain notes after mkdir, got %+v", docsListed.Items)
+	}
 
 	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/rename", map[string]any{
 		"path":     "/docs/hello.txt",
@@ -285,6 +293,15 @@ func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
 	}, accessToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("vfs rename expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/docs", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list docs after rename expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	docsListed = decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	docsNames := collectMapNames(docsListed.Items)
+	if !containsString(docsNames, "greeting.txt") || containsString(docsNames, "hello.txt") {
+		t.Fatalf("expected /docs to contain greeting.txt only after rename, got %+v", docsListed.Items)
 	}
 
 	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/move", map[string]any{
@@ -301,6 +318,14 @@ func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
 	}, accessToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("vfs copy expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/docs/notes", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list notes after copy expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	notesListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	if !containsString(collectMapNames(notesListed.Items), "greeting.txt") {
+		t.Fatalf("expected copied greeting.txt visible in /docs/notes, got %+v", notesListed.Items)
 	}
 
 	rec = performRequest(t, engine, http.MethodDelete, "/api/v2/fs", map[string]any{
@@ -324,7 +349,7 @@ func TestVFSMkdirMoveCopyDeleteLifecycle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("vfs list notes expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	notesListed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	notesListed = decodeEnvelope[vfsListData](t, rec.Body.Bytes())
 	if containsString(collectMapNames(notesListed.Items), "greeting.txt") {
 		t.Fatalf("expected deleted greeting.txt absent from /docs/notes, got %+v", notesListed.Items)
 	}

@@ -338,6 +338,8 @@ func mapFileErrorCode(err error) string {
 		return "CLOUD_PROVIDER_UNAVAILABLE"
 	case errors.Is(err, ErrSourceReadOnly):
 		return "SOURCE_READ_ONLY"
+	case errors.Is(err, ErrMetadataVFSMutationSyncFailed):
+		return "METADATA_VFS_MUTATION_SYNC_FAILED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:
