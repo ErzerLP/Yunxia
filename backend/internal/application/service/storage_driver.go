@@ -356,3 +356,11 @@ func WithShareACLAuthorizer(authorizer *ACLAuthorizer) ShareServiceOption {
 		s.aclAuthorizer = authorizer
 	}
 }
+
+// WithShareMetadataVFS 注册分享目标 VFS node 解析与懒刷新能力。
+func WithShareMetadataVFS(reader metadataVFSReader, refresh metadataVFSRefreshService) ShareServiceOption {
+	return func(s *ShareService) {
+		s.metadataReader = reader
+		s.metadataRefresh = refresh
+	}
+}

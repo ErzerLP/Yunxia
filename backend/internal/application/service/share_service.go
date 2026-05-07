@@ -30,10 +30,12 @@ type ShareService struct {
 	fileAccessTokens interface {
 		Issue(sourceID uint, path, purpose, disposition string, ttl time.Duration) (string, time.Time, error)
 	}
-	fileDrivers   map[string]FileDriver
-	now           func() time.Time
-	logger        *slog.Logger
-	auditRecorder *appaudit.Recorder
+	fileDrivers     map[string]FileDriver
+	metadataReader  metadataVFSReader
+	metadataRefresh metadataVFSRefreshService
+	now             func() time.Time
+	logger          *slog.Logger
+	auditRecorder   *appaudit.Recorder
 }
 
 // ShareOpenResult 表示公开分享访问结果。
@@ -182,11 +184,24 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 	if targetVirtualPath == "" {
 		targetVirtualPath = virtualPath
 	}
+	targetVFSNodeID, err := s.resolveShareTargetVFSNodeID(ctx, targetVirtualPath)
+	if err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultFailed,
+			ErrorCode:    shareErrorCode(err),
+			SourceID:     &source.ID,
+			VirtualPath:  targetVirtualPath,
+		})
+		return nil, err
+	}
 
 	share := &entity.ShareLink{
 		UserID:            userID,
 		SourceID:          source.ID,
 		Path:              virtualPath,
+		TargetVFSNodeID:   targetVFSNodeID,
 		TargetVirtualPath: targetVirtualPath,
 		ResolvedSourceID:  source.ID,
 		ResolvedInnerPath: virtualPath,
@@ -466,6 +481,60 @@ func (s *ShareService) inspectTarget(ctx context.Context, source *entity.Storage
 	return virtualPath, info.Name(), info.IsDir(), nil
 }
 
+func (s *ShareService) resolveShareTargetVFSNodeID(ctx context.Context, targetVirtualPath string) (uint, error) {
+	if s.metadataReader == nil {
+		return 0, nil
+	}
+	normalizedPath, err := normalizeVirtualPath(targetVirtualPath)
+	if err != nil {
+		return 0, err
+	}
+	refreshErr := s.refreshShareTargetMetadata(ctx, normalizedPath)
+	node, err := s.metadataReader.ResolveNode(ctx, normalizedPath)
+	if err == nil {
+		return node.ID, nil
+	}
+	if refreshErr != nil {
+		return 0, fmt.Errorf("%w: %w", ErrMetadataVFSCommitFailed, refreshErr)
+	}
+	return 0, fmt.Errorf("%w: %w", ErrMetadataVFSCommitFailed, err)
+}
+
+func (s *ShareService) refreshShareTargetMetadata(ctx context.Context, targetVirtualPath string) error {
+	if s.metadataRefresh == nil {
+		return nil
+	}
+	segments := strings.Split(strings.Trim(strings.TrimSpace(targetVirtualPath), "/"), "/")
+	if len(segments) <= 1 {
+		return s.refreshShareMetadataPath(ctx, "/")
+	}
+	current := "/"
+	for index := 0; index < len(segments)-1; index++ {
+		current = joinVirtualPath(current, segments[index])
+		if err := s.refreshShareMetadataPath(ctx, current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *ShareService) refreshShareMetadataPath(ctx context.Context, virtualPath string) error {
+	if s.metadataReader == nil || s.metadataRefresh == nil {
+		return nil
+	}
+	node, err := s.metadataReader.ResolveNode(ctx, virtualPath)
+	if err != nil {
+		return nil
+	}
+	if node.SourceID == nil {
+		return nil
+	}
+	if _, err := s.metadataRefresh.RefreshPath(ctx, node.Path); err != nil && !errors.Is(err, ErrVFSSyncConflict) {
+		return err
+	}
+	return nil
+}
+
 func (s *ShareService) listPublicDirectory(ctx context.Context, source *entity.StorageSource, shareRootPath string, actualPath string, sortBy, sortOrder string, page, pageSize int) ([]appdto.PublicShareEntry, int, int, error) {
 	if source.DriverType != "local" {
 		driver, err := s.getFileDriver(source.DriverType)
@@ -590,6 +659,7 @@ func toShareView(share *entity.ShareLink) appdto.ShareView {
 		ID:                share.ID,
 		SourceID:          share.SourceID,
 		Path:              share.Path,
+		TargetVFSNodeID:   share.TargetVFSNodeID,
 		TargetVirtualPath: share.TargetVirtualPath,
 		ResolvedSourceID:  share.ResolvedSourceID,
 		ResolvedInnerPath: share.ResolvedInnerPath,

@@ -1148,6 +1148,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 补充：
 
 - `ShareView` 当前包含快照字段：
+  - `target_vfs_node_id`：分享目标对应的 metadata VFS node id；旧数据或未启用 metadata 解析时可能省略
   - `target_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_path`
@@ -1380,6 +1381,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   "id": 1,
   "source_id": 1,
   "path": "/docs/hello.txt",
+  "target_vfs_node_id": 42,
   "target_virtual_path": "/local/docs/hello.txt",
   "resolved_source_id": 1,
   "resolved_inner_path": "/docs/hello.txt",

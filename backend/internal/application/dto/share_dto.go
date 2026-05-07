@@ -19,6 +19,7 @@ type ShareView struct {
 	ID                uint    `json:"id"`
 	SourceID          uint    `json:"source_id"`
 	Path              string  `json:"path"`
+	TargetVFSNodeID   uint    `json:"target_vfs_node_id,omitempty"`
 	TargetVirtualPath string  `json:"target_virtual_path,omitempty"`
 	ResolvedSourceID  uint    `json:"resolved_source_id,omitempty"`
 	ResolvedInnerPath string  `json:"resolved_inner_path,omitempty"`

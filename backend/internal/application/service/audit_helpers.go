@@ -151,6 +151,7 @@ func shareAuditView(share *entity.ShareLink) map[string]any {
 		"user_id":             share.UserID,
 		"source_id":           share.SourceID,
 		"path":                share.Path,
+		"target_vfs_node_id":  share.TargetVFSNodeID,
 		"target_virtual_path": share.TargetVirtualPath,
 		"resolved_source_id":  share.ResolvedSourceID,
 		"resolved_inner_path": share.ResolvedInnerPath,

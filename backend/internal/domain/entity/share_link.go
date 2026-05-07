@@ -8,6 +8,7 @@ type ShareLink struct {
 	UserID            uint
 	SourceID          uint
 	Path              string
+	TargetVFSNodeID   uint
 	TargetVirtualPath string
 	ResolvedSourceID  uint
 	ResolvedInnerPath string

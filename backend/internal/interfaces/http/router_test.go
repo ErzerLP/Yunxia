@@ -646,6 +646,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		fileAccessSvc,
 		appsvc.WithShareAuditRecorder(auditRecorder),
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
+		appsvc.WithShareMetadataVFS(metadataVFSReader, metadataVFSSyncSvc),
 		appsvc.WithShareFileDriver("s3", fakeS3),
 	)
 	vfsTagSvc := appsvc.NewVFSTagService(vfsNodeRepo, vfsTagRepo)

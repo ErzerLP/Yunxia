@@ -295,6 +295,7 @@ type ShareLinkModel struct {
 	UserID            uint       `gorm:"index;not null"`
 	SourceID          uint       `gorm:"index;not null"`
 	Path              string     `gorm:"size:1024;not null"`
+	TargetVFSNodeID   *uint      `gorm:"index"`
 	TargetVirtualPath string     `gorm:"size:1024;not null;default:''"`
 	ResolvedSourceID  *uint      `gorm:"index"`
 	ResolvedInnerPath string     `gorm:"size:1024;not null;default:''"`

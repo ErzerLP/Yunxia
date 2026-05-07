@@ -14,6 +14,13 @@
 
 ## 2026-05-07
 
+### 分享绑定 Metadata VFS Node 阶段
+
+- `ShareLink` / `ShareView` 新增 `target_vfs_node_id` 快照字段，分享创建时会按 `target_virtual_path` 解析并绑定 metadata VFS node，后续路径改名/移动时可继续以 node identity 追踪分享目标。
+- 分享创建前会对目标路径的父级目录执行按需 metadata 懒刷新，确保 local/S3/PikPak 等挂载源中已存在但尚未入库的目录/文件可被解析为 VFS node。
+- 生产依赖注入与 HTTP workflow 测试路由均为 `ShareService` 注册 metadata VFS reader/sync service；未注入时保持兼容，`target_vfs_node_id` 为空。
+- 文档同步：更新 `backend/API_CONTRACT.md` 的 `ShareView` 字段说明；本阶段新增字段为向后兼容展示字段，不要求前端立即适配。
+
 ### VFS 标签最小后端能力阶段
 
 - 新增 `VFSTagService` 与 HTTP handler，开放用户自有标签 CRUD：

@@ -25,6 +25,22 @@ type shareOpenData struct {
 	Items       []map[string]any `json:"items"`
 }
 
+func requirePositiveShareNumberField(t *testing.T, share map[string]any, field string) int {
+	t.Helper()
+	raw, exists := share[field]
+	if !exists {
+		t.Fatalf("expected share field %q, got %+v", field, share)
+	}
+	value, ok := raw.(float64)
+	if !ok {
+		t.Fatalf("expected share field %q to be number, got %T(%v)", field, raw, raw)
+	}
+	if value <= 0 {
+		t.Fatalf("expected share field %q > 0, got %v in %+v", field, value, share)
+	}
+	return int(value)
+}
+
 func TestShareFileLifecycle(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	adminToken, sourceID := bootstrapAdmin(t, engine)
@@ -45,6 +61,7 @@ func TestShareFileLifecycle(t *testing.T) {
 	if link == "" {
 		t.Fatalf("expected share link, got %+v", created.Share)
 	}
+	targetNodeID := requirePositiveShareNumberField(t, created.Share, "target_vfs_node_id")
 	if created.Share["target_virtual_path"] != "/local/docs/hello.txt" ||
 		int(created.Share["resolved_source_id"].(float64)) != sourceID ||
 		created.Share["resolved_inner_path"] != "/docs/hello.txt" {
@@ -64,6 +81,9 @@ func TestShareFileLifecycle(t *testing.T) {
 	}
 	if listed.Items[0]["target_virtual_path"] != "/local/docs/hello.txt" {
 		t.Fatalf("expected listed share virtual path, got %+v", listed.Items[0])
+	}
+	if listedNodeID := requirePositiveShareNumberField(t, listed.Items[0], "target_vfs_node_id"); listedNodeID != targetNodeID {
+		t.Fatalf("expected listed target_vfs_node_id=%d, got %d", targetNodeID, listedNodeID)
 	}
 
 	publicRec := performRequest(t, engine, http.MethodGet, link, nil, "")

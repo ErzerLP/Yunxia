@@ -298,6 +298,7 @@ func main() {
 	shareServiceOptions := []appsvc.ShareServiceOption{
 		appsvc.WithShareAuditRecorder(auditRecorder),
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
+		appsvc.WithShareMetadataVFS(metadataVFSReader, metadataVFSSyncSvc),
 	}
 	shareServiceOptions = append(shareServiceOptions, storageDrivers.ShareServiceOptions()...)
 	shareSvc := appsvc.NewShareService(shareRepo, sourceRepo, hasher, fileAccessSvc, shareServiceOptions...)
