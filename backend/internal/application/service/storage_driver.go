@@ -16,6 +16,15 @@ type FileDriver = domainstorage.FileDriver
 // StorageEntry 是 domain 层文件条目的别名。
 type StorageEntry = domainstorage.StorageEntry
 
+// RemoteIndexer 是 domain 层远端懒索引接口的别名。
+type RemoteIndexer = domainstorage.RemoteIndexer
+
+// RemoteListRequest 是 domain 层远端列举请求的别名。
+type RemoteListRequest = domainstorage.RemoteListRequest
+
+// RemoteEntry 是 domain 层远端条目的别名。
+type RemoteEntry = domainstorage.RemoteEntry
+
 // UploadDriver 是 domain 层上传驱动接口的别名。
 type UploadDriver = domainstorage.UploadDriver
 

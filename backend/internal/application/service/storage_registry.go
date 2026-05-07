@@ -10,6 +10,7 @@ type DriverBundle struct {
 	Config         SourceConfigCodec
 	Probe          SourceDriverProbe
 	File           FileDriver
+	Indexer        RemoteIndexer
 	Upload         UploadDriver
 	Import         ImportDriver
 	NativeDownload NativeDownloadDriver
@@ -117,6 +118,19 @@ func (r *StorageDriverRegistry) VFSServiceOptions() []VFSServiceOption {
 		}
 		if bundle.Capabilities != nil {
 			options = append(options, WithVFSCapabilityProvider(bundle.Type, bundle.Capabilities))
+		}
+	}
+	return options
+}
+
+// MetadataVFSSyncServiceOptions 生成 MetadataVFSSyncService 所需的 driver/indexer 注册选项。
+func (r *StorageDriverRegistry) MetadataVFSSyncServiceOptions() []MetadataVFSSyncServiceOption {
+	options := []MetadataVFSSyncServiceOption{}
+	for _, bundle := range r.Bundles() {
+		if bundle.Indexer != nil {
+			options = append(options, WithMetadataVFSSyncIndexer(bundle.Type, bundle.Indexer))
+		} else if bundle.File != nil {
+			options = append(options, WithMetadataVFSSyncFileDriver(bundle.Type, bundle.File))
 		}
 	}
 	return options

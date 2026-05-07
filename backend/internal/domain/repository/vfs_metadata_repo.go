@@ -60,7 +60,9 @@ type StorageObjectRepository interface {
 	Update(ctx context.Context, object *entity.StorageObject) error
 	Delete(ctx context.Context, id uint) error
 	FindByID(ctx context.Context, id uint) (*entity.StorageObject, error)
+	FindByLocator(ctx context.Context, sourceID uint, driverType string, locatorType string, locatorJSON string) (*entity.StorageObject, error)
 	List(ctx context.Context, filter StorageObjectListFilter) ([]*entity.StorageObject, error)
+	UpsertByLocator(ctx context.Context, object *entity.StorageObject) error
 }
 
 // VFSMountRepository 定义 VFS 挂载点仓储能力。

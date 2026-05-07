@@ -227,6 +227,23 @@ func (r *StorageObjectRepository) FindByID(ctx context.Context, id uint) (*entit
 	return storageObjectEntityFromModel(&model), nil
 }
 
+// FindByLocator 按 source/driver/locator 查询 storage object。
+func (r *StorageObjectRepository) FindByLocator(ctx context.Context, sourceID uint, driverType string, locatorType string, locatorJSON string) (*entity.StorageObject, error) {
+	var model StorageObjectModel
+	if err := dbFor(ctx, r.db).
+		Where(
+			"source_id = ? AND driver_type = ? AND locator_type = ? AND locator_json = ?::jsonb",
+			sourceID,
+			driverType,
+			locatorType,
+			jsonObject(locatorJSON),
+		).
+		First(&model).Error; err != nil {
+		return nil, normalizeGormNotFound(err)
+	}
+	return storageObjectEntityFromModel(&model), nil
+}
+
 // List 按条件列出 storage objects。
 func (r *StorageObjectRepository) List(ctx context.Context, filter domainrepo.StorageObjectListFilter) ([]*entity.StorageObject, error) {
 	query := dbFor(ctx, r.db).Model(&StorageObjectModel{})
@@ -255,6 +272,34 @@ func (r *StorageObjectRepository) List(ctx context.Context, filter domainrepo.St
 		items = append(items, storageObjectEntityFromModel(&models[i]))
 	}
 	return items, nil
+}
+
+// UpsertByLocator 基于 source/driver/locator 幂等创建或更新 storage object。
+func (r *StorageObjectRepository) UpsertByLocator(ctx context.Context, object *entity.StorageObject) error {
+	object.LocatorJSON = jsonObject(object.LocatorJSON)
+	model := storageObjectModelFromEntity(object)
+	if err := dbFor(ctx, r.db).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "source_id"},
+				{Name: "driver_type"},
+				{Name: "locator_type"},
+				{Name: "locator_json"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"size", "etag", "checksum", "mime_type", "status", "updated_at",
+			}),
+		}).
+		Create(model).Error; err != nil {
+		return normalizeGormError(err)
+	}
+
+	saved, err := r.FindByLocator(ctx, object.SourceID, object.DriverType, object.LocatorType, object.LocatorJSON)
+	if err != nil {
+		return err
+	}
+	*object = *saved
+	return nil
 }
 
 // VFSMountRepository 提供 VFS mount 仓储实现。

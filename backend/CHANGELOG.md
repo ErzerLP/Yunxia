@@ -14,6 +14,15 @@
 
 ## 2026-05-07
 
+### 元数据化 VFS Lazy Index / Sync 阶段
+
+- 新增 `MetadataVFSSyncService` 懒索引/同步服务，支持按 metadata path 或 node 刷新 source-backed/mount 目录的直接子项，服务层仅依赖 domain repository 与 domain/storage driver/indexer interface，不导入 GORM 或 HTTP。
+- 新增 domain/storage `RemoteIndexer` 抽象与 `FileDriver.List` 兼容桥，driver/local list 结果可 upsert 为 VFS nodes；文件条目会同步 upsert `StorageObject`，并让 `VFSNode.ObjectID` 指向对象。
+- 同步状态语义落地：成功刷新更新目标目录 `indexed`，远端未再次看到的 active child 标记 `missing`，provider/list 失败时保留旧 DB 视图并把目标目录标记 `error`，同名冲突标记 `conflict` 并返回稳定冲突错误。
+- 补充 storage object locator upsert 能力：repository interface/GORM 实现新增 `FindByLocator`、`UpsertByLocator`，并为 locator 增加唯一索引，provider locator 继续以 JSON/string 透传。
+- 新增 service 单元测试覆盖首次刷新创建节点、二次刷新更新 metadata/object、远端删除标 missing、driver 失败保留旧节点、同名冲突、文件 object 绑定；新增 repository 测试覆盖 storage object locator upsert。
+- 本阶段仍未迁移 `/api/v2/fs` 对外行为，未新增前端 route/DTO，因此 `backend/API_CONTRACT.md` 与 `backend/FRONTEND_HANDOFF.md` 暂不变更。
+
 ### 元数据化 VFS Metadata Service 阶段
 
 - 新增 `MetadataVFSService` 控制面服务骨架，服务层只依赖 VFS metadata repository interface，不直接依赖 GORM 或 HTTP：

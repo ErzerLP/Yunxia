@@ -206,11 +206,41 @@ func TestStorageObjectAndVFSMountRepositoryPersistJSONBAndExplicitFalse(t *testi
 	if err := objectRepo.Update(ctx, object); err != nil {
 		t.Fatalf("Update(object) error = %v", err)
 	}
+	upserted := &entity.StorageObject{
+		SourceID:    10,
+		DriverType:  "s3",
+		LocatorType: "s3_key",
+		LocatorJSON: `{"key":"anime/ep01.mkv"}`,
+		Size:        512,
+		Status:      entity.StorageObjectStatusAvailable,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := objectRepo.UpsertByLocator(ctx, upserted); err != nil {
+		t.Fatalf("UpsertByLocator(create) error = %v", err)
+	}
+	firstObjectID := upserted.ID
+	upserted.Size = 1024
+	upserted.ETag = "etag-updated"
+	upserted.UpdatedAt = now.Add(2 * time.Minute)
+	if err := objectRepo.UpsertByLocator(ctx, upserted); err != nil {
+		t.Fatalf("UpsertByLocator(update) error = %v", err)
+	}
+	if upserted.ID != firstObjectID || upserted.Size != 1024 || upserted.ETag != "etag-updated" {
+		t.Fatalf("unexpected object after locator upsert = %#v", upserted)
+	}
+	foundByLocator, err := objectRepo.FindByLocator(ctx, 10, "s3", "s3_key", `{"key":"anime/ep01.mkv"}`)
+	if err != nil {
+		t.Fatalf("FindByLocator() error = %v", err)
+	}
+	if foundByLocator.ID != firstObjectID || foundByLocator.Size != 1024 {
+		t.Fatalf("unexpected object by locator = %#v", foundByLocator)
+	}
 	listedObjects, err := objectRepo.List(ctx, domainrepo.StorageObjectListFilter{SourceID: 10, Status: entity.StorageObjectStatusAvailable})
 	if err != nil {
 		t.Fatalf("List(objects) error = %v", err)
 	}
-	if len(listedObjects) != 1 || listedObjects[0].ID != object.ID || listedObjects[0].Size != 256 {
+	if len(listedObjects) != 2 {
 		t.Fatalf("unexpected listed objects = %#v", listedObjects)
 	}
 

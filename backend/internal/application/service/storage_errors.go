@@ -43,6 +43,8 @@ var (
 	ErrNoBackingStorage = errors.New("no backing storage")
 	// ErrNameConflict 表示统一虚拟目录树中出现同父目录重名冲突。
 	ErrNameConflict = errors.New("name conflict")
+	// ErrVFSSyncConflict 表示 VFS 懒索引/同步检测到需要人工处理的冲突。
+	ErrVFSSyncConflict = errors.New("vfs sync conflict")
 	// ErrFileNotFound 表示文件不存在。
 	ErrFileNotFound = errors.New("file not found")
 	// ErrFileAlreadyExists 表示文件已存在。

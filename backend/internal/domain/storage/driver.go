@@ -35,6 +35,35 @@ type StorageEntry struct {
 	ModifiedAt time.Time
 }
 
+// RemoteIndexer 定义用于 VFS 懒索引/同步的远端直接子项列举能力。
+type RemoteIndexer interface {
+	ListRemoteChildren(ctx context.Context, source *entity.StorageSource, req RemoteListRequest) ([]RemoteEntry, error)
+}
+
+// RemoteListRequest 表示列举远端/底层目录直接子项的上下文。
+type RemoteListRequest struct {
+	ParentPath           string
+	ParentLocatorJSON    string
+	ParentProviderItemID string
+	MountRootLocatorJSON string
+}
+
+// RemoteEntry 表示同步器可持久化的远端/底层目录项快照。
+type RemoteEntry struct {
+	Name             string
+	Path             string
+	IsDir            bool
+	Size             int64
+	ETag             string
+	Checksum         string
+	MimeType         string
+	ModifiedAt       time.Time
+	ProviderItemID   string
+	ProviderParentID string
+	LocatorType      string
+	LocatorJSON      string
+}
+
 // UploadDriver 定义直传类存储驱动的上传能力。
 type UploadDriver interface {
 	InitMultipartUpload(ctx context.Context, source *entity.StorageSource, req MultipartUploadRequest) (*MultipartUploadPlan, error)

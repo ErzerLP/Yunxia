@@ -1639,6 +1639,7 @@ func TestSourceServiceCreatePersistsExplicitWebDAVReadOnlyFalse(t *testing.T) {
 func TestStorageDriverRegistryOptionsWireS3AndKeepStatsFallbackExplicit(t *testing.T) {
 	importer := &recordingTaskImportDriver{}
 	fileDriver := &storageFileDriverStub{}
+	remoteIndexer := &fakeRemoteIndexer{}
 	pikpakProbe := &recordingSourceProbe{}
 	pikpakCapabilities := capabilityProviderStub{capabilities: StorageCapabilities{CanList: true, CanDownload: true}}
 	registry := NewStorageDriverRegistry(
@@ -1658,6 +1659,11 @@ func TestStorageDriverRegistryOptionsWireS3AndKeepStatsFallbackExplicit(t *testi
 			Upload:                 &uploadDriverStub{},
 			Import:                 importer,
 			RecursiveStatsFallback: true,
+		},
+		DriverBundle{
+			Type:    "indexed",
+			File:    fileDriver,
+			Indexer: remoteIndexer,
 		},
 	)
 
@@ -1686,6 +1692,14 @@ func TestStorageDriverRegistryOptionsWireS3AndKeepStatsFallbackExplicit(t *testi
 	}
 	if _, exists := vfsSvc.capabilityProviders["pikpak"]; !exists {
 		t.Fatalf("expected pikpak capabilities to be registered for vfs service")
+	}
+
+	metadataSyncSvc := NewMetadataVFSSyncService(nil, nil, nil, registry.MetadataVFSSyncServiceOptions()...)
+	if _, exists := metadataSyncSvc.indexers["pikpak"]; !exists {
+		t.Fatalf("expected pikpak file driver to be registered for metadata vfs lazy sync")
+	}
+	if got := metadataSyncSvc.indexers["indexed"]; got != remoteIndexer {
+		t.Fatalf("expected explicit metadata vfs indexer to take precedence over file driver bridge")
 	}
 
 	trashSvc := NewTrashService(nil, nil, registry.TrashServiceOptions()...)

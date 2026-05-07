@@ -91,10 +91,10 @@ type VFSNodeModel struct {
 // StorageObjectModel 表示数据面对象引用表。
 type StorageObjectModel struct {
 	ID          uint      `gorm:"primaryKey"`
-	SourceID    uint      `gorm:"index;not null"`
-	DriverType  string    `gorm:"index;size:32;not null"`
-	LocatorType string    `gorm:"index;size:64;not null"`
-	LocatorJSON string    `gorm:"type:jsonb;not null"`
+	SourceID    uint      `gorm:"index;not null;uniqueIndex:idx_storage_object_locator,priority:1"`
+	DriverType  string    `gorm:"index;size:32;not null;uniqueIndex:idx_storage_object_locator,priority:2"`
+	LocatorType string    `gorm:"index;size:64;not null;uniqueIndex:idx_storage_object_locator,priority:3"`
+	LocatorJSON string    `gorm:"type:jsonb;not null;uniqueIndex:idx_storage_object_locator,priority:4"`
 	Size        int64     `gorm:"not null;default:0"`
 	ETag        string    `gorm:"column:etag;size:255;not null;default:''"`
 	Checksum    string    `gorm:"size:255;not null;default:''"`
