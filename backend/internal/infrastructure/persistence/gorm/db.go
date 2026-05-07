@@ -127,6 +127,7 @@ func allModels() []any {
 		&VFSMountModel{},
 		&VFSTagModel{},
 		&VFSNodeTagModel{},
+		&VFSOperationModel{},
 		&UploadSessionModel{},
 		&DownloadTaskModel{},
 		&RSSSourceModel{},

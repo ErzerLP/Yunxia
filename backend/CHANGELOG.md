@@ -14,6 +14,15 @@
 
 ## 2026-05-07
 
+### VFS Operation Journal + Worker 骨架阶段
+
+- 新增内部 `vfs_operations` operation journal：记录 `mkdir/rename/move/copy/delete/import/upload_commit/task_commit/refresh` 等跨 DB / provider 非事务写操作，持久化状态、路径/source/driver 快照、JSONB payload、安全错误码、重试计数、next retry 与 worker lease。
+- 新增 `VFSOperationJournalService`：提供 `RecordPending` / `RecordFailure` / `MarkRunning` / `MarkSucceeded` / `MarkFailed` / `ListDue` / `AcquireDue`，并预留 `ProcessDue` processor 边界；本阶段不启动 goroutine、不接入真实 provider 补偿。
+- `/api/v2/fs` 写操作在“底层已成功但 metadata sync 失败”时，会写入 operation journal 后继续返回既有 `METADATA_VFS_MUTATION_SYNC_FAILED`，对外成功/失败语义不变；operation 错误信息只保存稳定 code 与脱敏 message，不落物理路径、SQL 明细或 provider 原始 payload。
+- GORM AutoMigrate 纳入 `vfs_operations`；repository 使用 PostgreSQL `FOR UPDATE SKIP LOCKED` 领取到期 pending/failed operation，并重新领取 lease 已过期的 running operation，避免 worker 并发重复处理或崩溃后永久卡住。
+- 新增 repository/service/VFS service 测试覆盖 JSONB 默认值、due list、lease acquire、成功/失败状态推进、retry/backoff 与 metadata sync failure 记录。
+- 文档同步：更新 `backend/API_CONTRACT.md` 说明本阶段无新增前端 API/无需前端适配。
+
 ### VFS Mutation Metadata Sync 阶段
 
 - `/api/v2/fs` 写操作在底层 driver / file operator 成功后同步 metadata VFS 控制面：

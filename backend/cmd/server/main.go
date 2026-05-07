@@ -84,6 +84,7 @@ func main() {
 	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
 	vfsMountRepo := gormrepo.NewVFSMountRepository(db)
 	vfsTagRepo := gormrepo.NewVFSTagRepository(db)
+	vfsOperationRepo := gormrepo.NewVFSOperationRepository(db)
 	transactor := gormrepo.NewTransactor(db)
 
 	hasher := security.NewBcryptHasher(cfg.Security.BcryptCost)
@@ -236,10 +237,12 @@ func main() {
 		sourceRepo,
 		metadataVFSSyncOptions...,
 	)
+	vfsOperationJournalSvc := appsvc.NewVFSOperationJournalService(vfsOperationRepo)
 	vfsServiceOptions := []appsvc.VFSServiceOption{
 		appsvc.WithVFSFileOperator(fileSvc),
 		appsvc.WithVFSACLAuthorizer(aclAuthorizer),
 		appsvc.WithVFSMetadataServices(metadataVFSReader, metadataVFSSyncSvc),
+		appsvc.WithVFSOperationJournal(vfsOperationJournalSvc),
 	}
 	vfsServiceOptions = append(vfsServiceOptions, storageDrivers.VFSServiceOptions()...)
 	vfsSvc := appsvc.NewVFSService(sourceRepo, vfsServiceOptions...)

@@ -136,6 +136,30 @@ type VFSNodeTagModel struct {
 	CreatedAt time.Time `gorm:"not null"`
 }
 
+// VFSOperationModel 表示 VFS 非事务写操作账本。
+type VFSOperationModel struct {
+	ID                 uint       `gorm:"primaryKey"`
+	OperationType      string     `gorm:"index;size:32;not null"`
+	Status             string     `gorm:"index;size:32;not null"`
+	SourceNodeID       *uint      `gorm:"index"`
+	TargetParentNodeID *uint      `gorm:"index"`
+	ResultNodeID       *uint      `gorm:"index"`
+	SourcePathSnapshot string     `gorm:"size:1024;not null;default:''"`
+	TargetPathSnapshot string     `gorm:"size:1024;not null;default:''"`
+	SourceIDSnapshot   *uint      `gorm:"index"`
+	DriverTypeSnapshot string     `gorm:"index;size:32;not null;default:''"`
+	PayloadJSON        string     `gorm:"type:jsonb;not null;default:'{}'"`
+	ErrorCode          string     `gorm:"index;size:64;not null;default:''"`
+	ErrorMessage       string     `gorm:"type:text;not null;default:''"`
+	RetryCount         int        `gorm:"not null;default:0"`
+	NextRetryAt        *time.Time `gorm:"index"`
+	LockedBy           string     `gorm:"index;size:128;not null;default:''"`
+	LockedUntil        *time.Time `gorm:"index"`
+	CreatedBy          *uint      `gorm:"index"`
+	CreatedAt          time.Time  `gorm:"index;not null"`
+	UpdatedAt          time.Time  `gorm:"not null"`
+}
+
 // UploadSessionModel 表示上传会话表。
 type UploadSessionModel struct {
 	UploadID                string    `gorm:"primaryKey;size:64"`

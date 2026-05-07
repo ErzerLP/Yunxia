@@ -182,6 +182,52 @@ func TestVFSMetadataMutationFailureIsMasked(t *testing.T) {
 	}
 }
 
+func TestVFSMetadataMutationFailureRecordsOperationJournal(t *testing.T) {
+	now := fixedMetadataVFSTime()
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42})
+	rawErr := errors.New(`sql: duplicate key while touching D:\secret\provider-payload.json`)
+	operationRepo := newFakeVFSOperationRepository()
+	journal := NewVFSOperationJournalService(operationRepo, WithVFSOperationJournalClock(func() time.Time { return now }))
+	svc := NewVFSService(
+		mountRegistryTestRepo{sources: []*entity.StorageSource{newTestLocalSource(t, 1, "文档库", "/docs")}},
+		WithVFSFileOperator(&vfsFileOperatorSpy{}),
+		WithVFSMetadataMutationService(&recordingMetadataMutation{err: rawErr}),
+		WithVFSOperationJournal(journal),
+	)
+
+	_, err := svc.Mkdir(ctx, appdto.VFSMkdirRequest{ParentPath: "/docs", Name: "created-underlying"})
+	if !errors.Is(err, ErrMetadataVFSMutationSyncFailed) {
+		t.Fatalf("Mkdir() error = %v, want ErrMetadataVFSMutationSyncFailed", err)
+	}
+
+	operations := operationRepo.all()
+	if len(operations) != 1 {
+		t.Fatalf("recorded operations = %#v, want 1", operations)
+	}
+	operation := operations[0]
+	if operation.OperationType != entity.VFSOperationTypeMkdir || operation.Status != entity.VFSOperationStatusFailed {
+		t.Fatalf("unexpected operation type/status = %#v", operation)
+	}
+	if operation.SourcePathSnapshot != "/docs" || operation.TargetPathSnapshot != "/docs/created-underlying" {
+		t.Fatalf("unexpected path snapshots = %#v", operation)
+	}
+	if operation.SourceIDSnapshot == nil || *operation.SourceIDSnapshot != 1 || operation.DriverTypeSnapshot != "local" {
+		t.Fatalf("unexpected source snapshot = %#v", operation)
+	}
+	if operation.CreatedBy == nil || *operation.CreatedBy != 42 {
+		t.Fatalf("unexpected created_by = %#v", operation.CreatedBy)
+	}
+	if operation.ErrorCode != "METADATA_VFS_MUTATION_SYNC_FAILED" || operation.ErrorMessage != ErrMetadataVFSMutationSyncFailed.Error() {
+		t.Fatalf("unexpected sanitized error fields = %#v", operation)
+	}
+	if strings.Contains(operation.ErrorMessage, "D:\\secret") || strings.Contains(operation.ErrorMessage, "provider-payload") || strings.Contains(operation.ErrorMessage, "duplicate key") {
+		t.Fatalf("operation leaked raw metadata failure: %q", operation.ErrorMessage)
+	}
+	if operation.NextRetryAt == nil || !operation.NextRetryAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("NextRetryAt = %v, want %v", operation.NextRetryAt, now.Add(time.Minute))
+	}
+}
+
 func TestVFSMetadataSyncFailureIsMaskedForEveryMutation(t *testing.T) {
 	rawErr := errors.New(`provider payload contains D:\secret\object.json and sql: duplicate key`)
 

@@ -63,6 +63,10 @@ type metadataVFSMutationService interface {
 	Delete(ctx context.Context, virtualPath string) (time.Time, error)
 }
 
+type vfsOperationJournalRecorder interface {
+	RecordFailure(ctx context.Context, input VFSOperationRecordInput) (*entity.VFSOperation, error)
+}
+
 // VFSService 提供统一虚拟目录树的路径解析能力。
 type VFSService struct {
 	registry            *MountRegistry
@@ -73,6 +77,7 @@ type VFSService struct {
 	metadataReader      metadataVFSReader
 	metadataRefresh     metadataVFSRefreshService
 	metadataMutation    metadataVFSMutationService
+	operationJournal    vfsOperationJournalRecorder
 	localDirWritable    func(string) bool
 }
 
@@ -134,6 +139,13 @@ func WithVFSMetadataServices(reader metadataVFSReader, refresh metadataVFSRefres
 func WithVFSMetadataMutationService(mutation metadataVFSMutationService) VFSServiceOption {
 	return func(s *VFSService) {
 		s.metadataMutation = mutation
+	}
+}
+
+// WithVFSOperationJournal 注册 VFS 写后 metadata sync 失败时的 operation journal。
+func WithVFSOperationJournal(journal vfsOperationJournalRecorder) VFSServiceOption {
+	return func(s *VFSService) {
+		s.operationJournal = journal
 	}
 }
 
@@ -204,7 +216,7 @@ func (s *VFSService) Mkdir(ctx context.Context, req appdto.VFSMkdirRequest) (*ap
 	}
 
 	view := rewriteFileItemToVFSItem(resolved.MatchedMountPath, *item)
-	if metadataItem, err := s.syncMetadataMkdir(ctx, req.ParentPath, req.Name); err != nil {
+	if metadataItem, err := s.syncMetadataMkdir(ctx, req.ParentPath, req.Name, resolved.Source); err != nil {
 		return nil, err
 	} else if metadataItem != nil {
 		return metadataItem, nil
@@ -240,7 +252,7 @@ func (s *VFSService) Rename(ctx context.Context, req appdto.VFSRenameRequest) (s
 	virtualOldPath := mergeMountAndInnerPath(resolvedPath.MatchedMountPath, oldPath)
 	virtualNewPath := mergeMountAndInnerPath(resolvedPath.MatchedMountPath, newPath)
 	view := rewriteFileItemToVFSItem(resolvedPath.MatchedMountPath, *item)
-	if metadataItem, err := s.syncMetadataRename(ctx, virtualOldPath, req.NewName, virtualNewPath); err != nil {
+	if metadataItem, err := s.syncMetadataRename(ctx, virtualOldPath, req.NewName, virtualNewPath, resolvedPath.Source); err != nil {
 		return "", "", nil, err
 	} else if metadataItem != nil {
 		view = *metadataItem
@@ -273,7 +285,7 @@ func (s *VFSService) Delete(ctx context.Context, req appdto.VFSDeleteRequest) (t
 	if err != nil {
 		return time.Time{}, normalizeVFSWriteError(err)
 	}
-	if err := s.syncMetadataDelete(ctx, resolvedPath.VirtualPath); err != nil {
+	if err := s.syncMetadataDelete(ctx, resolvedPath.VirtualPath, resolvedPath.Source); err != nil {
 		return time.Time{}, err
 	}
 	return deletedAt, nil
@@ -454,7 +466,7 @@ func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyReque
 			}
 			virtualOldPath := mergeMountAndInnerPath(sourceResolved.MatchedMountPath, oldPath)
 			virtualNewPath := mergeMountAndInnerPath(targetResolved.MatchedMountPath, newPath)
-			if err := s.syncMetadataMove(ctx, virtualOldPath, parentVirtualPath(virtualNewPath), virtualNewPath); err != nil {
+			if err := s.syncMetadataMove(ctx, virtualOldPath, parentVirtualPath(virtualNewPath), virtualNewPath, sourceResolved.Source); err != nil {
 				return "", "", err
 			}
 			return virtualOldPath, virtualNewPath, nil
@@ -471,7 +483,7 @@ func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyReque
 		virtualSourcePath := mergeMountAndInnerPath(sourceResolved.MatchedMountPath, sourcePath)
 		virtualNewPath := mergeMountAndInnerPath(targetResolved.MatchedMountPath, newPath)
 		if err := s.syncMetadataRefreshParent(ctx, virtualNewPath); err != nil {
-			return "", "", err
+			return "", "", s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeCopy, virtualSourcePath, virtualNewPath, targetResolved.Source, err)
 		}
 		return virtualSourcePath, virtualNewPath, nil
 	}
@@ -486,10 +498,14 @@ func (s *VFSService) moveOrCopy(ctx context.Context, req appdto.VFSMoveCopyReque
 		}
 	}
 	if err := s.syncMetadataRefreshParent(ctx, newPath); err != nil {
-		return "", "", err
+		operationType := entity.VFSOperationTypeCopy
+		if removeSource {
+			operationType = entity.VFSOperationTypeMove
+		}
+		return "", "", s.recordMetadataMutationSyncFailure(ctx, operationType, oldPath, newPath, targetResolved.Source, err)
 	}
 	if removeSource {
-		if err := s.syncMetadataDelete(ctx, oldPath); err != nil {
+		if err := s.syncMetadataDelete(ctx, oldPath, sourceResolved.Source); err != nil {
 			return "", "", err
 		}
 	}
@@ -724,12 +740,13 @@ func (s *VFSService) refreshMetadataPathBestEffort(ctx context.Context, node *en
 	return nil
 }
 
-func (s *VFSService) syncMetadataMkdir(ctx context.Context, parentPath string, name string) (*appdto.VFSItem, error) {
+func (s *VFSService) syncMetadataMkdir(ctx context.Context, parentPath string, name string, source *entity.StorageSource) (*appdto.VFSItem, error) {
 	if s.metadataMutation == nil {
 		return nil, nil
 	}
 	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
-		return nil, err
+		targetPath := joinVirtualPath(parentPath, name)
+		return nil, s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeMkdir, parentPath, targetPath, source, err)
 	}
 	item, err := s.metadataMutation.Mkdir(ctx, MetadataVFSMkdirRequest{
 		ParentPath: parentPath,
@@ -737,17 +754,18 @@ func (s *VFSService) syncMetadataMkdir(ctx context.Context, parentPath string, n
 		ActorID:    currentMetadataMutationActorID(ctx),
 	})
 	if err != nil {
-		return nil, maskMetadataVFSMutationSyncError(err)
+		targetPath := joinVirtualPath(parentPath, name)
+		return nil, s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeMkdir, parentPath, targetPath, source, err)
 	}
 	return item, nil
 }
 
-func (s *VFSService) syncMetadataRename(ctx context.Context, oldPath string, newName string, newPath string) (*appdto.VFSItem, error) {
+func (s *VFSService) syncMetadataRename(ctx context.Context, oldPath string, newName string, newPath string, source *entity.StorageSource) (*appdto.VFSItem, error) {
 	if s.metadataMutation == nil {
 		return nil, nil
 	}
 	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
-		return nil, err
+		return nil, s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeRename, oldPath, newPath, source, err)
 	}
 	_, item, err := s.metadataMutation.Rename(ctx, MetadataVFSRenameRequest{
 		Path:    oldPath,
@@ -759,19 +777,19 @@ func (s *VFSService) syncMetadataRename(ctx context.Context, oldPath string, new
 	}
 	if errors.Is(err, ErrFileNotFound) {
 		if refreshErr := s.syncMetadataRefreshParent(ctx, newPath); refreshErr != nil {
-			return nil, refreshErr
+			return nil, s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeRename, oldPath, newPath, source, refreshErr)
 		}
 		return nil, nil
 	}
-	return nil, maskMetadataVFSMutationSyncError(err)
+	return nil, s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeRename, oldPath, newPath, source, err)
 }
 
-func (s *VFSService) syncMetadataMove(ctx context.Context, oldPath string, targetParentPath string, newPath string) error {
+func (s *VFSService) syncMetadataMove(ctx context.Context, oldPath string, targetParentPath string, newPath string, source *entity.StorageSource) error {
 	if s.metadataMutation == nil {
 		return nil
 	}
 	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
-		return err
+		return s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeMove, oldPath, newPath, source, err)
 	}
 	if _, _, err := s.metadataMutation.Move(ctx, MetadataVFSMoveRequest{
 		Path:             oldPath,
@@ -780,32 +798,32 @@ func (s *VFSService) syncMetadataMove(ctx context.Context, oldPath string, targe
 	}); err != nil {
 		if errors.Is(err, ErrFileNotFound) {
 			if refreshErr := s.syncMetadataRefreshParent(ctx, newPath); refreshErr != nil {
-				return refreshErr
+				return s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeMove, oldPath, newPath, source, refreshErr)
 			}
 			if parent := parentVirtualPath(oldPath); parent != parentVirtualPath(newPath) {
 				if refreshErr := s.syncMetadataRefreshPath(ctx, parent); refreshErr != nil {
-					return refreshErr
+					return s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeMove, oldPath, newPath, source, refreshErr)
 				}
 			}
 			return nil
 		}
-		return maskMetadataVFSMutationSyncError(err)
+		return s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeMove, oldPath, newPath, source, err)
 	}
 	return nil
 }
 
-func (s *VFSService) syncMetadataDelete(ctx context.Context, targetPath string) error {
+func (s *VFSService) syncMetadataDelete(ctx context.Context, targetPath string, source *entity.StorageSource) error {
 	if s.metadataMutation == nil {
 		return nil
 	}
 	if err := s.ensureMetadataReadyForMutation(ctx); err != nil {
-		return err
+		return s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeDelete, targetPath, targetPath, source, err)
 	}
 	if _, err := s.metadataMutation.Delete(ctx, targetPath); err != nil {
 		if errors.Is(err, ErrFileNotFound) {
 			return nil
 		}
-		return maskMetadataVFSMutationSyncError(err)
+		return s.recordMetadataMutationSyncFailure(ctx, entity.VFSOperationTypeDelete, targetPath, targetPath, source, err)
 	}
 	return nil
 }
@@ -962,6 +980,29 @@ func currentMetadataMutationActorID(ctx context.Context) *uint {
 		return nil
 	}
 	return &auth.UserID
+}
+
+func (s *VFSService) recordMetadataMutationSyncFailure(ctx context.Context, operationType string, sourcePath string, targetPath string, source *entity.StorageSource, err error) error {
+	if s.operationJournal != nil {
+		input := VFSOperationRecordInput{
+			OperationType:      operationType,
+			SourcePathSnapshot: sourcePath,
+			TargetPathSnapshot: targetPath,
+			ErrorCode:          "METADATA_VFS_MUTATION_SYNC_FAILED",
+			Error:              err,
+			CreatedBy:          currentMetadataMutationActorID(ctx),
+			Payload: map[string]any{
+				"phase": "metadata_sync",
+			},
+		}
+		if source != nil {
+			sourceID := source.ID
+			input.SourceIDSnapshot = &sourceID
+			input.DriverTypeSnapshot = source.DriverType
+		}
+		_, _ = s.operationJournal.RecordFailure(ctx, input)
+	}
+	return maskMetadataVFSMutationSyncError(err)
 }
 
 func maskMetadataVFSMutationSyncError(err error) error {
