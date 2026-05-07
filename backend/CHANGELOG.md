@@ -14,6 +14,21 @@
 
 ## 2026-05-07
 
+### VFS 标签最小后端能力阶段
+
+- 新增 `VFSTagService` 与 HTTP handler，开放用户自有标签 CRUD：
+  - `GET /api/v1/tags`
+  - `POST /api/v1/tags`
+  - `PATCH /api/v1/tags/:id`
+  - `DELETE /api/v1/tags/:id`
+- 新增 VFS 节点标签绑定接口：
+  - `GET /api/v2/fs/tags?path=...`
+  - `POST /api/v2/fs/tags/attach`
+  - `POST /api/v2/fs/tags/detach`
+- 标签按当前登录用户隔离；绑定目标基于 metadata VFS node，目标 path 不存在时返回 `FILE_NOT_FOUND`，跨用户 tag 操作返回 `PERMISSION_DENIED`。
+- 文档同步：更新 `backend/API_CONTRACT.md` 与固定前端交接文档 `backend/FRONTEND_HANDOFF.md`。
+- 新增 service / HTTP workflow 测试覆盖标签 CRUD、节点绑定/解绑、跨 owner 拒绝、缺失绑定稳定错误。
+
 ### 元数据化 VFS API 读路径切换阶段
 
 - `/api/v2/fs/list` 开始优先使用 metadata VFS 读模型：根目录 / 纯虚拟目录从 `vfs_nodes` 返回，挂载目录进入时按需懒刷新当前目录直接子项，再从 DB 输出。

@@ -1,6 +1,6 @@
 # Yunxia Backend API Contract
 
-> 更新时间：2026-05-02
+> 更新时间：2026-05-07
 > 对应实现：当前工作树 `backend/` 实际代码（含全局权限模型 + 统一虚拟目录树 V2 + 审计查询 + RSS/qBittorrent MVP + 通知告警）
 > 真相源：`backend/internal/interfaces/http/router.go`、`backend/internal/interfaces/http/handler/*.go`、`backend/internal/application/dto/*.go`、`backend/internal/application/service/*_service.go`
 
@@ -28,6 +28,7 @@
 | 分享 | `/api/v1/shares*`、`/s/:token` | 分享管理、公开分享访问 | 分享管理页、公开分享页 |
 | 审计 | `/api/v1/audit/logs*` | 审计列表、审计详情 | 审计日志页 |
 | 统一虚拟目录 V2 | `/api/v2/fs*` | 基于虚拟路径的文件列表、搜索、写操作、下载 | **新文件管理页推荐优先使用** |
+| VFS 标签 | `/api/v1/tags*`、`/api/v2/fs/tags*` | 用户自有标签、VFS 节点标签绑定 / 解绑 / 查询 | 文件标签、筛选与整理 |
 | WebDAV | `{webdav_prefix}` 默认 `/dav` | WebDAV 客户端访问已暴露的 local/S3/PikPak 等存储源 | 前端主要展示配置，不直接走 JSON API |
 
 ### 0.2 新文件管理页推荐接口
@@ -1204,7 +1205,39 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
 - `/fs/access-url` 当前会返回 `/api/v2/fs/download?...&access_token=...`
 
-### 3.15 WebDAV
+### 3.15 VFS 标签（`/api/v1/tags`、`/api/v2/fs/tags`）
+
+| 方法 | 路径 | 鉴权 | 主要输入 | 成功返回 |
+|---|---|---|---|---|
+| GET | `/api/v1/tags` | Bearer | - | 200，`{items}` |
+| POST | `/api/v1/tags` | Bearer | `{name,color}` | 201，`{tag}` |
+| PATCH | `/api/v1/tags/:id` | Bearer | `{name,color}` | 200，`{tag}` |
+| DELETE | `/api/v1/tags/:id` | Bearer | path: `id` | 200，`{deleted,id}` |
+| GET | `/api/v2/fs/tags` | Bearer | query: `path` | 200，`{path,tags}` |
+| POST | `/api/v2/fs/tags/attach` | Bearer | `{path,tag_id}` | 200，`{path,tags}` |
+| POST | `/api/v2/fs/tags/detach` | Bearer | `{path,tag_id}` | 200，`{path,tags}` |
+
+`VFSTagView`：
+
+```json
+{
+  "id": 1,
+  "name": "番剧",
+  "color": "#66ccff",
+  "created_at": "2026-05-07T12:00:00Z",
+  "updated_at": "2026-05-07T12:00:00Z"
+}
+```
+
+约束：
+
+- 标签按当前登录用户隔离；普通 Bearer 用户只能管理自己的 tag。
+- `name` 必填，后端会 trim，最长 64 字符；`color` 可空，最长 32 字符。
+- 同一用户同名标签 `POST /api/v1/tags` 会幂等 upsert。
+- 节点标签绑定基于 metadata VFS node；如果目标 path 尚未被懒索引，需要前端先进入对应目录触发 `/api/v2/fs/list`。
+- 绑定他人的 tag 返回 `403 PERMISSION_DENIED`；节点不存在返回 `404 FILE_NOT_FOUND`。
+
+### 3.16 WebDAV
 
 支持方法：
 
@@ -1485,6 +1518,9 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `UPLOAD_TOO_LARGE`
 - `TRASH_ITEM_NOT_FOUND`
 - `TRASH_RESTORE_CONFLICT`
+- `TAG_INVALID`
+- `TAG_NOT_FOUND`
+- `TAG_BINDING_NOT_FOUND`
 
 ### 5.5 share / task
 

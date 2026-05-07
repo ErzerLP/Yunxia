@@ -83,6 +83,7 @@ func main() {
 	vfsNodeRepo := gormrepo.NewVFSNodeRepository(db)
 	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
 	vfsMountRepo := gormrepo.NewVFSMountRepository(db)
+	vfsTagRepo := gormrepo.NewVFSTagRepository(db)
 	transactor := gormrepo.NewTransactor(db)
 
 	hasher := security.NewBcryptHasher(cfg.Security.BcryptCost)
@@ -300,6 +301,7 @@ func main() {
 	}
 	shareServiceOptions = append(shareServiceOptions, storageDrivers.ShareServiceOptions()...)
 	shareSvc := appsvc.NewShareService(shareRepo, sourceRepo, hasher, fileAccessSvc, shareServiceOptions...)
+	vfsTagSvc := appsvc.NewVFSTagService(vfsNodeRepo, vfsTagRepo)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
 	authHandler := httphandler.NewAuthHandler(authSvc)
@@ -316,6 +318,7 @@ func main() {
 	rssHandler := httphandler.NewRSSHandler(rssSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
+	vfsTagHandler := httphandler.NewVFSTagHandler(vfsTagSvc)
 	webdavHandler := httphandler.NewWebDAVHandler(
 		cfg.WebDAV.Prefix,
 		sourceRepo,
@@ -340,6 +343,7 @@ func main() {
 	httpiface.RegisterRSSRoutes(engine, rssHandler, authMW, auditRecorder, rootLogger)
 	httpiface.RegisterShareRoutes(engine, shareHandler, authMW)
 	httpiface.RegisterVFSRoutes(engine, vfsHandler, authMW)
+	httpiface.RegisterVFSTagRoutes(engine, vfsTagHandler, authMW)
 	httpiface.RegisterWebDAVRoutes(engine, cfg.WebDAV.Prefix, webdavHandler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

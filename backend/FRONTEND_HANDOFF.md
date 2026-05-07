@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待适配 | 2026-05-07 | VFS 标签 | 文件/VFS 页、文件详情/右键菜单、后续筛选入口 | P2 | `/api/v1/tags*`、`/api/v2/fs/tags*` | [详情](#handoff-2026-05-07-vfs-tags) |
 | 待联调 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页、上传入口、离线任务/RSS 目标选择 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
 | 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
 | 待联调 | 2026-05-02 | RSS 导入导出 | RSS/追番页、设置/备份页 | P1 | `/api/v1/rss/export`、`/api/v1/rss/import` | [详情](#handoff-2026-05-02-rss-import-export) |
@@ -928,3 +929,30 @@ type PikPakSecretPatch = {
   - `cd web && node scripts/check-vfs-integration.mjs` # pass
 - 2026-05-05：后端补充 PikPak `proxy_url` 与 `CLOUD_REGION_BLOCKED`。测试机直连 PikPak 时 provider 返回区域限制，后端不再误报 `CLOUD_AUTH_FAILED`；如需要在 UI 中配置单源代理，请按上方 checklist 增加高级配置项。
 - 2026-05-05：后端补充 `CLOUD_CAPTCHA_REQUIRED` 的 `error.details.verification_url` 透出，避免真实账号触发 PikPak 人工验证时前端/测试人员拿不到验证入口。
+
+<a id="handoff-2026-05-07-vfs-tags"></a>
+
+### [P2][待适配][VFS 标签] 2026-05-07 VFS 节点标签最小能力
+
+#### 前端适配 checklist
+
+- [ ] 新增或复用标签 API client：`GET/POST/PATCH/DELETE /api/v1/tags`。
+- [ ] 在文件/VFS 页的文件详情、右键菜单或侧边信息中接入节点标签查询：`GET /api/v2/fs/tags?path=<item.path>`。
+- [ ] 支持给当前 VFS 节点绑定标签：`POST /api/v2/fs/tags/attach`。
+- [ ] 支持从当前 VFS 节点解绑标签：`POST /api/v2/fs/tags/detach`。
+- [ ] 处理稳定错误码：`TAG_INVALID`、`TAG_NOT_FOUND`、`TAG_BINDING_NOT_FOUND`、`FILE_NOT_FOUND`、`PERMISSION_DENIED`。
+- [ ] 若目标文件刚由第三方存储源懒加载进入目录，先调用 `/api/v2/fs/list?path=<parent>`，保证 metadata node 已存在后再绑定标签。
+
+#### 本次后端新增能力
+
+- 用户自有 VFS 标签 CRUD：
+  - `GET /api/v1/tags`
+  - `POST /api/v1/tags`
+  - `PATCH /api/v1/tags/:id`
+  - `DELETE /api/v1/tags/:id`
+- VFS 节点标签绑定：
+  - `GET /api/v2/fs/tags?path=/xxx`
+  - `POST /api/v2/fs/tags/attach { path, tag_id }`
+  - `POST /api/v2/fs/tags/detach { path, tag_id }`
+- 标签按当前登录用户隔离；普通用户只能管理和绑定自己的标签。
+- 完整字段、示例和错误码见 `backend/API_CONTRACT.md` 的 `3.15 VFS 标签`。

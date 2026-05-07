@@ -525,6 +525,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	vfsNodeRepo := gormrepo.NewVFSNodeRepository(db)
 	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
 	vfsMountRepo := gormrepo.NewVFSMountRepository(db)
+	vfsTagRepo := gormrepo.NewVFSTagRepository(db)
 	transactor := gormrepo.NewTransactor(db)
 	hasher := security.NewBcryptHasher(4)
 	tokenSvc := security.NewJWTTokenService("router-secret", 15*time.Minute, 7*24*time.Hour)
@@ -647,6 +648,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithShareACLAuthorizer(aclAuthorizer),
 		appsvc.WithShareFileDriver("s3", fakeS3),
 	)
+	vfsTagSvc := appsvc.NewVFSTagService(vfsNodeRepo, vfsTagRepo)
 
 	setupHandler := httphandler.NewSetupHandler(setupSvc)
 	authHandler := httphandler.NewAuthHandler(authSvc)
@@ -662,6 +664,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	rssHandler := httphandler.NewRSSHandler(rssSvc)
 	shareHandler := httphandler.NewShareHandler(shareSvc)
 	vfsHandler := httphandler.NewVFSHandler(vfsSvc, fileSvc)
+	vfsTagHandler := httphandler.NewVFSTagHandler(vfsTagSvc)
 	webdavHandler := httphandler.NewWebDAVHandler(
 		"/dav",
 		sourceRepo,
@@ -685,6 +688,7 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 	RegisterRSSRoutes(engine, rssHandler, authMW, auditRecorder, rootLogger)
 	RegisterShareRoutes(engine, shareHandler, authMW)
 	RegisterVFSRoutes(engine, vfsHandler, authMW)
+	RegisterVFSTagRoutes(engine, vfsTagHandler, authMW)
 	RegisterWebDAVRoutes(engine, "/dav", webdavHandler)
 	registerTestRouterHarness(engine, &testRouterHarness{
 		AuditRepo: auditRepo,

@@ -140,6 +140,28 @@ func RegisterVFSRoutes(
 	api.GET("/fs/download", vfsHandler.Download)
 }
 
+// RegisterVFSTagRoutes 注册 VFS 标签相关路由。
+func RegisterVFSTagRoutes(
+	r *gin.Engine,
+	tagHandler *handler.VFSTagHandler,
+	authMiddleware *middleware.AuthMiddleware,
+) {
+	apiV1 := r.Group("/api/v1")
+	authorizedV1 := apiV1.Group("")
+	authorizedV1.Use(authMiddleware.RequireAuth())
+	authorizedV1.GET("/tags", tagHandler.ListTags)
+	authorizedV1.POST("/tags", tagHandler.CreateTag)
+	authorizedV1.PATCH("/tags/:id", tagHandler.UpdateTag)
+	authorizedV1.DELETE("/tags/:id", tagHandler.DeleteTag)
+
+	apiV2 := r.Group("/api/v2")
+	authorizedV2 := apiV2.Group("")
+	authorizedV2.Use(authMiddleware.RequireAuth())
+	authorizedV2.GET("/fs/tags", tagHandler.ListNodeTags)
+	authorizedV2.POST("/fs/tags/attach", tagHandler.AttachTag)
+	authorizedV2.POST("/fs/tags/detach", tagHandler.DetachTag)
+}
+
 // RegisterUserRoutes 注册用户管理相关路由。
 func RegisterUserRoutes(
 	r *gin.Engine,

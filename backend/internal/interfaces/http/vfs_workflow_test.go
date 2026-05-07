@@ -15,6 +15,15 @@ type vfsListData struct {
 	CurrentPath string           `json:"current_path"`
 }
 
+type vfsTagCreateData struct {
+	Tag map[string]any `json:"tag"`
+}
+
+type vfsNodeTagsData struct {
+	Path string           `json:"path"`
+	Tags []map[string]any `json:"tags"`
+}
+
 func TestVFSListNestedMounts(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	accessToken, _ := bootstrapAdmin(t, engine)
@@ -143,6 +152,61 @@ func TestVFSSearchUsesMetadataIndex(t *testing.T) {
 	names := collectMapNames(listed.Items)
 	if !containsString(names, "metadata-search-hit.txt") {
 		t.Fatalf("expected metadata-backed search hit, got %+v", listed.Items)
+	}
+}
+
+func TestVFSTagLifecycleOnMetadataNode(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	sourceID := createLocalSourceWithMountForTest(t, engine, accessToken, "tag-root", "/tag-root")
+	uploadLocalObjectForTest(t, engine, accessToken, sourceID, "/", "tag-me.txt", []byte("tag me"))
+	rec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/tag-root", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list before tag expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v1/tags", map[string]any{
+		"name":  "番剧",
+		"color": "#66ccff",
+	}, accessToken)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create tag expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	created := decodeEnvelope[vfsTagCreateData](t, rec.Body.Bytes())
+	tagID := uint(created.Tag["id"].(float64))
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/tags/attach", map[string]any{
+		"path":   "/tag-root/tag-me.txt",
+		"tag_id": tagID,
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("attach tag expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	attached := decodeEnvelope[vfsNodeTagsData](t, rec.Body.Bytes())
+	if len(attached.Tags) != 1 || attached.Tags[0]["name"] != "番剧" {
+		t.Fatalf("unexpected attached tags = %+v", attached)
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/tags?path=/tag-root/tag-me.txt", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list node tags expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsNodeTagsData](t, rec.Body.Bytes())
+	if len(listed.Tags) != 1 || listed.Tags[0]["id"].(float64) != float64(tagID) {
+		t.Fatalf("unexpected listed tags = %+v", listed)
+	}
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/tags/detach", map[string]any{
+		"path":   "/tag-root/tag-me.txt",
+		"tag_id": tagID,
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detach tag expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	detached := decodeEnvelope[vfsNodeTagsData](t, rec.Body.Bytes())
+	if len(detached.Tags) != 0 {
+		t.Fatalf("expected tags detached, got %+v", detached)
 	}
 }
 

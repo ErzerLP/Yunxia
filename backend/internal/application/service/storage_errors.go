@@ -49,6 +49,12 @@ var (
 	ErrMetadataVFSCommitFailed = errors.New("metadata vfs commit failed")
 	// ErrMetadataVFSMountSyncFailed 表示存储源挂载同步到 metadata VFS 控制面失败。
 	ErrMetadataVFSMountSyncFailed = errors.New("metadata vfs mount sync failed")
+	// ErrTagInvalid 表示 VFS tag 参数非法。
+	ErrTagInvalid = errors.New("tag invalid")
+	// ErrTagForbidden 表示当前用户不能操作指定 tag。
+	ErrTagForbidden = errors.New("tag forbidden")
+	// ErrTagBindingNotFound 表示 VFS node 与 tag 的绑定不存在。
+	ErrTagBindingNotFound = errors.New("tag binding not found")
 	// ErrFileNotFound 表示文件不存在。
 	ErrFileNotFound = errors.New("file not found")
 	// ErrFileAlreadyExists 表示文件已存在。
