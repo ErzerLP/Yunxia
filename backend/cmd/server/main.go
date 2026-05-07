@@ -82,6 +82,7 @@ func main() {
 	auditRepo := gormrepo.NewAuditLogRepository(db)
 	vfsNodeRepo := gormrepo.NewVFSNodeRepository(db)
 	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
+	vfsMountRepo := gormrepo.NewVFSMountRepository(db)
 	transactor := gormrepo.NewTransactor(db)
 
 	hasher := security.NewBcryptHasher(cfg.Security.BcryptCost)
@@ -151,6 +152,12 @@ func main() {
 	options.WebDAVEnabled = cfg.WebDAV.Enabled
 	options.WebDAVPrefix = cfg.WebDAV.Prefix
 
+	metadataVFSMountSvc := appsvc.NewMetadataVFSMountService(
+		vfsNodeRepo,
+		vfsMountRepo,
+		sourceRepo,
+		appsvc.WithMetadataVFSMountTransactor(transactor),
+	)
 	setupSvc := appsvc.NewSetupService(
 		userRepo,
 		refreshRepo,
@@ -160,6 +167,7 @@ func main() {
 		tokenSvc,
 		options,
 		appsvc.WithSetupAuditRecorder(auditRecorder),
+		appsvc.WithSetupSourceMountSyncer(metadataVFSMountSvc),
 	)
 	authSvc := appsvc.NewAuthService(userRepo, refreshRepo, hasher, tokenSvc)
 	systemServiceOptions := []appsvc.SystemServiceOption{
@@ -174,7 +182,29 @@ func main() {
 		appsvc.WithSourceACLAuthorizer(aclAuthorizer),
 	}
 	sourceServiceOptions = append(sourceServiceOptions, storageDrivers.SourceServiceOptions()...)
+	sourceServiceOptions = append(sourceServiceOptions,
+		appsvc.WithSourceMountSyncer(metadataVFSMountSvc),
+		appsvc.WithSourceTransactor(transactor),
+	)
 	sourceSvc := appsvc.NewSourceService(sourceRepo, systemConfigRepo, sourceServiceOptions...)
+	if syncResult, syncErr := metadataVFSMountSvc.SyncAllSourceMounts(context.Background()); syncErr != nil {
+		rootLogger.Warn("metadata vfs source mount bootstrap failed",
+			slog.String("event", "metadata_vfs.mount.bootstrap_failed"),
+			slog.Any("error", syncErr),
+		)
+	} else if syncResult.Failed > 0 {
+		rootLogger.Warn("metadata vfs source mount bootstrap completed with failures",
+			slog.String("event", "metadata_vfs.mount.bootstrap_partial"),
+			slog.Int("synced", syncResult.Synced),
+			slog.Int("failed", syncResult.Failed),
+			slog.Any("errors", syncResult.Errors),
+		)
+	} else {
+		rootLogger.Info("metadata vfs source mount bootstrap completed",
+			slog.String("event", "metadata_vfs.mount.bootstrap_ok"),
+			slog.Int("synced", syncResult.Synced),
+		)
+	}
 	userSvc := appsvc.NewUserService(userRepo, hasher, appsvc.WithUserAuditRecorder(auditRecorder))
 	aclSvc := appsvc.NewACLService(sourceRepo, userRepo, aclRepo, appsvc.WithACLAuditRecorder(auditRecorder))
 	fileServiceOptions := []appsvc.FileServiceOption{

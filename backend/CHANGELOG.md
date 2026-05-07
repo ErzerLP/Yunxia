@@ -14,6 +14,15 @@
 
 ## 2026-05-07
 
+### 元数据化 VFS Source Mount 控制面阶段
+
+- 新增 `MetadataVFSMountService`，在 source mount 同步时维护父级 `virtual_dir`、挂载点 `vfs_nodes(kind=mount)` 与 `vfs_mounts` 记录，`root_locator_json` 只保存 source/root/config-root 快照并过滤 secret。
+- `SourceService` 在注入 mount syncer 后会于 create/update/delete 路径同步或禁用 metadata mount；create/update 的 source 写入与 mount 同步通过事务提交，避免 source 成功但 VFS 控制面缺失。
+- 后端启动会对现有 source 执行一次 `SyncAllSourceMounts` bootstrap；单个坏 source 只记录 warning 并继续启动，后续新建/更新请求仍以同步失败为稳定错误返回。
+- 默认 setup 本地 source 创建后也会同步 metadata mount；source disabled 或 mount_path 改名时保留原 mount node/子树，旧 `vfs_mount` 禁用并将旧 mount node 标记 `stale`。
+- 新增 service 测试覆盖 mount 控制面创建、mount_path 改名保留旧节点并禁用旧 mount、disabled source 同步、bootstrap 单源失败不中断、source create/update/delete 调用 mount syncer，以及事务回滚。
+- 本阶段仍不迁移 `/api/v2/fs` handler、不新增 HTTP route/DTO，不要求前端改动；`backend/API_CONTRACT.md` 已补充 source mutation 的 `METADATA_VFS_MOUNT_SYNC_FAILED` 错误码说明。
+
 ### 元数据化 VFS 业务模块最小接入阶段
 
 - 新增 `MetadataVFSCommitService` 应用层提交端口，封装业务完成后维护 metadata VFS 控制面快照：懒创建父目录 path、upsert `storage_objects`、upsert file `vfs_nodes`。

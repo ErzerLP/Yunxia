@@ -478,6 +478,7 @@ PikPak 字段说明：
 - 初始化完成后自动创建默认本地源：`本地存储`
 - 默认本地源当前挂载到 `mount_path=/local`
 - `mount_path` 需要全局唯一，冲突返回 `409 MOUNT_PATH_CONFLICT`
+- 创建 / 更新 / 删除存储源时，后端会同步维护 metadata VFS 挂载控制面；若同步失败，接口返回 `500 METADATA_VFS_MOUNT_SYNC_FAILED`，不会把 source 操作伪装为成功
 - local 源的物理宿主路径必须放在 `config.base_path`；该路径必须已存在且是目录，后端不会为用户创建的 local 源自动创建 `base_path`
 - `root_path` 是源内逻辑根路径，不用于承载物理磁盘路径
 - local 源缺少 `config.base_path`、`base_path` 不存在 / 不是目录，或路径字段非法时返回 `400 PATH_INVALID`，不返回 500
@@ -1461,6 +1462,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `CLOUD_REGION_BLOCKED`
 - `CLOUD_PROVIDER_UNAVAILABLE`
 - `MOUNT_PATH_CONFLICT`
+- `METADATA_VFS_MOUNT_SYNC_FAILED`
 - `PATH_INVALID`
 
 ### 5.4 file / upload / trash / vfs

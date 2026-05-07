@@ -83,6 +83,7 @@ type SetupService struct {
 	hasher           passwordHasher
 	tokens           tokenService
 	options          SystemOptions
+	mountSyncer      MetadataSourceMountSyncer
 	logger           *slog.Logger
 	auditRecorder    *appaudit.Recorder
 }
@@ -112,6 +113,13 @@ func NewSetupService(
 		option(service)
 	}
 	return service
+}
+
+// WithSetupSourceMountSyncer 注册 setup 默认 source 的 metadata VFS mount 同步端口。
+func WithSetupSourceMountSyncer(syncer MetadataSourceMountSyncer) SetupServiceOption {
+	return func(s *SetupService) {
+		s.mountSyncer = syncer
+	}
 }
 
 // Status 返回初始化状态。
@@ -159,6 +167,11 @@ func (s *SetupService) Init(ctx context.Context, req appdto.SetupInitRequest) (*
 	defaultSource, err := ensureDefaultLocalSource(ctx, s.sourceRepo, s.options)
 	if err != nil {
 		return nil, err
+	}
+	if s.mountSyncer != nil {
+		if _, err := s.mountSyncer.SyncSourceMount(ctx, defaultSource); err != nil {
+			return nil, errors.Join(ErrMetadataVFSMountSyncFailed, err)
+		}
 	}
 
 	cfg := defaultSystemConfigEntity(s.options)

@@ -109,6 +109,20 @@ func WithSourceACLAuthorizer(authorizer *ACLAuthorizer) SourceServiceOption {
 	}
 }
 
+// WithSourceMountSyncer 注册 SourceService 的 metadata VFS mount 同步端口。
+func WithSourceMountSyncer(syncer MetadataSourceMountSyncer) SourceServiceOption {
+	return func(s *SourceService) {
+		s.mountSyncer = syncer
+	}
+}
+
+// WithSourceTransactor 注册 SourceService 使用的事务端口。
+func WithSourceTransactor(transactor domainrepo.Transactor) SourceServiceOption {
+	return func(s *SourceService) {
+		s.transactor = transactor
+	}
+}
+
 // FileServiceOption 定义 FileService 的可选配置。
 type FileServiceOption func(*FileService)
 

@@ -24,6 +24,8 @@ type SourceService struct {
 	aclAuthorizer    *ACLAuthorizer
 	configCodecs     map[string]SourceConfigCodec
 	driverProbes     map[string]SourceDriverProbe
+	mountSyncer      MetadataSourceMountSyncer
+	transactor       domainrepo.Transactor
 	logger           *slog.Logger
 	auditRecorder    *appaudit.Recorder
 }
@@ -250,12 +252,17 @@ func (s *SourceService) Create(ctx context.Context, req appdto.SourceUpsertReque
 		})
 		return nil, err
 	}
-	if err := s.sourceRepo.Create(ctx, source); err != nil {
+	if err := s.withinSourceTx(ctx, func(txCtx context.Context) error {
+		if err := s.sourceRepo.Create(txCtx, source); err != nil {
+			return err
+		}
+		return s.syncSourceMountAfterMutation(txCtx, source)
+	}); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "storage_source",
 			Action:       "create",
 			Result:       appaudit.ResultFailed,
-			ErrorCode:    "INTERNAL_ERROR",
+			ErrorCode:    sourceErrorCode(err),
 		})
 		return nil, err
 	}
@@ -327,12 +334,17 @@ func (s *SourceService) Update(ctx context.Context, id uint, req appdto.SourceUp
 	source.CreatedAt = existing.CreatedAt
 	source.WebDAVSlug = existing.WebDAVSlug
 
-	if err := s.sourceRepo.Update(ctx, source); err != nil {
+	if err := s.withinSourceTx(ctx, func(txCtx context.Context) error {
+		if err := s.sourceRepo.Update(txCtx, source); err != nil {
+			return err
+		}
+		return s.syncSourceMountAfterMutation(txCtx, source)
+	}); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "storage_source",
 			Action:       "update",
 			Result:       appaudit.ResultFailed,
-			ErrorCode:    "INTERNAL_ERROR",
+			ErrorCode:    sourceErrorCode(err),
 			ResourceID:   encodeUintID(id),
 			Before:       before,
 		})
@@ -392,12 +404,19 @@ func (s *SourceService) Delete(ctx context.Context, id uint) error {
 		return err
 	}
 
-	if err := s.sourceRepo.Delete(ctx, id); err != nil {
+	if err := s.withinSourceTx(ctx, func(txCtx context.Context) error {
+		if s.mountSyncer != nil {
+			if err := s.mountSyncer.DisableSourceMount(txCtx, id); err != nil {
+				return fmt.Errorf("%w: %w", ErrMetadataVFSMountSyncFailed, err)
+			}
+		}
+		return s.sourceRepo.Delete(txCtx, id)
+	}); err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "storage_source",
 			Action:       "delete",
 			Result:       appaudit.ResultFailed,
-			ErrorCode:    "INTERNAL_ERROR",
+			ErrorCode:    sourceErrorCode(err),
 			ResourceID:   encodeUintID(id),
 			Before:       before,
 		})
@@ -682,4 +701,21 @@ func (s *SourceService) validateSource(ctx context.Context, source *entity.Stora
 		return fmt.Errorf("%w: %w", ErrSourceConnectionFailed, err)
 	}
 	return nil
+}
+
+func (s *SourceService) syncSourceMountAfterMutation(ctx context.Context, source *entity.StorageSource) error {
+	if s.mountSyncer == nil {
+		return nil
+	}
+	if _, err := s.mountSyncer.SyncSourceMount(ctx, source); err != nil {
+		return fmt.Errorf("%w: %w", ErrMetadataVFSMountSyncFailed, err)
+	}
+	return nil
+}
+
+func (s *SourceService) withinSourceTx(ctx context.Context, fn func(context.Context) error) error {
+	if s.transactor == nil {
+		return fn(ctx)
+	}
+	return s.transactor.WithinTx(ctx, fn)
 }

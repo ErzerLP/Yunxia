@@ -242,6 +242,8 @@ func sourceErrorCode(err error) string {
 		return "MOUNT_PATH_CONFLICT"
 	case errors.Is(err, ErrSourceInUse):
 		return "SOURCE_IN_USE"
+	case errors.Is(err, ErrMetadataVFSMountSyncFailed):
+		return "METADATA_VFS_MOUNT_SYNC_FAILED"
 	case errors.Is(err, ErrPathInvalid):
 		return "PATH_INVALID"
 	default:
