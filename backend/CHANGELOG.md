@@ -14,6 +14,19 @@
 
 ## 2026-05-07
 
+### 元数据化 VFS Metadata Service 阶段
+
+- 新增 `MetadataVFSService` 控制面服务骨架，服务层只依赖 VFS metadata repository interface，不直接依赖 GORM 或 HTTP：
+  - root `EnsureRoot`
+  - path `ResolveNode`
+  - DB metadata children list / name-path prefix search
+  - metadata `mkdir` / `rename` / `move` / soft delete
+  - node tag attach / list helper
+- 当前阶段的 rename / move 只更新同一 metadata tree 内的 path 快照；跨挂载 / 跨 source 真实数据面移动暂不触碰，留给后续 driver import / lazy index 阶段。
+- 加固 metadata tree mutation 边界：rename/move/delete 拒绝 root 或挂载点等不应直接改动的节点，move/rename 会在更新前预检目标子树 path 冲突，pending/syncing/conflict/missing/error 文件节点不标记为可下载。
+- 新增 service 单元测试覆盖 root/list、mkdir 同名冲突与软删除重建、search、rename 子树 path 更新与冲突、move 子树 path 更新与预检冲突、soft delete、tag attach/list。
+- 本阶段未迁移 `/api/v2/fs` HTTP 行为，未新增前端可见 route/DTO，因此 `backend/API_CONTRACT.md` 暂不变更。
+
 ### 元数据化 VFS Schema / Repository 阶段
 
 - 新增元数据化 VFS 控制面最小持久化基础：
