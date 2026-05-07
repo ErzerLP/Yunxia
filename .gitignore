@@ -5,11 +5,17 @@ Thumbs.db
 .vscode/
 
 # Local agent / workspace metadata
+.agent
+.agent/
+.agents
+.agents/
 .claude/
 .codex/
 .trellis/
 .worktrees/
 .codex-migration-*/
+AGENTS.md
+agent.mc
 
 # Root local env / logs
 .env
