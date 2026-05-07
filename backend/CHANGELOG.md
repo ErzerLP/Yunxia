@@ -14,6 +14,15 @@
 
 ## 2026-05-07
 
+### 元数据化 VFS 业务模块最小接入阶段
+
+- 新增 `MetadataVFSCommitService` 应用层提交端口，封装业务完成后维护 metadata VFS 控制面快照：懒创建父目录 path、upsert `storage_objects`、upsert file `vfs_nodes`。
+- `UploadService` 在已注入 metadata committer 时，会在本地上传、server_chunk import、direct multipart 完成以及 fast-upload 命中后提交 file node/object；未注入时保持旧行为。
+- `TaskService` 在 staging/import 成功后提交导入文件的 file node/object，并按实际导入路径补齐父目录节点；metadata 提交失败会让任务落入 failed，错误信息固定为安全哨兵，避免任务伪 completed 或泄露物理路径/secret。
+- `MetadataVFSCommitService` 对显式 locator JSON 做 canonical marshal 与敏感字段脱敏，默认 locator 仅记录 driver 内部逻辑 path，不记录本机物理路径或 provider token。
+- RSS 仍不直接依赖 metadata 底层，继续通过 TaskService 创建下载任务；本阶段不新增 route/DTO，不迁移 `/api/v2/fs` handler，不要求前端改动。
+- 新增 service 测试覆盖本地上传、server_chunk import、direct multipart、fast-upload metadata 提交，任务导入 metadata 提交，metadata 提交失败时任务不落 completed，以及 locator JSON 稳定脱敏。
+
 ### 元数据化 VFS Lazy Index / Sync 阶段
 
 - 新增 `MetadataVFSSyncService` 懒索引/同步服务，支持按 metadata path 或 node 刷新 source-backed/mount 目录的直接子项，服务层仅依赖 domain repository 与 domain/storage driver/indexer interface，不导入 GORM 或 HTTP。

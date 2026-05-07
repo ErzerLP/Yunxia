@@ -963,12 +963,14 @@ func TestTaskCreateSupportsNonLocalTargetByImportDriver(t *testing.T) {
 		content:  []byte("episode-content"),
 	}
 	importer := &recordingTaskImportDriver{}
+	committer := &recordingMetadataVFSCommitter{}
 	svc := NewTaskService(
 		taskRepo,
 		sourceRepo,
 		downloader,
 		WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")),
 		WithTaskImportDriver("s3", importer),
+		WithTaskMetadataVFSCommitter(committer),
 	)
 	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
 
@@ -993,6 +995,22 @@ func TestTaskCreateSupportsNonLocalTargetByImportDriver(t *testing.T) {
 	}
 	if string(call.content) != "episode-content" {
 		t.Fatalf("unexpected imported remote content %q", call.content)
+	}
+	if len(committer.calls) != 1 {
+		t.Fatalf("expected one metadata commit after task import, got %+v", committer.calls)
+	}
+	commitCall := committer.calls[0]
+	if commitCall.Source == nil ||
+		commitCall.Source.ID != source.ID ||
+		commitCall.Source.DriverType != source.DriverType ||
+		commitCall.VirtualParentPath != "/remote/shows" ||
+		commitCall.ResolvedInnerParentPath != "/shows" ||
+		commitCall.Filename != "episode01.mkv" ||
+		commitCall.ObjectPath != "/shows/episode01.mkv" ||
+		commitCall.Size != int64(len("episode-content")) ||
+		commitCall.ActorID == nil ||
+		*commitCall.ActorID != 42 {
+		t.Fatalf("unexpected task metadata commit call = %+v", commitCall)
 	}
 }
 
@@ -1065,6 +1083,193 @@ func TestTaskCreateAcceptsTargetVirtualParentPath(t *testing.T) {
 	}
 	if string(content) != "movie-content" {
 		t.Fatalf("unexpected imported content %q", content)
+	}
+}
+
+func TestTaskImportCommitsMetadataVFSFileObject(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	objectRepo := gorm.NewStorageObjectRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "metadata 下载目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/media",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{
+		filename: "movie.mkv",
+		content:  []byte("movie-content"),
+	}
+	committer := NewMetadataVFSCommitService(nodeRepo, objectRepo, WithMetadataVFSCommitTransactor(gorm.NewTransactor(db)))
+	svc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		downloader,
+		WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")),
+		WithTaskVFSResolver(NewVFSService(sourceRepo)),
+		WithTaskMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:                    "download",
+		URL:                     "https://example.com/movie.mkv",
+		TargetVirtualParentPath: "/media/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", got)
+	}
+
+	node, err := nodeRepo.FindByPath(context.Background(), "/media/downloads/movie.mkv")
+	if err != nil {
+		t.Fatalf("nodeRepo.FindByPath(file) error = %v", err)
+	}
+	if node.Kind != entity.VFSNodeKindFile || node.ObjectID == nil || node.SourceID == nil || *node.SourceID != source.ID {
+		t.Fatalf("unexpected metadata file node = %+v", node)
+	}
+	object, err := objectRepo.FindByID(context.Background(), *node.ObjectID)
+	if err != nil {
+		t.Fatalf("objectRepo.FindByID() error = %v", err)
+	}
+	if object.SourceID != source.ID || object.DriverType != "local" || object.LocatorType != "local_path" ||
+		!strings.Contains(object.LocatorJSON, `"/downloads/movie.mkv"`) ||
+		object.Status != entity.StorageObjectStatusAvailable ||
+		object.Size != int64(len("movie-content")) {
+		t.Fatalf("unexpected storage object = %+v", object)
+	}
+	parent, err := nodeRepo.FindByPath(context.Background(), "/media/downloads")
+	if err != nil {
+		t.Fatalf("nodeRepo.FindByPath(parent) error = %v", err)
+	}
+	if parent.Kind != entity.VFSNodeKindDir || parent.SourceID == nil || *parent.SourceID != source.ID {
+		t.Fatalf("unexpected metadata parent node = %+v", parent)
+	}
+}
+
+func TestTaskMetadataCommitFailureDoesNotCompleteTask(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "metadata 失败目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/media",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	commitErr := errors.New(`metadata commit failed at D:\secret\yunxia\physical-path token=top-secret`)
+	committer := &failingMetadataVFSCommitter{err: commitErr}
+	svc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		&completedWritingDownloader{filename: "broken.bin", content: []byte("broken")},
+		WithTaskStagingDir(filepath.Join(t.TempDir(), "staging")),
+		WithTaskVFSResolver(NewVFSService(sourceRepo)),
+		WithTaskMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	created, err := svc.Create(ctx, appdto.CreateTaskRequest{
+		Type:                    "download",
+		URL:                     "https://example.com/broken.bin",
+		TargetVirtualParentPath: "/media/downloads",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status == "completed" || got.ErrorMessage == nil || *got.ErrorMessage != ErrMetadataVFSCommitFailed.Error() {
+		t.Fatalf("expected sanitized metadata failure to mark task failed, got %+v", got)
+	}
+	if strings.Contains(*got.ErrorMessage, "top-secret") || strings.Contains(*got.ErrorMessage, "physical-path") {
+		t.Fatalf("metadata failure leaked unsafe details: %q", *got.ErrorMessage)
+	}
+	if committer.calls != 1 {
+		t.Fatalf("expected one metadata commit attempt, got %d", committer.calls)
+	}
+	stored, err := taskRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("taskRepo.FindByID() error = %v", err)
+	}
+	if stored.Status == "completed" {
+		t.Fatalf("task should not be persisted as completed after metadata failure: %+v", stored)
+	}
+}
+
+func TestMetadataCommitLocatorJSONIsStableAndRedacted(t *testing.T) {
+	locatorType, locatorJSON, err := metadataCommitLocator(MetadataVFSFileObjectCommitRequest{
+		LocatorType: "provider_file_id",
+		LocatorJSON: `{
+			"path": "/safe/object.bin",
+			"physical_path": "D:\\secret\\object.bin",
+			"access_token": "secret-token",
+			"file_id": "file-1",
+			"nested": {"password": "secret-password"}
+		}`,
+	}, "pikpak", "/fallback.bin")
+	if err != nil {
+		t.Fatalf("metadataCommitLocator(custom) error = %v", err)
+	}
+	if locatorType != "provider_file_id" {
+		t.Fatalf("unexpected locator type %q", locatorType)
+	}
+	want := `{"access_token":"[redacted]","file_id":"file-1","nested":{"password":"[redacted]"},"path":"/safe/object.bin","physical_path":"[redacted]"}`
+	if locatorJSON != want {
+		t.Fatalf("unexpected canonical locator JSON:\n got %s\nwant %s", locatorJSON, want)
+	}
+	if strings.Contains(locatorJSON, "secret-token") ||
+		strings.Contains(locatorJSON, "secret-password") ||
+		strings.Contains(locatorJSON, `D:\secret`) {
+		t.Fatalf("locator JSON leaked secret values: %s", locatorJSON)
+	}
+
+	defaultType, defaultJSON, err := metadataCommitLocator(MetadataVFSFileObjectCommitRequest{}, "s3", "/objects/movie.mkv")
+	if err != nil {
+		t.Fatalf("metadataCommitLocator(default) error = %v", err)
+	}
+	if defaultType != "driver_path" || defaultJSON != `{"path":"/objects/movie.mkv"}` {
+		t.Fatalf("unexpected default locator type/json = %q %s", defaultType, defaultJSON)
 	}
 }
 
@@ -1754,11 +1959,18 @@ func TestUploadServiceUsesImportDriverForServerChunkNonLocalDriver(t *testing.T)
 	}
 
 	importer := &recordingTaskImportDriver{}
+	committer := &recordingMetadataVFSCommitter{}
 	options := DefaultSystemOptions()
 	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
 	options.DefaultChunkSize = 5
 	options.MaxUploadSize = 1024
-	svc := NewUploadService(sourceRepo, uploadRepo, options, WithUploadImportDriver("cloud-import", importer))
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadImportDriver("cloud-import", importer),
+		WithUploadMetadataVFSCommitter(committer),
+	)
 	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
 
 	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
@@ -1801,8 +2013,187 @@ func TestUploadServiceUsesImportDriverForServerChunkNonLocalDriver(t *testing.T)
 	if call.sourceID != source.ID || call.targetPath != "/uploads/movie.mkv" || string(call.content) != "hello-world" {
 		t.Fatalf("unexpected import call = %+v", call)
 	}
+	if len(committer.calls) != 1 {
+		t.Fatalf("expected one metadata commit after server_chunk import, got %+v", committer.calls)
+	}
+	commitCall := committer.calls[0]
+	if commitCall.Source == nil ||
+		commitCall.Source.ID != source.ID ||
+		commitCall.Source.DriverType != source.DriverType ||
+		commitCall.VirtualParentPath != "/cloud/uploads" ||
+		commitCall.ResolvedInnerParentPath != "/uploads" ||
+		commitCall.Filename != "movie.mkv" ||
+		commitCall.ObjectPath != "/uploads/movie.mkv" ||
+		commitCall.Size != int64(len("hello-world")) ||
+		commitCall.ActorID == nil ||
+		*commitCall.ActorID != 7 {
+		t.Fatalf("unexpected metadata commit call = %+v", commitCall)
+	}
 	if _, err := uploadRepo.FindByID(context.Background(), initResp.Upload.UploadID); !errors.Is(err, domainrepo.ErrNotFound) {
 		t.Fatalf("expected upload session to be deleted, err=%v", err)
+	}
+}
+
+func TestUploadFinishCommitsMetadataVFSFileObject(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	objectRepo := gorm.NewStorageObjectRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "metadata 上传目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/media",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	committer := NewMetadataVFSCommitService(nodeRepo, objectRepo, WithMetadataVFSCommitTransactor(gorm.NewTransactor(db)))
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadVFSResolver(NewVFSService(sourceRepo)),
+		WithUploadMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		TargetVirtualParentPath: "/media/uploads",
+		Filename:                "movie.txt",
+		FileSize:                int64(len("hello-world")),
+		FileHash:                "5eb63bbbe01eeed093cb22bb8f5acdc3",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 0, []byte("hello")); err != nil {
+		t.Fatalf("UploadChunk(0) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 1, []byte("-worl")); err != nil {
+		t.Fatalf("UploadChunk(1) error = %v", err)
+	}
+	if _, err := svc.UploadChunk(ctx, initResp.Upload.UploadID, 2, []byte("d")); err != nil {
+		t.Fatalf("UploadChunk(2) error = %v", err)
+	}
+
+	finishResp, err := svc.Finish(ctx, appdto.UploadFinishRequest{UploadID: initResp.Upload.UploadID})
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if !finishResp.Completed || finishResp.File.Path != "/uploads/movie.txt" {
+		t.Fatalf("unexpected finish response = %+v", finishResp)
+	}
+
+	node, err := nodeRepo.FindByPath(context.Background(), "/media/uploads/movie.txt")
+	if err != nil {
+		t.Fatalf("nodeRepo.FindByPath(file) error = %v", err)
+	}
+	if node.Kind != entity.VFSNodeKindFile || node.ObjectID == nil || node.Checksum != "5eb63bbbe01eeed093cb22bb8f5acdc3" {
+		t.Fatalf("unexpected metadata file node = %+v", node)
+	}
+	object, err := objectRepo.FindByID(context.Background(), *node.ObjectID)
+	if err != nil {
+		t.Fatalf("objectRepo.FindByID() error = %v", err)
+	}
+	if object.SourceID != source.ID || object.DriverType != "local" || object.LocatorType != "local_path" ||
+		!strings.Contains(object.LocatorJSON, `"/uploads/movie.txt"`) ||
+		object.Status != entity.StorageObjectStatusAvailable ||
+		object.Size != int64(len("hello-world")) {
+		t.Fatalf("unexpected storage object = %+v", object)
+	}
+}
+
+func TestUploadLocalFastUploadCommitsMetadataVFSFileObject(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+
+	basePath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(basePath, "uploads"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(basePath, "uploads", "movie.txt"), []byte("hello-world"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "metadata 本地秒传目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/media",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	committer := &recordingMetadataVFSCommitter{}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	resp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/uploads",
+		Filename: "movie.txt",
+		FileSize: int64(len("hello-world")),
+		FileHash: "5eb63bbbe01eeed093cb22bb8f5acdc3",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if !resp.IsFastUpload || resp.File == nil {
+		t.Fatalf("expected local fast-upload response, got %+v", resp)
+	}
+	if len(committer.calls) != 1 {
+		t.Fatalf("expected one metadata commit after local fast-upload, got %+v", committer.calls)
+	}
+	call := committer.calls[0]
+	if call.Source == nil ||
+		call.Source.ID != source.ID ||
+		call.Source.DriverType != source.DriverType ||
+		call.VirtualParentPath != "/media/uploads" ||
+		call.ResolvedInnerParentPath != "/uploads" ||
+		call.Filename != "movie.txt" ||
+		call.ObjectPath != "/uploads/movie.txt" ||
+		call.Size != int64(len("hello-world")) ||
+		call.Checksum != "5eb63bbbe01eeed093cb22bb8f5acdc3" ||
+		call.ActorID == nil ||
+		*call.ActorID != 7 {
+		t.Fatalf("unexpected local fast-upload metadata commit call = %+v", call)
 	}
 }
 
@@ -1913,6 +2304,101 @@ func TestUploadServiceUsesDirectUploadDriverForNonLocalDriver(t *testing.T) {
 	}
 	if _, err := uploadRepo.FindByID(context.Background(), initResp.Upload.UploadID); !errors.Is(err, domainrepo.ErrNotFound) {
 		t.Fatalf("expected upload session to be deleted after direct finish, err=%v", err)
+	}
+}
+
+func TestUploadDirectFinishCommitsMetadataVFSFileObject(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	source := &entity.StorageSource{
+		Name:       "直传 metadata 源",
+		DriverType: "cloud-direct-metadata",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/direct",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	expiresAt := time.Date(2026, 5, 5, 8, 0, 0, 0, time.UTC)
+	driver := &recordingUploadDriver{
+		initPlan: &MultipartUploadPlan{
+			State: MultipartUploadState{
+				RemoteUploadID: "remote-upload-metadata",
+				ObjectKey:      "object-key",
+				VirtualPath:    "/uploads/direct.bin",
+				FileSize:       int64(len("hello-world")),
+			},
+			PartInstructions: []MultipartUploadPartInstruction{{
+				Index:     0,
+				Method:    "PUT",
+				URL:       "https://upload.example.test/object-key",
+				ByteStart: 0,
+				ByteEnd:   int64(len("hello-world")) - 1,
+				ExpiresAt: expiresAt,
+			}},
+		},
+		completeEntry: &StorageEntry{
+			Name:       "direct.bin",
+			Path:       "/uploads/direct.bin",
+			Size:       int64(len("hello-world")),
+			ETag:       "etag-complete",
+			ModifiedAt: expiresAt,
+		},
+	}
+	committer := &recordingMetadataVFSCommitter{}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.DefaultChunkSize = 5
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadDriver("cloud-direct-metadata", driver),
+		WithUploadMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	initResp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/uploads",
+		Filename: "direct.bin",
+		FileSize: int64(len("hello-world")),
+		FileHash: "driver-hash",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if _, err := svc.Finish(ctx, appdto.UploadFinishRequest{
+		UploadID: initResp.Upload.UploadID,
+		Parts:    []appdto.UploadPartETag{{Index: 0, ETag: "etag-1"}},
+	}); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if len(committer.calls) != 1 {
+		t.Fatalf("expected one metadata commit after direct upload, got %+v", committer.calls)
+	}
+	call := committer.calls[0]
+	if call.Source == nil ||
+		call.Source.ID != source.ID ||
+		call.Source.DriverType != source.DriverType ||
+		call.VirtualParentPath != "/direct/uploads" ||
+		call.ResolvedInnerParentPath != "/uploads" ||
+		call.Filename != "direct.bin" ||
+		call.ObjectPath != "/uploads/direct.bin" ||
+		call.Size != int64(len("hello-world")) ||
+		call.ETag != "etag-complete" ||
+		call.Checksum != "driver-hash" ||
+		call.ActorID == nil ||
+		*call.ActorID != 7 {
+		t.Fatalf("unexpected direct metadata commit call = %+v", call)
 	}
 }
 
@@ -2048,6 +2534,82 @@ func TestUploadServiceReturnsFastUploadWhenDriverCompletesOnInit(t *testing.T) {
 	}
 	if len(driver.completeCalls) != 0 {
 		t.Fatalf("fast upload should not call CompleteMultipartUpload, got %+v", driver.completeCalls)
+	}
+}
+
+func TestUploadFastUploadCommitsMetadataVFSFileObject(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	uploadRepo := gorm.NewUploadSessionRepository(db)
+	source := &entity.StorageSource{
+		Name:       "秒传 metadata 源",
+		DriverType: "cloud-fast-metadata",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/fast",
+		RootPath:   "/",
+		ConfigJSON: "{}",
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	driver := &recordingUploadDriver{
+		initPlan: &MultipartUploadPlan{
+			CompletedEntry: &StorageEntry{
+				Name:       "instant.bin",
+				Path:       "/instant.bin",
+				Size:       4,
+				ETag:       "etag-instant",
+				ModifiedAt: time.Date(2026, 5, 5, 8, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	committer := &recordingMetadataVFSCommitter{}
+	options := DefaultSystemOptions()
+	options.TempDir = filepath.Join(t.TempDir(), "upload-temp")
+	options.MaxUploadSize = 1024
+	svc := NewUploadService(
+		sourceRepo,
+		uploadRepo,
+		options,
+		WithUploadDriver("cloud-fast-metadata", driver),
+		WithUploadMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 7, RoleKey: permission.RoleUser, Status: permission.StatusActive})
+
+	resp, err := svc.Init(ctx, 7, appdto.UploadInitRequest{
+		SourceID: source.ID,
+		Path:     "/",
+		Filename: "instant.bin",
+		FileSize: 4,
+		FileHash: "0123456789abcdef0123456789abcdef01234567",
+	})
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	if !resp.IsFastUpload {
+		t.Fatalf("expected fast upload response, got %+v", resp)
+	}
+	if len(committer.calls) != 1 {
+		t.Fatalf("expected one metadata commit after fast upload, got %+v", committer.calls)
+	}
+	call := committer.calls[0]
+	if call.Source == nil ||
+		call.Source.ID != source.ID ||
+		call.Source.DriverType != source.DriverType ||
+		call.VirtualParentPath != "/fast" ||
+		call.ResolvedInnerParentPath != "/" ||
+		call.Filename != "instant.bin" ||
+		call.ObjectPath != "/instant.bin" ||
+		call.Size != 4 ||
+		call.ETag != "etag-instant" ||
+		call.Checksum != "0123456789abcdef0123456789abcdef01234567" ||
+		call.ActorID == nil ||
+		*call.ActorID != 7 {
+		t.Fatalf("unexpected fast-upload metadata commit call = %+v", call)
 	}
 }
 
@@ -2507,6 +3069,29 @@ func (d *removeCountingDownloader) Remove(context.Context, string) error {
 
 type recordingTaskImportDriver struct {
 	calls []recordingTaskImportCall
+}
+
+type failingMetadataVFSCommitter struct {
+	err   error
+	calls int
+}
+
+func (c *failingMetadataVFSCommitter) CommitFileObject(context.Context, MetadataVFSFileObjectCommitRequest) (*MetadataVFSFileObjectCommitResult, error) {
+	c.calls++
+	return nil, c.err
+}
+
+type recordingMetadataVFSCommitter struct {
+	calls []MetadataVFSFileObjectCommitRequest
+	err   error
+}
+
+func (c *recordingMetadataVFSCommitter) CommitFileObject(_ context.Context, req MetadataVFSFileObjectCommitRequest) (*MetadataVFSFileObjectCommitResult, error) {
+	c.calls = append(c.calls, req)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &MetadataVFSFileObjectCommitResult{}, nil
 }
 
 type fakeSourceConfigCodec struct {

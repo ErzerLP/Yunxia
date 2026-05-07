@@ -80,6 +80,9 @@ func main() {
 	aclRepo := gormrepo.NewACLRuleRepository(db)
 	shareRepo := gormrepo.NewShareRepository(db)
 	auditRepo := gormrepo.NewAuditLogRepository(db)
+	vfsNodeRepo := gormrepo.NewVFSNodeRepository(db)
+	storageObjectRepo := gormrepo.NewStorageObjectRepository(db)
+	transactor := gormrepo.NewTransactor(db)
 
 	hasher := security.NewBcryptHasher(cfg.Security.BcryptCost)
 	tokenSvc := security.NewJWTTokenService(cfg.JWT.Secret, cfg.JWT.AccessTokenExpire, cfg.JWT.RefreshTokenExpire)
@@ -193,10 +196,16 @@ func main() {
 	}
 	vfsServiceOptions = append(vfsServiceOptions, storageDrivers.VFSServiceOptions()...)
 	vfsSvc := appsvc.NewVFSService(sourceRepo, vfsServiceOptions...)
+	metadataVFSCommitter := appsvc.NewMetadataVFSCommitService(
+		vfsNodeRepo,
+		storageObjectRepo,
+		appsvc.WithMetadataVFSCommitTransactor(transactor),
+	)
 	uploadServiceOptions := []appsvc.UploadServiceOption{
 		appsvc.WithUploadAuditRecorder(auditRecorder),
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadVFSResolver(vfsSvc),
+		appsvc.WithUploadMetadataVFSCommitter(metadataVFSCommitter),
 	}
 	uploadServiceOptions = append(uploadServiceOptions, storageDrivers.UploadServiceOptions()...)
 	uploadSvc := appsvc.NewUploadService(sourceRepo, uploadRepo, options, uploadServiceOptions...)
@@ -207,6 +216,7 @@ func main() {
 		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeAria2, downloadStagingRoot(cfg.Aria2.DownloadDir)),
 		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeQBittorrent, downloadStagingRoot(cfg.QBittorrent.DownloadDir)),
 		appsvc.WithTaskVFSResolver(vfsSvc),
+		appsvc.WithTaskMetadataVFSCommitter(metadataVFSCommitter),
 		appsvc.WithTaskDownloadRouter(downloadRouter),
 	}
 	taskServiceOptions = append(taskServiceOptions, storageDrivers.TaskServiceOptions()...)

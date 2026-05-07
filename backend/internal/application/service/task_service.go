@@ -63,8 +63,9 @@ type TaskService struct {
 	vfsResolver            interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
-	logger        *slog.Logger
-	auditRecorder *appaudit.Recorder
+	metadataCommitter MetadataVFSCommitter
+	logger            *slog.Logger
+	auditRecorder     *appaudit.Recorder
 }
 
 type resolvedTaskTarget struct {
@@ -1031,7 +1032,14 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 
 	for _, file := range files {
 		targetPath := joinVirtualPath(baseTargetPath, taskImportRelativePath(task, file, len(files)))
+		info, err := os.Stat(file.localPath)
+		if err != nil {
+			return err
+		}
 		if err := s.importStagedFile(ctx, source, targetPath, file.localPath); err != nil {
+			return err
+		}
+		if err := s.commitTaskImportedMetadataFile(ctx, task, source, targetPath, info); err != nil {
 			return err
 		}
 	}
@@ -1041,6 +1049,58 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 	}
 	task.StagingDir = ""
 	return nil
+}
+
+func (s *TaskService) commitTaskImportedMetadataFile(ctx context.Context, task *entity.DownloadTask, source *entity.StorageSource, targetPath string, info os.FileInfo) error {
+	if s.metadataCommitter == nil {
+		return nil
+	}
+	if task == nil || source == nil || info == nil || info.IsDir() {
+		return nil
+	}
+	innerParentPath, filename, err := splitParentName(targetPath)
+	if err != nil {
+		return err
+	}
+	actorID := task.UserID
+	_, err = s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+		Source:                  source,
+		VirtualParentPath:       taskImportedMetadataVirtualParentPath(task, source, innerParentPath),
+		ResolvedInnerParentPath: innerParentPath,
+		Filename:                filename,
+		ObjectPath:              targetPath,
+		Size:                    info.Size(),
+		MimeType:                detectContentType(filename),
+		ActorID:                 &actorID,
+	})
+	return maskMetadataVFSCommitError(err)
+}
+
+func taskImportedMetadataVirtualParentPath(task *entity.DownloadTask, source *entity.StorageSource, innerParentPath string) string {
+	if task == nil || source == nil {
+		return ""
+	}
+	virtualBase := strings.TrimSpace(task.TargetVirtualParentPath)
+	if virtualBase == "" {
+		virtualBase = strings.TrimSpace(task.SaveVirtualPath)
+	}
+	if virtualBase != "" {
+		normalizedVirtualBase, virtualErr := normalizeVirtualPath(virtualBase)
+		normalizedInnerParent, innerErr := normalizeVirtualPath(innerParentPath)
+		baseInner := strings.TrimSpace(task.ResolvedInnerSavePath)
+		if baseInner == "" {
+			baseInner = task.SavePath
+		}
+		normalizedBaseInner, baseErr := normalizeVirtualPath(baseInner)
+		if virtualErr == nil && innerErr == nil && baseErr == nil && isSubPath(normalizedBaseInner, normalizedInnerParent) {
+			if normalizedInnerParent == normalizedBaseInner {
+				return normalizedVirtualBase
+			}
+			suffix := strings.TrimPrefix(normalizedInnerParent, normalizedBaseInner)
+			return joinVirtualPath(normalizedVirtualBase, strings.TrimPrefix(suffix, "/"))
+		}
+	}
+	return mergeMountAndInnerPath(source.MountPath, innerParentPath)
 }
 
 func taskImportRelativePath(task *entity.DownloadTask, file stagedTaskFile, fileCount int) string {

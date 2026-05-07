@@ -40,8 +40,9 @@ type UploadService struct {
 	vfsResolver   interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
-	logger        *slog.Logger
-	auditRecorder *appaudit.Recorder
+	metadataCommitter MetadataVFSCommitter
+	logger            *slog.Logger
+	auditRecorder     *appaudit.Recorder
 }
 
 type resolvedUploadInitTarget struct {
@@ -120,6 +121,9 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, target resol
 		if hashErr == nil && hash == req.FileHash {
 			info, _ := os.Stat(targetPhysical)
 			item := buildFileItem(target.source.ID, targetVirtual, info)
+			if err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item); err != nil {
+				return nil, err
+			}
 			return &appdto.UploadInitResponse{
 				IsFastUpload:     true,
 				File:             &item,
@@ -225,6 +229,9 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 	}
 	if plan.CompletedEntry != nil {
 		item := buildStorageEntryItem(target.source.ID, *plan.CompletedEntry)
+		if err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item); err != nil {
+			return nil, err
+		}
 		return &appdto.UploadInitResponse{
 			IsFastUpload:     true,
 			File:             &item,
@@ -606,6 +613,9 @@ func (s *UploadService) finishLocal(ctx context.Context, source *entity.StorageS
 		return nil, err
 	}
 	item := buildFileItem(source.ID, targetVirtual, info)
+	if err := s.commitUploadSessionMetadataFile(ctx, source, session, item); err != nil {
+		return nil, err
+	}
 
 	_ = os.RemoveAll(s.sessionTempDir(session.UploadID))
 	_ = s.uploadRepo.Delete(ctx, session.UploadID)
@@ -641,6 +651,9 @@ func (s *UploadService) finishWithUploadDriver(ctx context.Context, source *enti
 		return nil, err
 	}
 	item := buildStorageEntryItem(source.ID, *entry)
+	if err := s.commitUploadSessionMetadataFile(ctx, source, session, item); err != nil {
+		return nil, err
+	}
 
 	_ = s.uploadRepo.Delete(ctx, session.UploadID)
 	return &appdto.UploadFinishResponse{
@@ -696,9 +709,6 @@ func (s *UploadService) finishWithImportDriver(ctx context.Context, source *enti
 		return nil, normalizeImportDriverError(err)
 	}
 
-	_ = os.RemoveAll(s.sessionTempDir(session.UploadID))
-	_ = s.uploadRepo.Delete(ctx, session.UploadID)
-
 	item := buildStorageEntryItem(source.ID, StorageEntry{
 		Name:       session.Filename,
 		Path:       targetPath,
@@ -706,6 +716,13 @@ func (s *UploadService) finishWithImportDriver(ctx context.Context, source *enti
 		Size:       session.FileSize,
 		ModifiedAt: time.Now(),
 	})
+	if err := s.commitUploadSessionMetadataFile(ctx, source, session, item); err != nil {
+		return nil, err
+	}
+
+	_ = os.RemoveAll(s.sessionTempDir(session.UploadID))
+	_ = s.uploadRepo.Delete(ctx, session.UploadID)
+
 	return &appdto.UploadFinishResponse{
 		Completed: true,
 		UploadID:  session.UploadID,
@@ -755,6 +772,81 @@ func (s *UploadService) sessionTempDir(uploadID string) string {
 
 func (s *UploadService) chunkFilePath(uploadID string, index int) string {
 	return filepath.Join(s.sessionTempDir(uploadID), fmt.Sprintf("chunk-%06d.part", index))
+}
+
+func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession, item appdto.FileItem) error {
+	if s.metadataCommitter == nil {
+		return nil
+	}
+	if item.IsDir {
+		return nil
+	}
+	filename := item.Name
+	if filename == "" {
+		filename = session.Filename
+	}
+	virtualParentPath := strings.TrimSpace(session.TargetVirtualParentPath)
+	if virtualParentPath == "" {
+		virtualParentPath = mergeMountAndInnerPath(source.MountPath, item.ParentPath)
+	}
+	resolvedInnerParentPath := strings.TrimSpace(session.ResolvedInnerParentPath)
+	if resolvedInnerParentPath == "" {
+		resolvedInnerParentPath = item.ParentPath
+	}
+	actorID := session.UserID
+	_, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+		Source:                  source,
+		VirtualParentPath:       virtualParentPath,
+		ResolvedInnerParentPath: resolvedInnerParentPath,
+		Filename:                filename,
+		ObjectPath:              item.Path,
+		Size:                    item.Size,
+		MimeType:                item.MimeType,
+		ETag:                    item.Etag,
+		Checksum:                session.FileHash,
+		ActorID:                 &actorID,
+	})
+	return maskMetadataVFSCommitError(err)
+}
+
+func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID uint, target resolvedUploadInitTarget, filename string, checksum string, item appdto.FileItem) error {
+	if s.metadataCommitter == nil {
+		return nil
+	}
+	if item.IsDir {
+		return nil
+	}
+	if item.Name == "" {
+		item.Name = filename
+	}
+	virtualParentPath := target.targetVirtualParentPath
+	if virtualParentPath == "" {
+		virtualParentPath = mergeMountAndInnerPath(target.source.MountPath, item.ParentPath)
+	}
+	innerParentPath := target.resolvedInnerParentPath
+	if innerParentPath == "" {
+		innerParentPath = item.ParentPath
+	}
+	_, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+		Source:                  target.source,
+		VirtualParentPath:       virtualParentPath,
+		ResolvedInnerParentPath: innerParentPath,
+		Filename:                item.Name,
+		ObjectPath:              item.Path,
+		Size:                    item.Size,
+		MimeType:                item.MimeType,
+		ETag:                    item.Etag,
+		Checksum:                checksum,
+		ActorID:                 &userID,
+	})
+	return maskMetadataVFSCommitError(err)
+}
+
+func maskMetadataVFSCommitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return ErrMetadataVFSCommitFailed
 }
 
 func uploadSessionTargetVirtualPath(session *entity.UploadSession) string {

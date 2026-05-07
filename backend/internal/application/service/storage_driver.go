@@ -229,6 +229,13 @@ func WithUploadVFSResolver(resolver interface {
 	}
 }
 
+// WithUploadMetadataVFSCommitter 注册上传完成后的 metadata VFS 提交端口。
+func WithUploadMetadataVFSCommitter(committer MetadataVFSCommitter) UploadServiceOption {
+	return func(s *UploadService) {
+		s.metadataCommitter = committer
+	}
+}
+
 // TaskServiceOption 定义 TaskService 的可选配置。
 type TaskServiceOption func(*TaskService)
 
@@ -303,6 +310,13 @@ func WithTaskVFSResolver(resolver interface {
 }) TaskServiceOption {
 	return func(s *TaskService) {
 		s.vfsResolver = resolver
+	}
+}
+
+// WithTaskMetadataVFSCommitter 注册任务完成导入后的 metadata VFS 提交端口。
+func WithTaskMetadataVFSCommitter(committer MetadataVFSCommitter) TaskServiceOption {
+	return func(s *TaskService) {
+		s.metadataCommitter = committer
 	}
 }
 

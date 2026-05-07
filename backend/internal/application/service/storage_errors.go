@@ -45,6 +45,8 @@ var (
 	ErrNameConflict = errors.New("name conflict")
 	// ErrVFSSyncConflict 表示 VFS 懒索引/同步检测到需要人工处理的冲突。
 	ErrVFSSyncConflict = errors.New("vfs sync conflict")
+	// ErrMetadataVFSCommitFailed 表示业务完成后写入 metadata VFS 控制面失败。
+	ErrMetadataVFSCommitFailed = errors.New("metadata vfs commit failed")
 	// ErrFileNotFound 表示文件不存在。
 	ErrFileNotFound = errors.New("file not found")
 	// ErrFileAlreadyExists 表示文件已存在。
