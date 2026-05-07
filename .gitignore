@@ -6,6 +6,8 @@ Thumbs.db
 
 # Local agent / workspace metadata
 .claude/
+.codex/
+.trellis/
 .worktrees/
 .codex-migration-*/
 
@@ -50,6 +52,9 @@ web/dist-deploy.zip
 web/.env
 web/.env.local
 web/*.local
+
+# Local screenshots / temporary captures
+PixPin_*.png
 
 # Known transient scratch files
 backend/internal/interfaces/http/share_workflow_test.go.3532149991208567473

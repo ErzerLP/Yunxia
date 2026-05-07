@@ -1,4 +1,0 @@
-{"file": ".trellis\\spec\\backend\\index.md", "reason": "Backend spec index for verification"}
-{"file": ".trellis\\spec\\backend\\database-guidelines.md", "reason": "Verify PostgreSQL model/repo contracts"}
-{"file": ".trellis\\spec\\backend\\quality-guidelines.md", "reason": "Quality and docs verification"}
-{"file": "docs\\research\\metadata-vfs-flat-storage-architecture.md", "reason": "Verify implementation against architecture"}

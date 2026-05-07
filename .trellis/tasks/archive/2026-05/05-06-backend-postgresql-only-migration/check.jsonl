@@ -1,7 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"Backend task entrypoint and required quality checklist."}
-{"file":".trellis/spec/backend/database-guidelines.md","reason":"Verify model/repository/migration/test behavior against database conventions."}
-{"file":".trellis/spec/backend/directory-structure.md","reason":"Verify upper layers do not depend on GORM/PostgreSQL directly."}
-{"file":".trellis/spec/backend/error-handling.md","reason":"Verify database errors are mapped to stable domain/service/API errors."}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Verify tests, docs, and changelog requirements."}
-{"file":"docs/research/postgresql-only-database-migration.md","reason":"Check implementation against the approved PostgreSQL-only migration design."}
-{"file":"backend PostgreSQL-only migration","reason":"Quality gate complete: gofmt, go test ./..., CGO_ENABLED=0 go test ./..., git diff --check, docker compose config all passed; Docker daemon unavailable for real up -d --build."}

@@ -1,9 +1,0 @@
-{"file":".trellis/spec/frontend/index.md","reason":"Frontend entry spec and handoff discipline."}
-{"file":".trellis/spec/frontend/directory-structure.md","reason":"Frontend module/routing/API placement conventions."}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Component UX, forms, accessibility, and toast/error patterns."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"React Query/Zustand ownership and invalidation patterns."}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"API DTO and strict TypeScript conventions."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required lint/build/VFS checks and handoff doc rules."}
-{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Query/guard patterns for affected pages."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Backend-to-frontend API boundary adaptation."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Search existing source/API patterns before adding new code."}

@@ -1,6 +1,0 @@
-{"file":".trellis/spec/frontend/index.md","reason":"Frontend entry spec and handoff discipline."}
-{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Component UX, forms, accessibility, and toast/error patterns."}
-{"file":".trellis/spec/frontend/state-management.md","reason":"React Query/Zustand ownership and invalidation patterns."}
-{"file":".trellis/spec/frontend/type-safety.md","reason":"API DTO and strict TypeScript conventions."}
-{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Required lint/build/VFS checks and handoff/test doc quality gates."}
-{"file":".trellis/spec/frontend/hook-guidelines.md","reason":"Query/guard review for affected pages."}

@@ -1,5 +1,0 @@
-{"file":"docs/research/third-party-cloud-storage-driver-architecture.md","reason":"本任务新增架构设计文档，需要检查边界、歧义、分阶段计划和现有代码一致性"}
-{"file":"DOCS-INDEX.md","reason":"新增文档入口索引"}
-{"file":"docs/README.md","reason":"新增 docs/research 文档入口索引"}
-{"file":"backend/API_CONTRACT.md","reason":"确认本任务未落地真实 API，不应把设计草案误写成当前契约"}
-{"file":"backend/FRONTEND_HANDOFF.md","reason":"确认本任务无需前端适配交接，后续实现再追加"}

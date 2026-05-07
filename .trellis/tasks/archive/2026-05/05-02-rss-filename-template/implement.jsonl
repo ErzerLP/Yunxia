@@ -1,6 +1,0 @@
-{"file":".trellis/spec/backend/index.md","reason":"后端入口规范与交接文档要求"}
-{"file":".trellis/spec/backend/directory-structure.md","reason":"任务/RSS 跨应用、领域、持久化层修改需保持分层"}
-{"file":".trellis/spec/backend/error-handling.md","reason":"新增 target_filename 校验与 task handler 错误码映射"}
-{"file":".trellis/spec/backend/database-guidelines.md","reason":"DownloadTask 增加持久化字段"}
-{"file":".trellis/spec/backend/quality-guidelines.md","reason":"测试、API 契约与前端交接要求"}
-{"file":".trellis/spec/backend/rss-guidelines.md","reason":"RSS filename_template 语义与测试要求"}
