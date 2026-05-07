@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -13,6 +14,19 @@ import (
 type vfsListData struct {
 	Items       []map[string]any `json:"items"`
 	CurrentPath string           `json:"current_path"`
+}
+
+type vfsRefreshData struct {
+	Path      string `json:"path"`
+	NodeID    uint   `json:"node_id"`
+	Seen      int    `json:"seen"`
+	Indexed   int    `json:"indexed"`
+	Updated   int    `json:"updated"`
+	Missing   int    `json:"missing"`
+	Conflicts int    `json:"conflicts"`
+	Errors    int    `json:"errors"`
+	SyncState string `json:"sync_state"`
+	Error     string `json:"error"`
 }
 
 type vfsTagCreateData struct {
@@ -152,6 +166,114 @@ func TestVFSSearchUsesMetadataIndex(t *testing.T) {
 	names := collectMapNames(listed.Items)
 	if !containsString(names, "metadata-search-hit.txt") {
 		t.Fatalf("expected metadata-backed search hit, got %+v", listed.Items)
+	}
+	for _, item := range listed.Items {
+		if item["name"] == "metadata-search-hit.txt" && item["sync_state"] != "indexed" {
+			t.Fatalf("expected search hit sync_state indexed, got %+v", item)
+		}
+	}
+}
+
+func TestVFSRefreshIndexesNewLocalFileAndListUsesMetadata(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	accessToken, _ := bootstrapAdmin(t, engine)
+
+	_, basePath := createLocalSourceWithMountAndBaseForTest(t, engine, accessToken, "refresh-local", "/refresh-local")
+	if err := os.WriteFile(filepath.Join(basePath, "fresh.txt"), []byte("fresh metadata"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(fresh.txt) error = %v", err)
+	}
+
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/refresh", map[string]any{
+		"path": "/refresh-local",
+		"mode": "sync",
+	}, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs refresh expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	refreshed := decodeEnvelope[vfsRefreshData](t, rec.Body.Bytes())
+	if refreshed.Path != "/refresh-local" || refreshed.Indexed != 1 || refreshed.SyncState != "indexed" {
+		t.Fatalf("unexpected refresh result = %+v", refreshed)
+	}
+
+	rec = performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/refresh-local", nil, accessToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vfs list after refresh expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, rec.Body.Bytes())
+	var fresh map[string]any
+	for _, item := range listed.Items {
+		if item["name"] == "fresh.txt" {
+			fresh = item
+			break
+		}
+	}
+	if fresh == nil {
+		t.Fatalf("expected fresh.txt visible after refresh, got %+v", listed.Items)
+	}
+	if fresh["sync_state"] != "indexed" {
+		t.Fatalf("expected fresh.txt sync_state indexed, got %+v", fresh)
+	}
+}
+
+func TestVFSRefreshDeniedForUnauthorizedPath(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, _ := bootstrapAdmin(t, engine)
+
+	sourceID, basePath := createLocalSourceWithMountAndBaseForTest(t, engine, adminToken, "refresh-acl", "/refresh-acl")
+	if err := os.MkdirAll(filepath.Join(basePath, "visible"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(visible) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(basePath, "secret"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(secret) error = %v", err)
+	}
+	rec := performRequest(t, engine, http.MethodPost, "/api/v2/fs/refresh", map[string]any{
+		"path": "/refresh-acl",
+		"mode": "sync",
+	}, adminToken)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin refresh expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	userID, userToken := createNormalUserAndLoginForTest(t, engine, adminToken, "refresh-reader", "strong-password-123")
+	createACLRuleForTest(t, engine, adminToken, sourceID, userID, "/visible", map[string]any{
+		"read":   true,
+		"write":  false,
+		"delete": false,
+		"share":  false,
+	}, "allow", 100, true)
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/refresh", map[string]any{
+		"path": "/refresh-acl/secret",
+		"mode": "sync",
+	}, userToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized refresh expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "ACL_DENIED")
+	if strings.Contains(rec.Body.String(), "secret") || strings.Contains(rec.Body.String(), "refresh-acl") {
+		t.Fatalf("unauthorized refresh leaked path name: %s", rec.Body.String())
+	}
+
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/refresh", map[string]any{
+		"path": "/refresh-acl/ghost",
+		"mode": "sync",
+	}, userToken)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized missing refresh expected same 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "ACL_DENIED")
+
+	createLocalSourceWithMountForTest(t, engine, adminToken, "refresh-hidden", "/refresh-hidden")
+	rec = performRequest(t, engine, http.MethodPost, "/api/v2/fs/refresh", map[string]any{
+		"path": "/refresh-hidden",
+		"mode": "sync",
+	}, userToken)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("invisible mount refresh expected hidden 404, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertFailureCode(t, rec.Body.Bytes(), "FILE_NOT_FOUND")
+	if strings.Contains(rec.Body.String(), "refresh-hidden") {
+		t.Fatalf("invisible mount refresh leaked mount name: %s", rec.Body.String())
 	}
 }
 
@@ -499,6 +621,13 @@ func TestVFSRenameRejectsMountNameConflict(t *testing.T) {
 func createLocalSourceWithMountForTest(t *testing.T, engine *gin.Engine, accessToken string, name string, mountPath string) int {
 	t.Helper()
 
+	sourceID, _ := createLocalSourceWithMountAndBaseForTest(t, engine, accessToken, name, mountPath)
+	return sourceID
+}
+
+func createLocalSourceWithMountAndBaseForTest(t *testing.T, engine *gin.Engine, accessToken string, name string, mountPath string) (int, string) {
+	t.Helper()
+
 	basePath := filepath.ToSlash(filepath.Join(t.TempDir(), name))
 	if err := os.MkdirAll(basePath, 0o755); err != nil {
 		t.Fatalf("os.MkdirAll(local source %s) error = %v", name, err)
@@ -520,7 +649,7 @@ func createLocalSourceWithMountForTest(t *testing.T, engine *gin.Engine, accessT
 	}
 
 	created := decodeEnvelope[sourceCreateData](t, rec.Body.Bytes())
-	return int(created.Source["id"].(float64))
+	return int(created.Source["id"].(float64)), basePath
 }
 
 func createS3SourceWithMountForTest(t *testing.T, engine *gin.Engine, accessToken string, name string, mountPath string) int {

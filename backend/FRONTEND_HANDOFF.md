@@ -42,6 +42,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
+| 待适配 | 2026-05-07 | VFS 刷新 | 文件/VFS 页、目录刷新按钮、错误提示 | P2 | `POST /api/v2/fs/refresh`、`GET /api/v2/fs/list` | [详情](#handoff-2026-05-07-vfs-refresh-sync) |
 | 待适配 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
 | 待适配 | 2026-05-07 | VFS 标签 | 文件/VFS 页、文件详情/右键菜单、后续筛选入口 | P2 | `/api/v1/tags*`、`/api/v2/fs/tags*` | [详情](#handoff-2026-05-07-vfs-tags) |
 | 待联调 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页、上传入口、离线任务/RSS 目标选择 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
@@ -973,3 +974,23 @@ type PikPakSecretPatch = {
 - `mkdir` / `rename` / `move` / `delete` 在底层操作成功后同步 metadata VFS mutation。
 - `copy` 在底层复制成功后刷新目标父目录，确保 `/api/v2/fs/list` 立即可见。
 - 底层失败不会修改 metadata；metadata 同步失败只返回稳定错误码，详见 `backend/API_CONTRACT.md` 的 `3.14 统一虚拟目录树 V2`。
+
+<a id="handoff-2026-05-07-vfs-refresh-sync"></a>
+
+### [P2][待适配][VFS 刷新] 2026-05-07 手动刷新 metadata VFS 目录
+
+#### 前端适配 checklist
+
+- [ ] 在文件/VFS 页当前目录增加或接入“刷新”动作：`POST /api/v2/fs/refresh { path: currentPath, mode: "sync" }`。
+- [ ] 刷新成功后重新调用 `GET /api/v2/fs/list?path=<currentPath>`；不要只用 refresh 返回的统计替换目录列表。
+- [ ] 在文件列表类型中接收可选 `sync_state`，并对 `missing` / `conflict` / `error` / `stale` 做弱提示或禁用下载（后端也会返回 `can_download=false`）。
+- [ ] 处理稳定错误码：`FILE_NOT_FOUND`、`PATH_INVALID`、`ACL_DENIED`、`SOURCE_DRIVER_UNSUPPORTED`、`CLOUD_PROVIDER_UNAVAILABLE`、`VFS_SYNC_CONFLICT`。
+- [ ] 未授权 refresh 返回 403/404 时只展示通用无权限/不存在提示；不要把用户输入 path 或猜测的挂载名回显成“真实存在”。
+
+#### 本次后端新增能力
+
+- 新增 `POST /api/v2/fs/refresh`，当前只支持同步模式 `mode="sync"`，空 mode 按 sync 处理，其他 mode 返回 `VALIDATION_ERROR`。
+- 响应 `data` 为刷新统计：`path/node_id/seen/indexed/updated/missing/conflicts/errors/sync_state/error`。
+- Provider/list 失败时，接口返回稳定 cloud/provider 错误，但不会清空已有 metadata 子节点；目录会标记为 `sync_state="error"`，前端可继续加载旧 DB 视图。
+- 刷新成功后，`GET /api/v2/fs/list` 返回更新后的 metadata 列表，并在条目上暴露 `sync_state`。
+- 完整契约见 `backend/API_CONTRACT.md` 的 `3.14 统一虚拟目录树 V2`。

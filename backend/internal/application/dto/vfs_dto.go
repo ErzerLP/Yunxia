@@ -9,6 +9,7 @@ type VFSItem struct {
 	EntryKind    string `json:"entry_kind"`
 	IsVirtual    bool   `json:"is_virtual"`
 	IsMountPoint bool   `json:"is_mount_point"`
+	SyncState    string `json:"sync_state,omitempty"`
 	Size         int64  `json:"size"`
 	MimeType     string `json:"mime_type"`
 	Extension    string `json:"extension"`
@@ -76,4 +77,24 @@ type VFSMoveCopyRequest struct {
 type VFSDeleteRequest struct {
 	Path       string `json:"path" binding:"required"`
 	DeleteMode string `json:"delete_mode"`
+}
+
+// VFSRefreshRequest 表示手动刷新 metadata VFS 目录请求。
+type VFSRefreshRequest struct {
+	Path string `json:"path" binding:"required"`
+	Mode string `json:"mode"`
+}
+
+// VFSRefreshResponse 表示一次 metadata VFS 刷新结果。
+type VFSRefreshResponse struct {
+	Path      string `json:"path"`
+	NodeID    uint   `json:"node_id"`
+	Seen      int    `json:"seen"`
+	Indexed   int    `json:"indexed"`
+	Updated   int    `json:"updated"`
+	Missing   int    `json:"missing"`
+	Conflicts int    `json:"conflicts"`
+	Errors    int    `json:"errors"`
+	SyncState string `json:"sync_state"`
+	Error     string `json:"error,omitempty"`
 }

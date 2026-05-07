@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	appdto "yunxia/internal/application/dto"
@@ -347,6 +348,44 @@ func (s *VFSService) Search(ctx context.Context, pathPrefix string, keyword stri
 	}
 	sortMetadataVFSItems(filtered)
 	resp.Items = filtered
+	return resp, nil
+}
+
+// Refresh 同步刷新指定 metadata VFS 目录的直接子项。
+func (s *VFSService) Refresh(ctx context.Context, req appdto.VFSRefreshRequest) (*appdto.VFSRefreshResponse, error) {
+	if s.metadataReader == nil || s.metadataRefresh == nil {
+		return nil, ErrSourceDriverUnsupported
+	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "sync"
+	}
+	if mode != "sync" {
+		return nil, ErrPathInvalid
+	}
+	normalizedPath, err := normalizeVirtualPath(req.Path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureMetadataRoot(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.authorizeMetadataRefreshPath(ctx, normalizedPath); err != nil {
+		return nil, err
+	}
+	node, err := s.metadataReader.ResolveNode(ctx, normalizedPath)
+	if err != nil {
+		return nil, err
+	}
+	if !metadataVFSNodeIsDirectory(node) {
+		return nil, ErrPathInvalid
+	}
+
+	result, err := s.metadataRefresh.RefreshPath(ctx, node.Path)
+	resp := vfsRefreshResponseFromResult(result)
+	if err != nil {
+		return resp, err
+	}
 	return resp, nil
 }
 
@@ -914,6 +953,60 @@ func (s *VFSService) metadataItemSourceVisible(ctx context.Context, sourceID uin
 	return s.aclAuthorizer.CanSeeSource(ctx, sourceID)
 }
 
+func (s *VFSService) authorizeMetadataRefreshPath(ctx context.Context, normalizedPath string) error {
+	if s.aclAuthorizer == nil {
+		return nil
+	}
+	mounts, err := s.registry.ListEnabledMounts(ctx)
+	if err != nil {
+		return err
+	}
+	visibleMounts, err := s.filterVisibleMounts(ctx, mounts)
+	if err != nil {
+		return err
+	}
+	resolved, err := resolveVirtualPathByLongestPrefix(normalizedPath, mounts)
+	if err != nil {
+		return err
+	}
+	if !resolved.IsRealMount {
+		item := appdto.VFSItem{
+			Path:      normalizedPath,
+			EntryKind: string(VirtualEntryKindDirectory),
+			IsVirtual: true,
+		}
+		if metadataVirtualItemVisible(item, visibleMounts, false) {
+			return nil
+		}
+		return ErrFileNotFound
+	}
+	if resolved.Source == nil {
+		return ErrFileNotFound
+	}
+
+	visibleSource, err := s.metadataItemSourceVisible(ctx, resolved.Source.ID)
+	if err != nil {
+		return err
+	}
+	if !visibleSource {
+		return ErrFileNotFound
+	}
+	sourceID := resolved.Source.ID
+	item := appdto.VFSItem{
+		Path:      normalizedPath,
+		SourceID:  &sourceID,
+		EntryKind: string(VirtualEntryKindDirectory),
+	}
+	filtered, err := s.aclAuthorizer.FilterVFSItems(ctx, sourceID, []appdto.VFSItem{item})
+	if err != nil {
+		return err
+	}
+	if len(filtered) == 0 {
+		return ErrACLDenied
+	}
+	return nil
+}
+
 func (s *VFSService) applyMetadataItemCapabilities(ctx context.Context, item appdto.VFSItem, visibleMounts []MountEntry) (appdto.VFSItem, bool, error) {
 	if item.SourceID == nil {
 		return item, true, nil
@@ -1037,4 +1130,22 @@ func rewriteFileItemToVFSItem(mountPath string, fileItem appdto.FileItem) appdto
 	fileItem.Path = mergeMountAndInnerPath(mountPath, fileItem.Path)
 	fileItem.ParentPath = mergeMountAndInnerPath(mountPath, fileItem.ParentPath)
 	return buildVFSItemFromFileItem(fileItem, false, false)
+}
+
+func vfsRefreshResponseFromResult(result *MetadataVFSRefreshResult) *appdto.VFSRefreshResponse {
+	if result == nil {
+		return nil
+	}
+	return &appdto.VFSRefreshResponse{
+		Path:      result.Path,
+		NodeID:    result.NodeID,
+		Seen:      result.Seen,
+		Indexed:   result.Indexed,
+		Updated:   result.Updated,
+		Missing:   result.Missing,
+		Conflicts: result.Conflicts,
+		Errors:    result.Errors,
+		SyncState: result.SyncState,
+		Error:     result.Error,
+	}
 }

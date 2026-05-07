@@ -39,6 +39,7 @@
 |---|---|
 | 进入根目录 | `GET /api/v2/fs/list?path=/` |
 | 进入目录 | `GET /api/v2/fs/list?path=/local/docs` |
+| 手动刷新当前目录 | `POST /api/v2/fs/refresh` |
 | 搜索 | `GET /api/v2/fs/search?path=/local&keyword=hello` |
 | 新建目录 | `POST /api/v2/fs/mkdir` |
 | 重命名 | `POST /api/v2/fs/rename` |
@@ -1185,6 +1186,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 |---|---|---|---|---|
 | GET | `/fs/list` | Bearer | query: `path`，为空默认 `/` | 200，`{items,current_path}` |
 | GET | `/fs/search` | Bearer | query: `path,keyword,page,page_size` | 200，`{items,path_prefix,keyword}` |
+| POST | `/fs/refresh` | Bearer | `{path,mode}`，`mode` 当前只支持 `sync`（空值按 `sync` 处理） | 200，`VFSRefreshResponse` |
 | POST | `/fs/mkdir` | Bearer | `parent_path,name` | 200，`{created}` |
 | POST | `/fs/rename` | Bearer | `path,new_name` | 200，`{old_path,new_path,file}` |
 | POST | `/fs/move` | Bearer | `path,target_path` | 200，`{old_path,new_path,moved}` |
@@ -1200,16 +1202,40 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - `is_virtual`
   - `is_mount_point`
   - `source_id`（纯虚拟节点时可能为空）
+  - `sync_state`: `indexed` / `pending` / `syncing` / `stale` / `missing` / `conflict` / `error`；旧式/未索引条目可能省略
+- `POST /fs/refresh` 请求示例：
+  ```json
+  { "path": "/pikpak/anime", "mode": "sync" }
+  ```
+- `mode` 省略或空字符串时按 `sync` 处理；非 `sync` 值会在 handler 层返回 `400 VALIDATION_ERROR`，不会触发 provider/list。
+- `POST /fs/refresh` 成功响应 `data`：
+  ```json
+  {
+    "path": "/pikpak/anime",
+    "node_id": 42,
+    "seen": 12,
+    "indexed": 2,
+    "updated": 1,
+    "missing": 0,
+    "conflicts": 0,
+    "errors": 0,
+    "sync_state": "indexed"
+  }
+  ```
 - `/fs/list` 可能返回：
   - 实际文件 / 目录
   - 由 mount 组合出来的纯虚拟目录节点
 - `/fs/list` 与 `/fs/search` 现在以 metadata VFS 读模型为准；进入挂载目录时后端会按需懒刷新当前目录的直接子项，再从 DB 返回列表 / 搜索结果
+- `/fs/refresh` 是外部可调用的同步刷新入口，会在当前请求内刷新目标目录的直接子项，成功后再次调用 `/fs/list?path=<path>` 可看到最新 metadata 视图
 - 懒刷新失败时后端优先保留已有 metadata 视图，避免 provider 短暂不可用导致目录完全不可读；不可下载 / 冲突 / 缺失状态的文件会通过 `can_download=false` 收敛给前端
+- `/fs/refresh` 遇到 provider/list 失败时返回稳定错误（例如 `502 CLOUD_PROVIDER_UNAVAILABLE`），但不会清空已有 DB 子节点；目标目录会进入 `sync_state="error"`，旧列表视图仍可通过 `/fs/list` 读取
+- `/fs/refresh` 发现同名或 provider identity 冲突时返回 `409 VFS_SYNC_CONFLICT`，相关节点会保留为 `sync_state="conflict"`，前端应提示需要人工处理或稍后重试
 - `/fs/mkdir`、`/fs/rename`、`/fs/move`、`/fs/delete` 在底层 driver / file operator 成功后同步更新 metadata VFS 控制面；`/fs/copy` 在底层复制成功后刷新目标父目录，确保后续 `/fs/list` 以 metadata 视图立即可见
 - 若底层写操作失败，metadata VFS 不会被修改；若底层已成功但 metadata 同步失败，接口返回 `500 METADATA_VFS_MUTATION_SYNC_FAILED`，响应 message 固定为 `metadata vfs mutation sync failed`，不会暴露物理路径、SQL 细节或 provider 原始 payload
 - 后端会把上述“底层成功但 metadata 同步失败”的场景写入内部 `vfs_operations` operation journal，记录操作类型、路径/source 快照、安全错误码与下一次重试时间；本阶段不新增用户/前端可调用的管理 API，对外成功/失败语义不变
 - 跨 source `move/copy` 本阶段只保留既有 local-to-local 同步能力；非 local 跨 source 仍返回稳定 `422 SOURCE_DRIVER_UNSUPPORTED` / `SOURCE_OPERATION_UNSUPPORTED`，不会伪装为全量 transfer 已完成
 - 多用户开启后，`/fs/list?path=/` 只投影当前用户可见的挂载源；未授权 source 的挂载点名称不会出现在根目录
+- `/fs/refresh` 至少要求当前用户对目标 path 有 read 权限；普通用户刷新未授权 path 返回 `403 ACL_DENIED` 或按不可见语义返回 `404 FILE_NOT_FOUND`，不会在错误消息中暴露挂载点/文件名
 - 本地挂载目录探测为不可写时，列表项 `can_delete=false`；写操作返回 `403 SOURCE_READ_ONLY`
 - 纯虚拟目录上的写操作（mkdir / rename / move / copy / delete / upload init）如果没有唯一 backing storage，返回 `409 NO_BACKING_STORAGE`
 - 名称与挂载点冲突时返回 `409 NAME_CONFLICT`
@@ -1416,6 +1442,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   "entry_kind": "directory",
   "is_virtual": true,
   "is_mount_point": true,
+  "sync_state": "indexed",
   "size": 0,
   "mime_type": "",
   "extension": "",
@@ -1523,6 +1550,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `FILE_IS_DIRECTORY`
 - `NAME_CONFLICT`
 - `NO_BACKING_STORAGE`
+- `VFS_SYNC_CONFLICT`
 - `UPLOAD_SESSION_NOT_FOUND`
 - `UPLOAD_CHUNK_CONFLICT`
 - `UPLOAD_FINISH_INCOMPLETE`
@@ -1612,19 +1640,20 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 
 1. 初始化目录树：`GET /api/v2/fs/list?path=/`
 2. 点击目录：`GET /api/v2/fs/list?path=<item.path>`
-3. 新建目录：`POST /api/v2/fs/mkdir`
-4. 上传文件：
+3. 用户点击刷新按钮：`POST /api/v2/fs/refresh { "path": "<current_path>", "mode": "sync" }`，成功后重新调用 `GET /api/v2/fs/list?path=<current_path>`
+4. 新建目录：`POST /api/v2/fs/mkdir`
+5. 上传文件：
    - `POST /api/v1/upload/init`，传 `target_virtual_parent_path=<current_path>`
    - local：`PUT /api/v1/upload/chunk` 后 `POST /api/v1/upload/finish`
    - S3：按 `part_instructions` 直传后 `POST /api/v1/upload/finish`
    - PikPak：优先按 `transport.mode` 分支；能提供 GCID 时可走 `direct_parts` OSS PUT，不能提供时走 `server_chunk` 后端导入
-5. 下载文件：
+6. 下载文件：
    - `POST /api/v2/fs/access-url`
    - 浏览器打开返回的 `url`
-6. 删除文件：
+7. 删除文件：
    - `DELETE /api/v2/fs`，默认 `delete_mode=trash`
    - PikPak 删除会调用 provider `batchTrash`，语义是移入 PikPak 回收站；不要在 UI 中标注为永久删除
-7. 回收站：
+8. 回收站：
    - 如果页面是按 source 展示回收站，使用 `/api/v1/trash?source_id=<id>`
 
 ### 7.3 存储源管理页流程

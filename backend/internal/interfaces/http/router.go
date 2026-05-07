@@ -130,6 +130,7 @@ func RegisterVFSRoutes(
 	authorized.Use(authMiddleware.RequireAuth())
 	authorized.GET("/fs/list", vfsHandler.List)
 	authorized.GET("/fs/search", vfsHandler.Search)
+	authorized.POST("/fs/refresh", vfsHandler.Refresh)
 	authorized.POST("/fs/mkdir", vfsHandler.Mkdir)
 	authorized.POST("/fs/rename", vfsHandler.Rename)
 	authorized.POST("/fs/move", vfsHandler.Move)

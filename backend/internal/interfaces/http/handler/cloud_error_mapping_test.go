@@ -154,6 +154,28 @@ func TestVFSMetadataMutationSyncFailureMappingIsStable(t *testing.T) {
 	}
 }
 
+func TestVFSSyncConflictErrorMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	(&VFSHandler{}).writeError(ctx, appsvc.ErrVFSSyncConflict)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+	var body struct {
+		Success bool   `json:"success"`
+		Code    string `json:"code"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Success || body.Code != "VFS_SYNC_CONFLICT" {
+		t.Fatalf("unexpected body = %+v raw=%s", body, recorder.Body.String())
+	}
+}
+
 func TestCloudCaptchaRequiredIncludesVerificationURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

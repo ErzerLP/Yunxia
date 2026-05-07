@@ -529,6 +529,7 @@ func metadataVFSItemFromNode(node *entity.VFSNode) appdto.VFSItem {
 	canDelete := false
 	isVirtual := false
 	isMountPoint := false
+	syncState := ""
 
 	if node != nil {
 		mimeType = node.MimeType
@@ -537,6 +538,7 @@ func metadataVFSItemFromNode(node *entity.VFSNode) appdto.VFSItem {
 		sourceID = cloneUintPtr(node.SourceID)
 		createdAt = node.CreatedAt.UTC().Format(time.RFC3339)
 		modifiedAt = node.UpdatedAt.UTC().Format(time.RFC3339)
+		syncState = node.SyncState
 		isMountPoint = node.Kind == entity.VFSNodeKindMount
 		isVirtual = node.Kind == entity.VFSNodeKindRoot ||
 			node.Kind == entity.VFSNodeKindVirtualDir ||
@@ -567,6 +569,7 @@ func metadataVFSItemFromNode(node *entity.VFSNode) appdto.VFSItem {
 		EntryKind:    entryKind,
 		IsVirtual:    isVirtual,
 		IsMountPoint: isMountPoint,
+		SyncState:    syncState,
 		Size:         size,
 		MimeType:     mimeType,
 		Extension:    extension,

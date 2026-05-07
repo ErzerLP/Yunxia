@@ -14,6 +14,14 @@
 
 ## 2026-05-07
 
+### VFS Refresh / Sync API 阶段
+
+- 新增 `POST /api/v2/fs/refresh` 手动刷新入口，handler 只依赖 `VFSService`，由 service 复用已存在的 `MetadataVFSSyncService.RefreshPath`，当前仅支持 `mode="sync"` 并进行稳定校验。
+- `VFSRefreshResponse` 对外返回 `path/node_id/seen/indexed/updated/missing/conflicts/errors/sync_state/error` 刷新统计；`VFSItem` 新增可选 `sync_state`，用于前端识别 `indexed/stale/missing/conflict/error` 等目录同步状态。
+- refresh 读取权限复用 VFS metadata/ACL 过滤语义；普通用户刷新未授权 path 返回 `ACL_DENIED` 或不可见语义错误，不通过 refresh 探测挂载点或文件名。
+- Provider/list 失败时保持旧 metadata 子节点不清空，目标目录标记 `error` 并返回稳定 `CLOUD_PROVIDER_UNAVAILABLE`；同步冲突映射为 `409 VFS_SYNC_CONFLICT`。
+- 测试覆盖 HTTP refresh 后 metadata list 可见、未授权 refresh 拒绝且不泄露 path、sync conflict handler 映射；文档同步更新 `backend/API_CONTRACT.md` 与固定 `backend/FRONTEND_HANDOFF.md`。
+
 ### VFS Operation Journal + Worker 骨架阶段
 
 - 新增内部 `vfs_operations` operation journal：记录 `mkdir/rename/move/copy/delete/import/upload_commit/task_commit/refresh` 等跨 DB / provider 非事务写操作，持久化状态、路径/source/driver 快照、JSONB payload、安全错误码、重试计数、next retry 与 worker lease。

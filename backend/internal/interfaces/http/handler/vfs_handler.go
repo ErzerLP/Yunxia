@@ -30,6 +30,7 @@ type VFSHandler struct {
 		Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
 		Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
 		Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error)
+		Refresh(ctx context.Context, req appdto.VFSRefreshRequest) (*appdto.VFSRefreshResponse, error)
 	}
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
@@ -52,6 +53,7 @@ func NewVFSHandler(
 		Copy(ctx context.Context, req appdto.VFSMoveCopyRequest) (string, string, error)
 		Delete(ctx context.Context, req appdto.VFSDeleteRequest) (time.Time, error)
 		Search(ctx context.Context, pathPrefix string, keyword string) (*appdto.VFSSearchResponse, error)
+		Refresh(ctx context.Context, req appdto.VFSRefreshRequest) (*appdto.VFSRefreshResponse, error)
 	},
 	fileService interface {
 		Search(ctx context.Context, query appdto.FileSearchQuery) (*appdto.FileSearchResponse, int, int, int, int, error)
@@ -207,6 +209,31 @@ func (h *VFSHandler) Search(c *gin.Context) {
 	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
 }
 
+// Refresh 手动同步刷新 metadata VFS 目录。
+func (h *VFSHandler) Refresh(c *gin.Context) {
+	var req appdto.VFSRefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+		return
+	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "sync"
+	}
+	if mode != "sync" {
+		httpresp.Error(c, http.StatusBadRequest, "VALIDATION_ERROR", "refresh mode must be sync", nil)
+		return
+	}
+	req.Mode = mode
+
+	resp, err := h.vfsService.Refresh(c.Request.Context(), req)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	httpresp.JSON(c, http.StatusOK, "OK", "ok", resp)
+}
+
 // AccessURL 生成统一虚拟目录的短时访问地址。
 func (h *VFSHandler) AccessURL(c *gin.Context) {
 	var req appdto.VFSAccessURLRequest
@@ -334,6 +361,8 @@ func (h *VFSHandler) writeError(c *gin.Context, err error) {
 		errors.Is(err, appsvc.ErrFileMoveConflict),
 		errors.Is(err, appsvc.ErrFileCopyConflict):
 		httpresp.Error(c, http.StatusConflict, "NAME_CONFLICT", err.Error(), nil)
+	case errors.Is(err, appsvc.ErrVFSSyncConflict):
+		httpresp.Error(c, http.StatusConflict, "VFS_SYNC_CONFLICT", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrFileIsDirectory):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "FILE_IS_DIRECTORY", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrACLDenied):
