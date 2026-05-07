@@ -63,6 +63,7 @@ type TaskService struct {
 	vfsResolver            interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
+	metadataReader    metadataVFSReader
 	metadataCommitter MetadataVFSCommitter
 	logger            *slog.Logger
 	auditRecorder     *appaudit.Recorder
@@ -71,6 +72,7 @@ type TaskService struct {
 type resolvedTaskTarget struct {
 	source                  *entity.StorageSource
 	savePath                string
+	targetVFSParentNodeID   uint
 	targetVirtualParentPath string
 	saveVirtualPath         string
 	resolvedSourceID        uint
@@ -228,6 +230,7 @@ func (s *TaskService) Create(ctx context.Context, req appdto.CreateTaskRequest) 
 		Status:                  "pending",
 		SourceID:                source.ID,
 		SavePath:                target.savePath,
+		TargetVFSParentNodeID:   target.targetVFSParentNodeID,
 		TargetVirtualParentPath: target.targetVirtualParentPath,
 		TargetFilename:          targetFilename,
 		SaveVirtualPath:         target.saveVirtualPath,
@@ -330,6 +333,7 @@ func (s *TaskService) tryCreateNativeDownloadTask(ctx context.Context, req appdt
 		Status:                  "pending",
 		SourceID:                source.ID,
 		SavePath:                target.savePath,
+		TargetVFSParentNodeID:   target.targetVFSParentNodeID,
 		TargetVirtualParentPath: target.targetVirtualParentPath,
 		TargetFilename:          req.TargetFilename,
 		SaveVirtualPath:         target.saveVirtualPath,
@@ -396,6 +400,7 @@ func (s *TaskService) resolveCreateTarget(ctx context.Context, req appdto.Create
 		return resolvedTaskTarget{
 			source:                  resolved.Source,
 			savePath:                resolvedInnerParentPath,
+			targetVFSParentNodeID:   resolveMetadataVFSNodeID(ctx, s.metadataReader, virtualParentPath),
 			targetVirtualParentPath: virtualParentPath,
 			saveVirtualPath:         virtualParentPath,
 			resolvedSourceID:        resolved.Source.ID,
@@ -421,6 +426,7 @@ func (s *TaskService) resolveCreateTarget(ctx context.Context, req appdto.Create
 	return resolvedTaskTarget{
 		source:                source,
 		savePath:              savePath,
+		targetVFSParentNodeID: resolveMetadataVFSNodeID(ctx, s.metadataReader, saveVirtualPath),
 		saveVirtualPath:       saveVirtualPath,
 		resolvedSourceID:      source.ID,
 		resolvedInnerSavePath: savePath,
@@ -1039,8 +1045,12 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 		if err := s.importStagedFile(ctx, source, targetPath, file.localPath); err != nil {
 			return err
 		}
-		if err := s.commitTaskImportedMetadataFile(ctx, task, source, targetPath, info); err != nil {
+		nodeID, err := s.commitTaskImportedMetadataFile(ctx, task, source, targetPath, info)
+		if err != nil {
 			return err
+		}
+		if len(files) == 1 && nodeID > 0 {
+			task.ResultVFSNodeID = nodeID
 		}
 	}
 
@@ -1051,19 +1061,19 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 	return nil
 }
 
-func (s *TaskService) commitTaskImportedMetadataFile(ctx context.Context, task *entity.DownloadTask, source *entity.StorageSource, targetPath string, info os.FileInfo) error {
+func (s *TaskService) commitTaskImportedMetadataFile(ctx context.Context, task *entity.DownloadTask, source *entity.StorageSource, targetPath string, info os.FileInfo) (uint, error) {
 	if s.metadataCommitter == nil {
-		return nil
+		return 0, nil
 	}
 	if task == nil || source == nil || info == nil || info.IsDir() {
-		return nil
+		return 0, nil
 	}
 	innerParentPath, filename, err := splitParentName(targetPath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	actorID := task.UserID
-	_, err = s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+	result, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
 		Source:                  source,
 		VirtualParentPath:       taskImportedMetadataVirtualParentPath(task, source, innerParentPath),
 		ResolvedInnerParentPath: innerParentPath,
@@ -1073,7 +1083,13 @@ func (s *TaskService) commitTaskImportedMetadataFile(ctx context.Context, task *
 		MimeType:                detectContentType(filename),
 		ActorID:                 &actorID,
 	})
-	return maskMetadataVFSCommitError(err)
+	if err != nil {
+		return 0, maskMetadataVFSCommitError(err)
+	}
+	if result == nil || result.Node == nil {
+		return 0, nil
+	}
+	return result.Node.ID, nil
 }
 
 func taskImportedMetadataVirtualParentPath(task *entity.DownloadTask, source *entity.StorageSource, innerParentPath string) string {
@@ -1369,11 +1385,13 @@ func toTaskView(task *entity.DownloadTask) appdto.DownloadTaskView {
 		Status:                  task.Status,
 		SourceID:                task.SourceID,
 		SavePath:                task.SavePath,
+		TargetVFSParentNodeID:   task.TargetVFSParentNodeID,
 		TargetVirtualParentPath: task.TargetVirtualParentPath,
 		TargetFilename:          task.TargetFilename,
 		SaveVirtualPath:         task.SaveVirtualPath,
 		ResolvedSourceID:        task.ResolvedSourceID,
 		ResolvedInnerSavePath:   task.ResolvedInnerSavePath,
+		ResultVFSNodeID:         task.ResultVFSNodeID,
 		DisplayName:             task.DisplayName,
 		SourceURL:               task.SourceURL,
 		Progress:                task.Progress,

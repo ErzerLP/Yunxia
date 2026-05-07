@@ -172,6 +172,7 @@ type RSSSubscriptionView struct {
 	MustNotContain          []string `json:"must_not_contain"`
 	UseRegex                bool     `json:"use_regex"`
 	CaseSensitive           bool     `json:"case_sensitive"`
+	TargetVFSParentNodeID   uint     `json:"target_vfs_parent_node_id,omitempty"`
 	TargetVirtualParentPath string   `json:"target_virtual_parent_path"`
 	DirectoryTemplate       string   `json:"directory_template"`
 	FilenameTemplate        string   `json:"filename_template"`
@@ -245,6 +246,7 @@ type RSSItemView struct {
 	Status                string             `json:"status"`
 	MatchedSubscriptionID *uint              `json:"matched_subscription_id"`
 	TaskID                *uint              `json:"task_id"`
+	ResultVFSNodeID       uint               `json:"result_vfs_node_id,omitempty"`
 	ErrorMessage          *string            `json:"error_message"`
 	RetryCount            int                `json:"retry_count"`
 	MaxRetryCount         int                `json:"max_retry_count"`

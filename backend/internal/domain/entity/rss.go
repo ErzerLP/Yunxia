@@ -33,6 +33,7 @@ type RSSSubscription struct {
 	MustNotContain          []string
 	UseRegex                bool
 	CaseSensitive           bool
+	TargetVFSParentNodeID   uint
 	TargetVirtualParentPath string
 	DirectoryTemplate       string
 	FilenameTemplate        string
@@ -67,6 +68,7 @@ type RSSItem struct {
 	Status                string
 	MatchedSubscriptionID *uint
 	TaskID                *uint
+	ResultVFSNodeID       uint
 	ErrorMessage          *string
 	RetryCount            int
 	MaxRetryCount         int

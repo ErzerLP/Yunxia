@@ -11,11 +11,13 @@ type DownloadTask struct {
 	Status                  string
 	SourceID                uint
 	SavePath                string
+	TargetVFSParentNodeID   uint
 	TargetVirtualParentPath string
 	TargetFilename          string
 	SaveVirtualPath         string
 	ResolvedSourceID        uint
 	ResolvedInnerSavePath   string
+	ResultVFSNodeID         uint
 	StagingDir              string
 	DisplayName             string
 	SourceURL               string

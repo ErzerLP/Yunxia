@@ -608,6 +608,11 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithMetadataVFSSyncFileDriver("s3", fakeS3),
 		appsvc.WithMetadataVFSSyncTransactor(transactor),
 	)
+	metadataVFSCommitter := appsvc.NewMetadataVFSCommitService(
+		vfsNodeRepo,
+		storageObjectRepo,
+		appsvc.WithMetadataVFSCommitTransactor(transactor),
+	)
 	vfsSvc := appsvc.NewVFSService(
 		sourceRepo,
 		appsvc.WithVFSFileDriver("s3", fakeS3),
@@ -623,6 +628,8 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadDriver("s3", fakeS3),
 		appsvc.WithUploadVFSResolver(vfsSvc),
+		appsvc.WithUploadMetadataVFSReader(metadataVFSReader),
+		appsvc.WithUploadMetadataVFSCommitter(metadataVFSCommitter),
 	)
 	taskSvc := appsvc.NewTaskService(
 		gormrepo.NewTaskRepository(db),
@@ -630,12 +637,16 @@ func newTestRouterWithOptions(t *testing.T, config testRouterConfig) *gin.Engine
 		newFakeDownloader(),
 		appsvc.WithTaskAuditRecorder(auditRecorder),
 		appsvc.WithTaskACLAuthorizer(aclAuthorizer),
+		appsvc.WithTaskVFSResolver(vfsSvc),
+		appsvc.WithTaskMetadataVFSReader(metadataVFSReader),
+		appsvc.WithTaskMetadataVFSCommitter(metadataVFSCommitter),
 	)
 	rssSvc := appsvc.NewRSSService(
 		rssRepo,
 		sourceRepo,
 		taskSvc,
 		appsvc.WithRSSVFSResolver(vfsSvc),
+		appsvc.WithRSSMetadataVFSReader(metadataVFSReader),
 		appsvc.WithRSSACLAuthorizer(aclAuthorizer),
 		appsvc.WithRSSUserRepository(userRepo),
 	)

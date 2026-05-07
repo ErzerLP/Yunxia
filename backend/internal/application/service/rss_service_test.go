@@ -1236,6 +1236,7 @@ func TestRSSTaskBacklinkUpdatesItemTerminalStates(t *testing.T) {
 	tasks := newFakeRSSTasks()
 	now := time.Date(2026, 4, 30, 15, 0, 0, 0, time.UTC)
 	completedTaskID := tasks.addTask("completed", nil)
+	tasks.tasks[completedTaskID].ResultVFSNodeID = 99
 	failedMessage := "temporary network error"
 	failedTaskID := tasks.addTask("failed", &failedMessage)
 	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
@@ -1251,6 +1252,9 @@ func TestRSSTaskBacklinkUpdatesItemTerminalStates(t *testing.T) {
 	failed, _ = repo.FindItemByID(context.Background(), failed.ID)
 	if completed.Status != RSSItemStatusCompleted {
 		t.Fatalf("completed backlink status = %q", completed.Status)
+	}
+	if completed.ResultVFSNodeID != 99 {
+		t.Fatalf("expected completed item result_vfs_node_id=99, got %#v", completed)
 	}
 	if failed.Status != RSSItemStatusRetryPending || failed.RetryReason == nil || *failed.RetryReason != RSSRetryReasonDownloaderUnavailable {
 		t.Fatalf("failed backlink item = %#v", failed)

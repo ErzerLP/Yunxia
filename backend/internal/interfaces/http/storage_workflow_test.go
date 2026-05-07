@@ -49,6 +49,7 @@ type uploadInitData struct {
 		ChunkSize               int64  `json:"chunk_size"`
 		TotalChunks             int    `json:"total_chunks"`
 		Status                  string `json:"status"`
+		TargetVFSParentNodeID   int    `json:"target_vfs_parent_node_id"`
 		TargetVirtualParentPath string `json:"target_virtual_parent_path"`
 		ResolvedSourceID        int    `json:"resolved_source_id"`
 		ResolvedInnerParentPath string `json:"resolved_inner_parent_path"`
@@ -75,9 +76,10 @@ type uploadSessionListData struct {
 }
 
 type uploadFinishData struct {
-	Completed bool           `json:"completed"`
-	UploadID  string         `json:"upload_id"`
-	File      map[string]any `json:"file"`
+	Completed       bool           `json:"completed"`
+	UploadID        string         `json:"upload_id"`
+	ResultVFSNodeID int            `json:"result_vfs_node_id"`
+	File            map[string]any `json:"file"`
 }
 
 type mkdirData struct {
@@ -340,6 +342,9 @@ func TestS3UploadInitAndFinishLifecycle(t *testing.T) {
 	finished := decodeEnvelope[uploadFinishData](t, rec.Body.Bytes())
 	if !finished.Completed || finished.File["path"] != "/uploads/archive.zip" {
 		t.Fatalf("unexpected s3 upload finish payload = %+v", finished)
+	}
+	if finished.ResultVFSNodeID <= 0 {
+		t.Fatalf("expected upload finish result_vfs_node_id, got %+v", finished)
 	}
 
 	rec = performRequest(t, engine, http.MethodGet, fmt.Sprintf("/api/v1/files?source_id=%d&path=/uploads&page=1&page_size=200&sort_by=name&sort_order=asc", sourceID), nil, accessToken)

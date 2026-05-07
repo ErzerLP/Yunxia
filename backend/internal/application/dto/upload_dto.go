@@ -14,9 +14,11 @@ type UploadSessionView struct {
 	Status                  string `json:"status"`
 	IsFastUpload            bool   `json:"is_fast_upload"`
 	ExpiresAt               string `json:"expires_at"`
+	TargetVFSParentNodeID   uint   `json:"target_vfs_parent_node_id,omitempty"`
 	TargetVirtualParentPath string `json:"target_virtual_parent_path,omitempty"`
 	ResolvedSourceID        uint   `json:"resolved_source_id,omitempty"`
 	ResolvedInnerParentPath string `json:"resolved_inner_parent_path,omitempty"`
+	ResultVFSNodeID         uint   `json:"result_vfs_node_id,omitempty"`
 }
 
 // UploadTransport 表示上传传输方式。
@@ -56,6 +58,7 @@ type UploadInitResponse struct {
 	IsFastUpload     bool                    `json:"is_fast_upload"`
 	File             *FileItem               `json:"file,omitempty"`
 	Upload           *UploadSessionView      `json:"upload,omitempty"`
+	ResultVFSNodeID  uint                    `json:"result_vfs_node_id,omitempty"`
 	Transport        *UploadTransport        `json:"transport,omitempty"`
 	PartInstructions []UploadPartInstruction `json:"part_instructions"`
 }
@@ -82,9 +85,10 @@ type UploadPartETag struct {
 
 // UploadFinishResponse 表示上传完成响应。
 type UploadFinishResponse struct {
-	Completed bool     `json:"completed"`
-	UploadID  string   `json:"upload_id"`
-	File      FileItem `json:"file"`
+	Completed       bool     `json:"completed"`
+	UploadID        string   `json:"upload_id"`
+	ResultVFSNodeID uint     `json:"result_vfs_node_id,omitempty"`
+	File            FileItem `json:"file"`
 }
 
 // UploadSessionListResponse 表示上传会话列表响应。

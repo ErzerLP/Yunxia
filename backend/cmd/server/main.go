@@ -252,6 +252,7 @@ func main() {
 		appsvc.WithUploadAuditRecorder(auditRecorder),
 		appsvc.WithUploadACLAuthorizer(aclAuthorizer),
 		appsvc.WithUploadVFSResolver(vfsSvc),
+		appsvc.WithUploadMetadataVFSReader(metadataVFSReader),
 		appsvc.WithUploadMetadataVFSCommitter(metadataVFSCommitter),
 	}
 	uploadServiceOptions = append(uploadServiceOptions, storageDrivers.UploadServiceOptions()...)
@@ -263,6 +264,7 @@ func main() {
 		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeAria2, downloadStagingRoot(cfg.Aria2.DownloadDir)),
 		appsvc.WithTaskDownloaderStagingDir(appsvc.DownloaderTypeQBittorrent, downloadStagingRoot(cfg.QBittorrent.DownloadDir)),
 		appsvc.WithTaskVFSResolver(vfsSvc),
+		appsvc.WithTaskMetadataVFSReader(metadataVFSReader),
 		appsvc.WithTaskMetadataVFSCommitter(metadataVFSCommitter),
 		appsvc.WithTaskDownloadRouter(downloadRouter),
 	}
@@ -277,6 +279,7 @@ func main() {
 	rssOptions := []appsvc.RSSServiceOption{
 		appsvc.WithRSSFetcher(infraRSS.NewFetcher()),
 		appsvc.WithRSSVFSResolver(vfsSvc),
+		appsvc.WithRSSMetadataVFSReader(metadataVFSReader),
 		appsvc.WithRSSACLAuthorizer(aclAuthorizer),
 		appsvc.WithRSSUserRepository(userRepo),
 		appsvc.WithRSSTaskRepository(taskRepo),

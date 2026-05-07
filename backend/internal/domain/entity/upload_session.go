@@ -8,9 +8,11 @@ type UploadSession struct {
 	UserID                  uint
 	SourceID                uint
 	Path                    string
+	TargetVFSParentNodeID   uint
 	TargetVirtualParentPath string
 	ResolvedSourceID        uint
 	ResolvedInnerParentPath string
+	ResultVFSNodeID         uint
 	Filename                string
 	FileSize                int64
 	FileHash                string

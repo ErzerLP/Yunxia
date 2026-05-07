@@ -1151,6 +1151,9 @@ func TestTaskImportCommitsMetadataVFSFileObject(t *testing.T) {
 	if node.Kind != entity.VFSNodeKindFile || node.ObjectID == nil || node.SourceID == nil || *node.SourceID != source.ID {
 		t.Fatalf("unexpected metadata file node = %+v", node)
 	}
+	if got.ResultVFSNodeID != node.ID {
+		t.Fatalf("expected task result_vfs_node_id=%d, got %+v", node.ID, got)
+	}
 	object, err := objectRepo.FindByID(context.Background(), *node.ObjectID)
 	if err != nil {
 		t.Fatalf("objectRepo.FindByID() error = %v", err)
@@ -2108,6 +2111,9 @@ func TestUploadFinishCommitsMetadataVFSFileObject(t *testing.T) {
 	}
 	if node.Kind != entity.VFSNodeKindFile || node.ObjectID == nil || node.Checksum != "5eb63bbbe01eeed093cb22bb8f5acdc3" {
 		t.Fatalf("unexpected metadata file node = %+v", node)
+	}
+	if finishResp.ResultVFSNodeID != node.ID {
+		t.Fatalf("expected finish result_vfs_node_id=%d, got %+v", node.ID, finishResp)
 	}
 	object, err := objectRepo.FindByID(context.Background(), *node.ObjectID)
 	if err != nil {

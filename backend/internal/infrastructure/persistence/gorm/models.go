@@ -142,9 +142,11 @@ type UploadSessionModel struct {
 	UserID                  uint      `gorm:"index;not null"`
 	SourceID                uint      `gorm:"index;not null"`
 	Path                    string    `gorm:"size:1024;not null"`
+	TargetVFSParentNodeID   *uint     `gorm:"index"`
 	TargetVirtualParentPath string    `gorm:"size:1024;not null;default:''"`
 	ResolvedSourceID        *uint     `gorm:"index"`
 	ResolvedInnerParentPath string    `gorm:"size:1024;not null;default:''"`
+	ResultVFSNodeID         *uint     `gorm:"index"`
 	Filename                string    `gorm:"size:255;not null"`
 	FileSize                int64     `gorm:"not null"`
 	FileHash                string    `gorm:"size:64;not null"`
@@ -168,11 +170,13 @@ type DownloadTaskModel struct {
 	Status                  string  `gorm:"size:32;not null"`
 	SourceID                uint    `gorm:"index;not null"`
 	SavePath                string  `gorm:"size:1024;not null"`
+	TargetVFSParentNodeID   *uint   `gorm:"index"`
 	TargetVirtualParentPath string  `gorm:"size:1024;not null;default:''"`
 	TargetFilename          string  `gorm:"size:255;not null;default:''"`
 	SaveVirtualPath         string  `gorm:"size:1024;not null;default:''"`
 	ResolvedSourceID        *uint   `gorm:"index"`
 	ResolvedInnerSavePath   string  `gorm:"size:1024;not null;default:''"`
+	ResultVFSNodeID         *uint   `gorm:"index"`
 	StagingDir              string  `gorm:"size:1024;not null;default:''"`
 	DisplayName             string  `gorm:"size:255;not null"`
 	SourceURL               string  `gorm:"type:text;not null"`
@@ -219,6 +223,7 @@ type RSSSubscriptionModel struct {
 	MustNotContainJSON      string    `gorm:"type:jsonb;not null"`
 	UseRegex                bool      `gorm:"not null;default:false"`
 	CaseSensitive           bool      `gorm:"not null;default:false"`
+	TargetVFSParentNodeID   *uint     `gorm:"index"`
 	TargetVirtualParentPath string    `gorm:"size:1024;not null"`
 	DirectoryTemplate       string    `gorm:"size:1024;not null;default:''"`
 	FilenameTemplate        string    `gorm:"size:1024;not null;default:''"`
@@ -244,6 +249,7 @@ type RSSItemModel struct {
 	Status                string  `gorm:"index;size:32;not null"`
 	MatchedSubscriptionID *uint   `gorm:"index"`
 	TaskID                *uint   `gorm:"index"`
+	ResultVFSNodeID       *uint   `gorm:"index"`
 	ErrorMessage          *string `gorm:"type:text"`
 	RetryCount            int     `gorm:"not null;default:0"`
 	MaxRetryCount         int     `gorm:"not null;default:3"`

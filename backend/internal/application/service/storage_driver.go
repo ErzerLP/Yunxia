@@ -250,6 +250,13 @@ func WithUploadMetadataVFSCommitter(committer MetadataVFSCommitter) UploadServic
 	}
 }
 
+// WithUploadMetadataVFSReader 注册上传目标 metadata VFS node 快照解析器。
+func WithUploadMetadataVFSReader(reader metadataVFSReader) UploadServiceOption {
+	return func(s *UploadService) {
+		s.metadataReader = reader
+	}
+}
+
 // TaskServiceOption 定义 TaskService 的可选配置。
 type TaskServiceOption func(*TaskService)
 
@@ -331,6 +338,13 @@ func WithTaskVFSResolver(resolver interface {
 func WithTaskMetadataVFSCommitter(committer MetadataVFSCommitter) TaskServiceOption {
 	return func(s *TaskService) {
 		s.metadataCommitter = committer
+	}
+}
+
+// WithTaskMetadataVFSReader 注册下载任务目标 metadata VFS node 快照解析器。
+func WithTaskMetadataVFSReader(reader metadataVFSReader) TaskServiceOption {
+	return func(s *TaskService) {
+		s.metadataReader = reader
 	}
 }
 

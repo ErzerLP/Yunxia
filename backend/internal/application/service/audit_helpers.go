@@ -174,11 +174,13 @@ func taskAuditView(task *entity.DownloadTask) map[string]any {
 		"status":                     task.Status,
 		"source_id":                  task.SourceID,
 		"save_path":                  task.SavePath,
+		"target_vfs_parent_node_id":  task.TargetVFSParentNodeID,
 		"target_virtual_parent_path": task.TargetVirtualParentPath,
 		"target_filename":            task.TargetFilename,
 		"save_virtual_path":          task.SaveVirtualPath,
 		"resolved_source_id":         task.ResolvedSourceID,
 		"resolved_inner_save_path":   task.ResolvedInnerSavePath,
+		"result_vfs_node_id":         task.ResultVFSNodeID,
 		"display_name":               task.DisplayName,
 		"source_url":                 task.SourceURL,
 	}

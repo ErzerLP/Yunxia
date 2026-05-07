@@ -236,6 +236,9 @@ func TestVFSUploadInitToMappedPath(t *testing.T) {
 	if initPayload.Upload.TargetVirtualParentPath != "/docs" {
 		t.Fatalf("expected target virtual parent path /docs, got %+v", initPayload.Upload)
 	}
+	if initPayload.Upload.TargetVFSParentNodeID <= 0 {
+		t.Fatalf("expected target_vfs_parent_node_id to be persisted, got %+v", initPayload.Upload)
+	}
 	if initPayload.Upload.ResolvedSourceID != docsSourceID || initPayload.Upload.ResolvedInnerParentPath != "/" {
 		t.Fatalf("expected resolved snapshot to be persisted, got %+v", initPayload.Upload)
 	}

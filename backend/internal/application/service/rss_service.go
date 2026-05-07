@@ -131,6 +131,7 @@ type RSSService struct {
 	vfsResolver   interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
+	metadataReader   metadataVFSReader
 	aclAuthorizer    *ACLAuthorizer
 	now              func() time.Time
 	logger           *slog.Logger
@@ -155,6 +156,13 @@ func WithRSSVFSResolver(resolver interface {
 }) RSSServiceOption {
 	return func(s *RSSService) {
 		s.vfsResolver = resolver
+	}
+}
+
+// WithRSSMetadataVFSReader 注入 RSS 目标 metadata VFS node 快照解析器。
+func WithRSSMetadataVFSReader(reader metadataVFSReader) RSSServiceOption {
+	return func(s *RSSService) {
+		s.metadataReader = reader
 	}
 }
 
@@ -572,6 +580,7 @@ func (s *RSSService) ImportConfig(ctx context.Context, req appdto.RSSImportReque
 			MustNotContain:          trimStringList(subscriptionReq.MustNotContain),
 			UseRegex:                subscriptionReq.UseRegex,
 			CaseSensitive:           subscriptionReq.CaseSensitive,
+			TargetVFSParentNodeID:   resolved.targetVFSParentNodeID,
 			TargetVirtualParentPath: resolved.targetVirtualParentPath,
 			DirectoryTemplate:       resolved.directoryTemplate,
 			FilenameTemplate:        resolved.filenameTemplate,
@@ -723,6 +732,7 @@ func (s *RSSService) CreateSubscription(ctx context.Context, req appdto.RSSSubsc
 		MustNotContain:          trimStringList(req.MustNotContain),
 		UseRegex:                req.UseRegex,
 		CaseSensitive:           req.CaseSensitive,
+		TargetVFSParentNodeID:   resolved.targetVFSParentNodeID,
 		TargetVirtualParentPath: resolved.targetVirtualParentPath,
 		DirectoryTemplate:       resolved.directoryTemplate,
 		FilenameTemplate:        resolved.filenameTemplate,
@@ -767,6 +777,7 @@ func (s *RSSService) CloneSubscription(ctx context.Context, id uint, req appdto.
 		MustNotContain:          append([]string{}, original.MustNotContain...),
 		UseRegex:                original.UseRegex,
 		CaseSensitive:           original.CaseSensitive,
+		TargetVFSParentNodeID:   original.TargetVFSParentNodeID,
 		TargetVirtualParentPath: original.TargetVirtualParentPath,
 		DirectoryTemplate:       original.DirectoryTemplate,
 		FilenameTemplate:        original.FilenameTemplate,
@@ -822,6 +833,7 @@ func (s *RSSService) UpdateSubscription(ctx context.Context, id uint, req appdto
 	subscription.MustNotContain = trimStringList(req.MustNotContain)
 	subscription.UseRegex = req.UseRegex
 	subscription.CaseSensitive = req.CaseSensitive
+	subscription.TargetVFSParentNodeID = resolved.targetVFSParentNodeID
 	subscription.TargetVirtualParentPath = resolved.targetVirtualParentPath
 	subscription.DirectoryTemplate = resolved.directoryTemplate
 	subscription.FilenameTemplate = resolved.filenameTemplate
@@ -1418,6 +1430,7 @@ func (s *RSSService) enqueueItemWithAttempt(ctx context.Context, item *entity.RS
 }
 
 type resolvedRSSSubscriptionTarget struct {
+	targetVFSParentNodeID   uint
 	targetVirtualParentPath string
 	directoryTemplate       string
 	filenameTemplate        string
@@ -1511,6 +1524,7 @@ func (s *RSSService) validateWritableTarget(ctx context.Context, targetVirtualPa
 		}
 	}
 	return resolvedRSSSubscriptionTarget{
+		targetVFSParentNodeID:   resolveMetadataVFSNodeID(ctx, s.metadataReader, virtualParentPath),
 		targetVirtualParentPath: virtualParentPath,
 		resolvedSourceID:        resolved.Source.ID,
 		resolvedInnerParentPath: innerParentPath,
@@ -1958,6 +1972,7 @@ func (s *RSSService) applyRSSItemTaskBacklink(ctx context.Context, item *entity.
 		item.ErrorMessage = nil
 		item.RetryReason = nil
 		item.NextRetryAt = nil
+		item.ResultVFSNodeID = task.ResultVFSNodeID
 		item.UpdatedAt = now
 		if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
 			return err
@@ -3143,6 +3158,7 @@ func toRSSSubscriptionView(subscription *entity.RSSSubscription) appdto.RSSSubsc
 		MustNotContain:          append([]string{}, subscription.MustNotContain...),
 		UseRegex:                subscription.UseRegex,
 		CaseSensitive:           subscription.CaseSensitive,
+		TargetVFSParentNodeID:   subscription.TargetVFSParentNodeID,
 		TargetVirtualParentPath: subscription.TargetVirtualParentPath,
 		DirectoryTemplate:       subscription.DirectoryTemplate,
 		FilenameTemplate:        subscription.FilenameTemplate,
@@ -3193,6 +3209,7 @@ func toRSSItemView(item *entity.RSSItem) appdto.RSSItemView {
 		Status:                item.Status,
 		MatchedSubscriptionID: item.MatchedSubscriptionID,
 		TaskID:                item.TaskID,
+		ResultVFSNodeID:       item.ResultVFSNodeID,
 		ErrorMessage:          item.ErrorMessage,
 		RetryCount:            item.RetryCount,
 		MaxRetryCount:         maxRetryCount,

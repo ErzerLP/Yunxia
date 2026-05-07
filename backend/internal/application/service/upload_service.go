@@ -40,6 +40,7 @@ type UploadService struct {
 	vfsResolver   interface {
 		ResolveWritableTarget(ctx context.Context, virtualPath string) (ResolvedPath, error)
 	}
+	metadataReader    metadataVFSReader
 	metadataCommitter MetadataVFSCommitter
 	logger            *slog.Logger
 	auditRecorder     *appaudit.Recorder
@@ -48,6 +49,7 @@ type UploadService struct {
 type resolvedUploadInitTarget struct {
 	source                  *entity.StorageSource
 	path                    string
+	targetVFSParentNodeID   uint
 	targetVirtualParentPath string
 	resolvedSourceID        uint
 	resolvedInnerParentPath string
@@ -121,12 +123,14 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, target resol
 		if hashErr == nil && hash == req.FileHash {
 			info, _ := os.Stat(targetPhysical)
 			item := buildFileItem(target.source.ID, targetVirtual, info)
-			if err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item); err != nil {
+			resultNodeID, err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item)
+			if err != nil {
 				return nil, err
 			}
 			return &appdto.UploadInitResponse{
 				IsFastUpload:     true,
 				File:             &item,
+				ResultVFSNodeID:  resultNodeID,
 				PartInstructions: []appdto.UploadPartInstruction{},
 			}, nil
 		}
@@ -162,6 +166,7 @@ func (s *UploadService) initLocal(ctx context.Context, userID uint, target resol
 		UserID:                  userID,
 		SourceID:                req.SourceID,
 		Path:                    targetDir,
+		TargetVFSParentNodeID:   target.targetVFSParentNodeID,
 		TargetVirtualParentPath: target.targetVirtualParentPath,
 		ResolvedSourceID:        target.resolvedSourceID,
 		ResolvedInnerParentPath: target.resolvedInnerParentPath,
@@ -229,12 +234,14 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 	}
 	if plan.CompletedEntry != nil {
 		item := buildStorageEntryItem(target.source.ID, *plan.CompletedEntry)
-		if err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item); err != nil {
+		resultNodeID, err := s.commitUploadInitMetadataFile(ctx, userID, target, req.Filename, req.FileHash, item)
+		if err != nil {
 			return nil, err
 		}
 		return &appdto.UploadInitResponse{
 			IsFastUpload:     true,
 			File:             &item,
+			ResultVFSNodeID:  resultNodeID,
 			PartInstructions: []appdto.UploadPartInstruction{},
 		}, nil
 	}
@@ -255,6 +262,7 @@ func (s *UploadService) initWithUploadDriver(ctx context.Context, userID uint, t
 		UserID:                  userID,
 		SourceID:                req.SourceID,
 		Path:                    targetDir,
+		TargetVFSParentNodeID:   target.targetVFSParentNodeID,
 		TargetVirtualParentPath: target.targetVirtualParentPath,
 		ResolvedSourceID:        target.resolvedSourceID,
 		ResolvedInnerParentPath: target.resolvedInnerParentPath,
@@ -316,6 +324,7 @@ func (s *UploadService) initWithImportDriver(ctx context.Context, userID uint, t
 		UserID:                  userID,
 		SourceID:                req.SourceID,
 		Path:                    targetDir,
+		TargetVFSParentNodeID:   target.targetVFSParentNodeID,
 		TargetVirtualParentPath: target.targetVirtualParentPath,
 		ResolvedSourceID:        target.resolvedSourceID,
 		ResolvedInnerParentPath: target.resolvedInnerParentPath,
@@ -613,7 +622,8 @@ func (s *UploadService) finishLocal(ctx context.Context, source *entity.StorageS
 		return nil, err
 	}
 	item := buildFileItem(source.ID, targetVirtual, info)
-	if err := s.commitUploadSessionMetadataFile(ctx, source, session, item); err != nil {
+	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item)
+	if err != nil {
 		return nil, err
 	}
 
@@ -621,9 +631,10 @@ func (s *UploadService) finishLocal(ctx context.Context, source *entity.StorageS
 	_ = s.uploadRepo.Delete(ctx, session.UploadID)
 
 	return &appdto.UploadFinishResponse{
-		Completed: true,
-		UploadID:  session.UploadID,
-		File:      item,
+		Completed:       true,
+		UploadID:        session.UploadID,
+		ResultVFSNodeID: resultNodeID,
+		File:            item,
 	}, nil
 }
 
@@ -651,15 +662,17 @@ func (s *UploadService) finishWithUploadDriver(ctx context.Context, source *enti
 		return nil, err
 	}
 	item := buildStorageEntryItem(source.ID, *entry)
-	if err := s.commitUploadSessionMetadataFile(ctx, source, session, item); err != nil {
+	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item)
+	if err != nil {
 		return nil, err
 	}
 
 	_ = s.uploadRepo.Delete(ctx, session.UploadID)
 	return &appdto.UploadFinishResponse{
-		Completed: true,
-		UploadID:  session.UploadID,
-		File:      item,
+		Completed:       true,
+		UploadID:        session.UploadID,
+		ResultVFSNodeID: resultNodeID,
+		File:            item,
 	}, nil
 }
 
@@ -716,7 +729,8 @@ func (s *UploadService) finishWithImportDriver(ctx context.Context, source *enti
 		Size:       session.FileSize,
 		ModifiedAt: time.Now(),
 	})
-	if err := s.commitUploadSessionMetadataFile(ctx, source, session, item); err != nil {
+	resultNodeID, err := s.commitUploadSessionMetadataFile(ctx, source, session, item)
+	if err != nil {
 		return nil, err
 	}
 
@@ -724,9 +738,10 @@ func (s *UploadService) finishWithImportDriver(ctx context.Context, source *enti
 	_ = s.uploadRepo.Delete(ctx, session.UploadID)
 
 	return &appdto.UploadFinishResponse{
-		Completed: true,
-		UploadID:  session.UploadID,
-		File:      item,
+		Completed:       true,
+		UploadID:        session.UploadID,
+		ResultVFSNodeID: resultNodeID,
+		File:            item,
 	}, nil
 }
 
@@ -774,12 +789,12 @@ func (s *UploadService) chunkFilePath(uploadID string, index int) string {
 	return filepath.Join(s.sessionTempDir(uploadID), fmt.Sprintf("chunk-%06d.part", index))
 }
 
-func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession, item appdto.FileItem) error {
+func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, source *entity.StorageSource, session *entity.UploadSession, item appdto.FileItem) (uint, error) {
 	if s.metadataCommitter == nil {
-		return nil
+		return 0, nil
 	}
 	if item.IsDir {
-		return nil
+		return 0, nil
 	}
 	filename := item.Name
 	if filename == "" {
@@ -794,7 +809,7 @@ func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, sou
 		resolvedInnerParentPath = item.ParentPath
 	}
 	actorID := session.UserID
-	_, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+	result, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
 		Source:                  source,
 		VirtualParentPath:       virtualParentPath,
 		ResolvedInnerParentPath: resolvedInnerParentPath,
@@ -806,15 +821,22 @@ func (s *UploadService) commitUploadSessionMetadataFile(ctx context.Context, sou
 		Checksum:                session.FileHash,
 		ActorID:                 &actorID,
 	})
-	return maskMetadataVFSCommitError(err)
+	if err != nil {
+		return 0, maskMetadataVFSCommitError(err)
+	}
+	if result == nil || result.Node == nil {
+		return 0, nil
+	}
+	session.ResultVFSNodeID = result.Node.ID
+	return result.Node.ID, nil
 }
 
-func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID uint, target resolvedUploadInitTarget, filename string, checksum string, item appdto.FileItem) error {
+func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID uint, target resolvedUploadInitTarget, filename string, checksum string, item appdto.FileItem) (uint, error) {
 	if s.metadataCommitter == nil {
-		return nil
+		return 0, nil
 	}
 	if item.IsDir {
-		return nil
+		return 0, nil
 	}
 	if item.Name == "" {
 		item.Name = filename
@@ -827,7 +849,7 @@ func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID
 	if innerParentPath == "" {
 		innerParentPath = item.ParentPath
 	}
-	_, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
+	result, err := s.metadataCommitter.CommitFileObject(ctx, MetadataVFSFileObjectCommitRequest{
 		Source:                  target.source,
 		VirtualParentPath:       virtualParentPath,
 		ResolvedInnerParentPath: innerParentPath,
@@ -839,7 +861,13 @@ func (s *UploadService) commitUploadInitMetadataFile(ctx context.Context, userID
 		Checksum:                checksum,
 		ActorID:                 &userID,
 	})
-	return maskMetadataVFSCommitError(err)
+	if err != nil {
+		return 0, maskMetadataVFSCommitError(err)
+	}
+	if result == nil || result.Node == nil {
+		return 0, nil
+	}
+	return result.Node.ID, nil
 }
 
 func maskMetadataVFSCommitError(err error) error {
@@ -877,9 +905,11 @@ func toUploadSessionView(session *entity.UploadSession) appdto.UploadSessionView
 		Status:                  session.Status,
 		IsFastUpload:            session.IsFastUpload,
 		ExpiresAt:               session.ExpiresAt.Format(time.RFC3339),
+		TargetVFSParentNodeID:   session.TargetVFSParentNodeID,
 		TargetVirtualParentPath: session.TargetVirtualParentPath,
 		ResolvedSourceID:        session.ResolvedSourceID,
 		ResolvedInnerParentPath: session.ResolvedInnerParentPath,
+		ResultVFSNodeID:         session.ResultVFSNodeID,
 	}
 }
 
@@ -902,6 +932,7 @@ func (s *UploadService) resolveInitTarget(ctx context.Context, req appdto.Upload
 		return resolvedUploadInitTarget{
 			source:                  resolved.Source,
 			path:                    resolvedInnerParentPath,
+			targetVFSParentNodeID:   resolveMetadataVFSNodeID(ctx, s.metadataReader, virtualParentPath),
 			targetVirtualParentPath: virtualParentPath,
 			resolvedSourceID:        resolved.Source.ID,
 			resolvedInnerParentPath: resolvedInnerParentPath,
@@ -923,9 +954,11 @@ func (s *UploadService) resolveInitTarget(ctx context.Context, req appdto.Upload
 	if err != nil {
 		return resolvedUploadInitTarget{}, err
 	}
+	virtualParentPath := mergeMountAndInnerPath(source.MountPath, normalizedPath)
 	return resolvedUploadInitTarget{
 		source:                  source,
 		path:                    normalizedPath,
+		targetVFSParentNodeID:   resolveMetadataVFSNodeID(ctx, s.metadataReader, virtualParentPath),
 		resolvedSourceID:        source.ID,
 		resolvedInnerParentPath: normalizedPath,
 	}, nil

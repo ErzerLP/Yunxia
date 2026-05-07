@@ -14,6 +14,14 @@
 
 ## 2026-05-07
 
+### 上传 / 下载任务 / RSS VFS Node 快照阶段
+
+- `UploadSessionView` / `DownloadTaskView` / `RSSSubscriptionView` 新增 `target_vfs_parent_node_id` 快照字段；后端在目标父目录已存在于 metadata VFS 时保存对应 node id，上层可继续保留 path 快照兼容展示。
+- 上传完成与 fast-upload metadata 提交成功后，`UploadFinishResponse` / `UploadInitResponse` 会返回 `result_vfs_node_id`；下载任务 staging 导入成功且只有一个明确结果文件时，`DownloadTaskView.result_vfs_node_id` 会指向结果文件 node。
+- RSS item 在关联下载任务进入 completed 后会回写 `result_vfs_node_id`，方便后续从订阅条目定位 VFS 节点；多文件任务或 provider 原生任务可能暂时为空。
+- 测试路由补齐 upload/task metadata committer 注入，与生产 wiring 保持一致；新增测试覆盖上传完成、下载完成、RSS task backlink 的 node id 快照。
+- 文档同步：更新 `backend/API_CONTRACT.md` 与本变更记录；新增字段均为向后兼容可选字段，不要求前端立即适配。
+
 ### 分享绑定 Metadata VFS Node 阶段
 
 - `ShareLink` / `ShareView` 新增 `target_vfs_node_id` 快照字段，分享创建时会按 `target_virtual_path` 解析并绑定 metadata VFS node，后续路径改名/移动时可继续以 node identity 追踪分享目标。

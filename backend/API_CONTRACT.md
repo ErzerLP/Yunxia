@@ -517,7 +517,7 @@ PikPak 字段说明：
 |---|---|---|---|---|
 | POST | `/upload/init` | Bearer | 两种模式，见下方 | 200，`UploadInitResponse` |
 | PUT | `/upload/chunk` | Bearer | query: `upload_id,index`，body 为二进制分片 | 200，`{upload_id,index,received_bytes,already_uploaded}` |
-| POST | `/upload/finish` | Bearer | `upload_id[,parts[]]` | 201，`{completed,upload_id,file}` |
+| POST | `/upload/finish` | Bearer | `upload_id[,parts[]]` | 201，`{completed,upload_id,file,result_vfs_node_id?}` |
 | GET | `/upload/sessions` | Bearer | query: `source_id,status` | 200，`{items[]}` |
 | DELETE | `/upload/sessions/:upload_id` | Bearer | path: `upload_id` | 200，`{upload_id,canceled}` |
 
@@ -552,9 +552,11 @@ PikPak 字段说明：
 
 - 若 `target_virtual_parent_path` 非空，会**优先**走虚拟目录解析
 - 上传会话 / 初始化响应当前会带：
+  - `target_vfs_parent_node_id`：目标父目录对应的 metadata VFS node id；若父目录尚未懒索引入库可能省略
   - `target_virtual_parent_path`
   - `resolved_source_id`
   - `resolved_inner_parent_path`
+- 上传完成响应会在 metadata 提交成功时返回 `result_vfs_node_id`，表示本次写入文件对应的 metadata VFS node id；`is_fast_upload=true` 的初始化响应同样可能带该字段
 - 本地源返回 `transport.mode=server_chunk`
 - S3 源返回 multipart 直传说明 `part_instructions[]`
 - PikPak 上传会按 `file_hash` 自动分流：
@@ -728,11 +730,13 @@ PikPak `direct_parts` 响应示例：
   - provider `PHASE_TYPE_PENDING/RUNNING/COMPLETE/ERROR` 分别映射为 `pending/running/completed/failed`。
   - 暂停/恢复当前返回 `422 SOURCE_OPERATION_UNSUPPORTED`；取消会调用 provider 删除任务记录，并透传 `delete_file` 为 provider `delete_files`。
 - 返回体当前会补充 VFS 快照字段：
+  - `target_vfs_parent_node_id`
   - `target_virtual_parent_path`
   - `target_filename`
   - `save_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_save_path`
+  - `result_vfs_node_id`：staging 导入完成且只有一个明确结果文件时返回；多文件任务或 provider 原生任务可能省略
 - 普通用户默认仅能看到 / 操作自己的任务
 - `DELETE /tasks/:id` 对终态任务是幂等的：已 `completed` / `failed` / `canceled` 的任务不会再调用底层下载器取消，因此不会把 Aria2/qBittorrent 的底层 400 暴露给前端；已完成任务保持 `completed`
 - 用户主动取消的非终态任务会先在 Yunxia 内记录为 `canceled` 和 `error_message="download canceled by user"`，后续下载器状态刷新不会覆盖该取消原因
@@ -999,7 +1003,8 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - `.torrent` URL 入队时后端会先下载 torrent 文件，再以 multipart 文件方式提交给 qBittorrent；避免 qBittorrent 异步拉 URL 失败后任务被误判为取消。
 - qBittorrent Web API 返回 401/403（例如 `/api/v2/app/version` 或 `/api/v2/torrents/add`）会归类为 `DOWNLOADER_AUTH_FAILED` / `status=unavailable`，不会返回 `INTERNAL_ERROR`。
 - `POST /rss/items/:id/download` 手动入队如果在创建下载任务时失败，会把 item 持久化为 `needs_attention`，写入 `error_message` 和 `retry_reason`，前端可通过 `GET /rss/items?status=needs_attention` 看到失败原因；HTTP 响应仍使用稳定错误码（如下游认证失败返回 `503 DOWNLOADER_AUTH_FAILED`）。
-- 每个订阅固定一个基础 `target_virtual_parent_path`；后端保存 VFS 解析快照 `resolved_source_id`、`resolved_inner_parent_path`。
+- 每个订阅固定一个基础 `target_virtual_parent_path`；后端保存 VFS 解析快照 `target_vfs_parent_node_id`、`resolved_source_id`、`resolved_inner_parent_path`。
+- RSS item 关联的下载任务完成后，若任务有明确 `result_vfs_node_id`，会回写到 `RSSItemView.result_vfs_node_id` 方便前端从 RSS 条目跳转/定位 VFS 节点。
 - `RSSSubscriptionView` / 创建更新请求新增：
   - `directory_template`：空值保持旧行为，RSS 入队仍使用 `target_virtual_parent_path`；非空时按条目 `parsed` 字段渲染为相对子目录，再拼到 `target_virtual_parent_path` 下。
   - `filename_template`：RSS 入队时会基于 item `parsed` / `title` 渲染为任务级 `target_filename` 快照；下载器仍写入 staging，后端仅在完成导入阶段对“单文件任务”重命名。模板结果不含明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名）时会自动保留原文件扩展名；多文件 torrent 保持原相对路径，不批量改名。
@@ -1339,6 +1344,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   "status": "uploading",
   "is_fast_upload": false,
   "expires_at": "2026-04-30T12:00:00+08:00",
+  "target_vfs_parent_node_id": 12,
   "target_virtual_parent_path": "/docs",
   "resolved_source_id": 1,
   "resolved_inner_parent_path": "/"
@@ -1355,6 +1361,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   "status": "pending",
   "source_id": 1,
   "save_path": "/downloads",
+  "target_vfs_parent_node_id": 12,
   "target_virtual_parent_path": "/local/downloads",
   "target_filename": "Example Show - S01E05 [1080p]",
   "save_virtual_path": "/local/downloads",
