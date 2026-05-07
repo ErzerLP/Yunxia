@@ -19,7 +19,7 @@
 | 用户管理 | `/api/v1/users*` | 用户列表、创建、更新、重置密码、撤销令牌 | 用户管理页 |
 | ACL | `/api/v1/acl/rules*` | 对用户授予/拒绝 source 内路径权限 | 权限配置页 |
 | 存储源 | `/api/v1/sources*` | local/S3/PikPak 源列表、详情、创建、更新、删除、测试 | 存储源管理、侧边栏导航 |
-| 传统文件 | `/api/v1/files*` | 按 `source_id + path` 管理文件 | 兼容旧文件页 |
+| 传统文件 | `/api/v1/files*` | 保留 `source_id + path` 外观，内部经 VFS 兼容门面处理 | 兼容旧文件页 |
 | 上传 | `/api/v1/upload*` | 初始化、分片、完成、会话、取消 | 文件上传 |
 | 回收站 | `/api/v1/trash*` | 列表、恢复、永久删除、清空 | 回收站页 |
 | 离线任务 | `/api/v1/tasks*` | 创建、列表、详情、暂停、恢复、取消；普通目标按链接类型走 Aria2/qBittorrent，PikPak 目标优先走 provider 原生离线下载 | 离线任务页 |
@@ -513,11 +513,14 @@ PikPak 字段说明：
 
 补充：
 
+- `/api/v1/files*` 是 legacy 兼容外观；生产 wiring 中 handler 注入 `LegacyFileFacade`，会把 `source_id + source 内 path` 合成为当前 source 的 VFS mount path，再调用 `/api/v2/fs` 同源 service 语义。响应仍返回 source 内 `path/current_path`，避免旧前端字段断裂。
+- `GET /files`、`GET /files/search` 读取 metadata VFS 过滤后的节点，再转换成旧 `FileItem`；只返回属于当前 `source_id` 的节点，不把嵌套其他 source 的挂载点伪装成当前 source 文件。
+- `/files/mkdir`、`rename`、`move`、`copy`、`delete` 先转为 VFS mutation，再由 VFS service 调用底层 FileService operator，因此会复用 metadata mutation sync、operation journal、node-first ACL 与只读 source 错误收敛。
 - `delete_mode` 为空时默认按 `trash`
 - 数据面接口会做 ACL 校验；失败返回 `403 ACL_DENIED`
 - 本地源 / 挂载目录探测为不可写时，`mkdir` / `rename` / `move` / `copy` / `delete` 返回 `403 SOURCE_READ_ONLY`；响应只暴露稳定错误码与通用消息，不返回容器或宿主机物理路径
-- `files/access-url` 对 local / S3 / PikPak 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`
-- 真正的 S3 presigned URL / PikPak 临时下载链接在 `GET /files/download` 时再 302 跳转
+- `files/access-url` 对 local / S3 / PikPak 当前都先返回应用内短链 `/api/v1/files/download?...&access_token=...`；若目标已索引为 metadata object，签发前会先用 VFS node -> `storage_objects.locator` 校验对象可读，但短链中的 `source_id/path` 仍保持请求的 legacy source 内路径。
+- `GET /files/download` 会优先按 `source.mount_path + path` 定位 metadata VFS node 和 object locator；local object 返回文件流并支持 Range，S3/PikPak 等 provider object 返回 302。目标未索引为 metadata object 时才回退到旧 source/path driver/local 读取。
 - PikPak 阶段 E 支持 `list` / `search`（受限递归）/ `stat` / `access-url` / `download` / `mkdir` / `rename` / `move` / `copy` / `delete`，并支持后端 staging 文件导入与 PikPak 目标原生离线下载；文件/VFS 条目 `can_delete` 会按 driver capability 与 ACL 共同计算。
 - PikPak `delete_mode` 为空或 `trash` 时调用 provider `batchTrash`，语义是移入 PikPak 回收站，不会创建 Yunxia `.trash` 记录；`delete_mode=permanent` 暂返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 

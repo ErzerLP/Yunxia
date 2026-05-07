@@ -1079,6 +1079,9 @@ func (s *FileService) AccessURL(ctx context.Context, req appdto.AccessURLRequest
 	if err := s.authorizePath(ctx, source.ID, req.Path, ACLActionRead); err != nil {
 		return nil, err
 	}
+	if resp, matched, err := s.accessLegacyURLByMetadataVFSObject(ctx, source, req); err != nil || matched {
+		return resp, err
+	}
 	if source.DriverType != "local" {
 		return s.accessURLWithDriver(ctx, source, req)
 	}
@@ -1128,6 +1131,19 @@ func (s *FileService) ResolveDownload(ctx context.Context, sourceID uint, filePa
 	if err := s.authorizePath(ctx, source.ID, filePath, ACLActionRead); err != nil {
 		return nil, nil, "", err
 	}
+	objectDownload, matched, err := s.resolveLegacyVFSObjectDownload(ctx, source, filePath, "")
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if matched {
+		if objectDownload == nil {
+			return nil, nil, "", ErrFileNotFound
+		}
+		if objectDownload.File == nil || objectDownload.Info == nil {
+			return nil, nil, "", ErrSourceDriverUnsupported
+		}
+		return objectDownload.File, objectDownload.Info, objectDownload.MIMEType, nil
+	}
 	if source.DriverType != "local" {
 		return nil, nil, "", ErrSourceDriverUnsupported
 	}
@@ -1171,6 +1187,19 @@ func (s *FileService) ResolveDownloadRedirect(ctx context.Context, sourceID uint
 	if err := s.authorizePath(ctx, source.ID, filePath, ACLActionRead); err != nil {
 		return "", err
 	}
+	objectDownload, matched, err := s.resolveLegacyVFSObjectDownload(ctx, source, filePath, disposition)
+	if err != nil {
+		return "", err
+	}
+	if matched {
+		if objectDownload == nil {
+			return "", ErrFileNotFound
+		}
+		if objectDownload.File != nil {
+			_ = objectDownload.File.Close()
+		}
+		return objectDownload.RedirectURL, nil
+	}
 	if source.DriverType == "local" {
 		return "", nil
 	}
@@ -1198,6 +1227,56 @@ func (s *FileService) ResolveDownloadRedirect(ctx context.Context, sourceID uint
 		return "", err
 	}
 	return redirectURL, nil
+}
+
+func (s *FileService) accessLegacyURLByMetadataVFSObject(ctx context.Context, source *entity.StorageSource, req appdto.AccessURLRequest) (*appdto.AccessURLResponse, bool, error) {
+	if req.ExpiresIn <= 0 {
+		req.ExpiresIn = 300
+	}
+	normalizedPath, err := normalizeVirtualPath(req.Path)
+	if err != nil {
+		return nil, true, err
+	}
+	objectDownload, matched, err := s.resolveLegacyVFSObjectDownload(ctx, source, normalizedPath, req.Disposition)
+	if err != nil || !matched {
+		return nil, matched, err
+	}
+	if objectDownload == nil {
+		return nil, true, ErrFileNotFound
+	}
+	if objectDownload.File != nil {
+		_ = objectDownload.File.Close()
+	}
+
+	token, expiresAt, err := s.fileAccessTokens.Issue(source.ID, normalizedPath, req.Purpose, req.Disposition, time.Duration(req.ExpiresIn)*time.Second)
+	if err != nil {
+		return nil, true, err
+	}
+	params := url.Values{}
+	params.Set("source_id", fmt.Sprintf("%d", source.ID))
+	params.Set("path", normalizedPath)
+	params.Set("disposition", req.Disposition)
+	params.Set("access_token", token)
+	return &appdto.AccessURLResponse{
+		URL:       "/api/v1/files/download?" + params.Encode(),
+		Method:    "GET",
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+	}, true, nil
+}
+
+func (s *FileService) resolveLegacyVFSObjectDownload(ctx context.Context, source *entity.StorageSource, filePath string, disposition string) (*VFSObjectDownload, bool, error) {
+	if source == nil {
+		return nil, false, nil
+	}
+	normalizedPath, err := normalizeVirtualPath(filePath)
+	if err != nil {
+		return nil, true, err
+	}
+	virtualPath := mergeMountAndInnerPath(source.MountPath, normalizedPath)
+	if virtualPath == "" {
+		return nil, false, nil
+	}
+	return s.ResolveVFSObjectDownload(ctx, virtualPath, disposition)
 }
 
 // ResolveVFSObjectDownload 优先通过 metadata VFS node -> storage object locator 解析下载。

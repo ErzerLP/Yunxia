@@ -14,6 +14,15 @@
 
 ## 2026-05-08
 
+### Legacy files API VFS compatibility cleanup 阶段
+
+- 新增 `LegacyFileFacade`，生产 `/api/v1/files*` handler 不再直接把旧 source/path 写操作打到 FileService，而是先把 `source_id + path` 合成为 source mount 下的 VFS path，再调用 `VFSService`。
+- `GET /api/v1/files` 与 `/files/search` 读取 VFS service 返回的 metadata/ACL/capability 过滤结果，再转换为旧 `FileItem` 响应；旧响应仍保持 source 内 `path/current_path`，并且不会把嵌套其他 source 的挂载点伪装成当前 source 文件。
+- `/files/mkdir`、`rename`、`move`、`copy`、`delete` 复用 VFS mutation，同步获得 metadata mutation sync、operation journal、node-first ACL 与只读 source 错误收敛。
+- `/files/access-url` 与 `/files/download` 增加 legacy object-first 路径：先按 source mount + inner path 定位 metadata VFS node，再通过 `storage_objects.locator` 读取 local/S3/PikPak object；短链外观仍保持 `/api/v1/files/download?source_id=...&path=...`。
+- 生产 wiring 与 HTTP workflow 测试 wiring 均切到 `LegacyFileFacade`；新增测试覆盖 v1 mutation 进入 VFS、VFS item 转 source 内路径、legacy access-url 不暴露 locator path、legacy download 使用 object locator。
+- 文档同步更新 `backend/API_CONTRACT.md`；本阶段不需要前端源码适配。
+
 ### Driver object locator 收敛阶段
 
 - 新增 `ObjectReader` driver capability，FileService/VFS/WebDAV 下载优先通过 metadata VFS node -> `storage_objects.locator` 解析数据面对象；local 继续 ServeContent/Range，S3/PikPak 继续 provider presign/302。
