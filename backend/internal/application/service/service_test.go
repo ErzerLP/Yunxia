@@ -2069,6 +2069,42 @@ func TestSourceServiceCreatePersistsExplicitWebDAVReadOnlyFalse(t *testing.T) {
 	}
 }
 
+func TestSourceServiceCreatePersistsProbeRuntimeConfigForUnsavedSource(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	configRepo := gorm.NewSystemConfigRepository(db)
+	probe := &mutatingSourceProbe{configJSON: `{"refresh_token":"runtime-refresh","captcha_token":"runtime-captcha","device_id":"runtime-device"}`}
+	svc := NewSourceService(
+		sourceRepo,
+		configRepo,
+		WithSourceConfigCodec(fakeSourceConfigCodec{driverType: "probecloud", slug: "probecloud"}),
+		WithSourceDriverProbe("probecloud", probe),
+	)
+
+	created, err := svc.Create(context.Background(), appdto.SourceUpsertRequest{
+		Name:       "Probe Cloud",
+		DriverType: "probecloud",
+		IsEnabled:  true,
+		RootPath:   "/",
+		Config:     map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(probe.seenIDs) != 1 || probe.seenIDs[0] != 0 {
+		t.Fatalf("expected create probe to run before persistence with source ID 0, seen=%v", probe.seenIDs)
+	}
+	stored, err := sourceRepo.FindByID(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if stored.ConfigJSON != probe.configJSON {
+		t.Fatalf("expected probe-mutated runtime config to be persisted, got %s", stored.ConfigJSON)
+	}
+}
+
 func TestSourceServiceTestReturnsCloudErrorWithoutConnectionWrapper(t *testing.T) {
 	probe := &recordingSourceProbe{err: ErrCloudCaptchaRequired}
 	svc := NewSourceService(
@@ -3973,6 +4009,19 @@ func (p *recordingSourceProbe) Test(_ context.Context, source *entity.StorageSou
 		p.sources = append(p.sources, &copied)
 	}
 	return p.err
+}
+
+type mutatingSourceProbe struct {
+	configJSON string
+	seenIDs    []uint
+}
+
+func (p *mutatingSourceProbe) Test(_ context.Context, source *entity.StorageSource) error {
+	if source != nil {
+		p.seenIDs = append(p.seenIDs, source.ID)
+		source.ConfigJSON = p.configJSON
+	}
+	return nil
 }
 
 type recordingTaskImportCall struct {

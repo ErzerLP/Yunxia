@@ -106,7 +106,7 @@ func main() {
 	}
 	s3Driver := infraStorage.NewS3Driver(infraStorage.NewS3ClientFactory())
 	pikPakDriver := infraStorage.NewPikPakDriver(infraStorage.WithPikPakRuntimeConfigWriter(func(ctx context.Context, source *entity.StorageSource, configJSON string) error {
-		if source == nil {
+		if source == nil || source.ID == 0 {
 			return nil
 		}
 		current, err := sourceRepo.FindByID(ctx, source.ID)

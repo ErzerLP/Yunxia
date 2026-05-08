@@ -270,6 +270,9 @@ func (m *PikPakSessionManager) writeBackRuntimeConfig(ctx context.Context, sourc
 		return err
 	}
 	source.ConfigJSON = raw
+	if source.ID == 0 {
+		return nil
+	}
 	if m.runtimeConfigWriter != nil {
 		return m.runtimeConfigWriter(ctx, source, raw)
 	}

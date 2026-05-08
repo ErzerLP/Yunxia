@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"yunxia/internal/domain/entity"
+	domainrepo "yunxia/internal/domain/repository"
 	domainstorage "yunxia/internal/domain/storage"
 )
 
@@ -128,6 +129,38 @@ func TestPikPakDriverPersistsRuntimeSessionConfig(t *testing.T) {
 	}
 	if sourceCfg.RefreshToken != cfg.RefreshToken || sourceCfg.CaptchaToken != cfg.CaptchaToken || sourceCfg.DeviceID != cfg.DeviceID {
 		t.Fatalf("source ConfigJSON should mirror persisted runtime config, source=%+v persisted=%+v", sourceCfg, cfg)
+	}
+}
+
+func TestPikPakDriverSkipsRuntimeWriterForUnsavedSource(t *testing.T) {
+	client := &fakePikPakClient{
+		filesByParent: map[string][]PikPakFile{
+			"root": {},
+		},
+	}
+	writerCalls := 0
+	driver := NewPikPakDriver(
+		WithPikPakAPIClient(client),
+		WithPikPakRuntimeConfigWriter(func(context.Context, *entity.StorageSource, string) error {
+			writerCalls++
+			return domainrepo.ErrNotFound
+		}),
+	)
+	source := newTestPikPakSource(t)
+	source.ID = 0
+
+	if err := driver.Test(context.Background(), source); err != nil {
+		t.Fatalf("Test() for unsaved source should not call runtime writer, got %v", err)
+	}
+	if writerCalls != 0 {
+		t.Fatalf("runtime writer should be skipped for unsaved source, calls=%d", writerCalls)
+	}
+	cfg, err := ParsePikPakConfigJSON(source.ConfigJSON)
+	if err != nil {
+		t.Fatalf("ParsePikPakConfigJSON(source) error = %v", err)
+	}
+	if cfg.RefreshToken != "refresh-1" || cfg.CaptchaToken != "captcha-1" || cfg.DeviceID != "device-0" {
+		t.Fatalf("unsaved source ConfigJSON should still receive runtime config, got %+v", cfg)
 	}
 }
 
