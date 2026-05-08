@@ -106,6 +106,21 @@ function toPositiveInt(value: string, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback
 }
 
+function isValidPikPakProxyUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  try {
+    const url = new URL(trimmed)
+    return (url.protocol === 'http:' || url.protocol === 'https:')
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+  } catch {
+    return false
+  }
+}
+
 async function writeTextToClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
@@ -157,6 +172,7 @@ function SourceConfigRows({ source, canReadSecrets }: { source: StorageSource; c
         {row('Root Folder ID', getConfigString(data?.config, 'root_folder_id') || '账号根目录')}
         {row('平台', getConfigString(data?.config, 'platform', 'web'))}
         {row('缓存 TTL', `${getConfigNumber(data?.config, 'cache_ttl_seconds', 300)} 秒`)}
+        {row('代理地址', getConfigString(data?.config, 'proxy_url') || '使用后端默认代理')}
         <div className="rounded-md border border-border bg-muted/20 p-2 space-y-1 text-xs text-muted-foreground">
           <div className="font-medium text-foreground flex items-center gap-1.5">
             {canReadSecrets ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
@@ -205,6 +221,8 @@ function EditSourceModal({
   const [pikPakDisableMediaLinkTouched, setPikPakDisableMediaLinkTouched] = useState(false)
   const [pikPakCacheTtlSeconds, setPikPakCacheTtlSeconds] = useState('300')
   const [pikPakCacheTtlSecondsTouched, setPikPakCacheTtlSecondsTouched] = useState(false)
+  const [pikPakProxyUrl, setPikPakProxyUrl] = useState('')
+  const [pikPakProxyUrlTouched, setPikPakProxyUrlTouched] = useState(false)
   const [secretPatch, setSecretPatch] = useState<Partial<Record<SecretField, string>>>({})
   const [secretClear, setSecretClear] = useState<Partial<Record<SecretField, boolean>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -227,6 +245,9 @@ function EditSourceModal({
   const effectivePikPakCacheTtlSeconds = pikPakCacheTtlSecondsTouched
     ? pikPakCacheTtlSeconds
     : String(getConfigNumber(detail?.config, 'cache_ttl_seconds', 300))
+  const effectivePikPakProxyUrl = pikPakProxyUrlTouched
+    ? pikPakProxyUrl
+    : getConfigString(detail?.config, 'proxy_url')
 
   const updateSecretPatch = (field: SecretField, value: string) => {
     setSecretPatch((current) => ({ ...current, [field]: value }))
@@ -254,6 +275,7 @@ function EditSourceModal({
         disable_media_link: effectivePikPakDisableMediaLink,
         cache_ttl_seconds: toPositiveInt(effectivePikPakCacheTtlSeconds, 300),
         download_strategy: 'redirect',
+        proxy_url: effectivePikPakProxyUrl.trim(),
       }
       const nextSecretPatch: Record<string, string | null> = {}
       for (const field of PIKPAK_SECRET_FIELDS) {
@@ -288,6 +310,12 @@ function EditSourceModal({
     }
     if (source.driver_type === 'local' && !effectiveBasePath.trim()) {
       const message = '请填写本地硬盘路径 / base_path'
+      setError(message)
+      addToast(message, 'error')
+      return
+    }
+    if (source.driver_type === 'pikpak' && !isValidPikPakProxyUrl(effectivePikPakProxyUrl)) {
+      const message = 'PikPak 代理地址只支持 http/https URL，且不能包含账号密码、query 或 fragment'
       setError(message)
       addToast(message, 'error')
       return
@@ -446,6 +474,26 @@ function EditSourceModal({
                     className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
                   />
                 </div>
+                <div className="sm:col-span-2">
+                  <label htmlFor="source-edit-pikpak-proxy-url" className="text-sm text-muted-foreground mb-1 block">代理地址 / proxy_url（可选）</label>
+                  <input
+                    id="source-edit-pikpak-proxy-url"
+                    name="proxy_url"
+                    type="url"
+                    value={effectivePikPakProxyUrl}
+                    disabled={detailLoading}
+                    onChange={(e) => {
+                      setPikPakProxyUrlTouched(true)
+                      setPikPakProxyUrl(e.target.value)
+                    }}
+                    autoComplete="off"
+                    placeholder="http://127.0.0.1:7890"
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    仅支持 http/https 代理地址，不能包含账号密码、query 或 fragment；留空使用后端默认代理。
+                  </p>
+                </div>
               </div>
               <label htmlFor="source-edit-pikpak-disable-media-link" className="flex items-start gap-2 text-sm text-foreground">
                 <input
@@ -602,6 +650,7 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
   const [pikPakPlatform, setPikPakPlatform] = useState<PikPakPlatform>('web')
   const [pikPakDisableMediaLink, setPikPakDisableMediaLink] = useState(true)
   const [pikPakCacheTtlSeconds, setPikPakCacheTtlSeconds] = useState('300')
+  const [pikPakProxyUrl, setPikPakProxyUrl] = useState('')
   const [pikPakSecrets, setPikPakSecrets] = useState<Partial<Record<SecretField, string>>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
@@ -652,6 +701,12 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
         addToast(message, 'error')
         return
       }
+      if (!isValidPikPakProxyUrl(pikPakProxyUrl)) {
+        const message = 'PikPak 代理地址只支持 http/https URL，且不能包含账号密码、query 或 fragment'
+        setCreateError(message)
+        addToast(message, 'error')
+        return
+      }
     }
     setCreateError(null)
     setIsSubmitting(true)
@@ -673,6 +728,7 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
                 disable_media_link: pikPakDisableMediaLink,
                 cache_ttl_seconds: toPositiveInt(pikPakCacheTtlSeconds, 300),
                 download_strategy: 'redirect',
+                proxy_url: pikPakProxyUrl.trim(),
               }
             : {},
         secret_patch: driverType === 'pikpak'
@@ -832,6 +888,22 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
                     disabled
                     className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-60"
                   />
+                </div>
+                <div className="sm:col-span-2">
+                  <label htmlFor="source-create-pikpak-proxy-url" className="text-sm text-muted-foreground mb-1 block">代理地址 / proxy_url（可选）</label>
+                  <input
+                    id="source-create-pikpak-proxy-url"
+                    name="proxy_url"
+                    type="url"
+                    value={pikPakProxyUrl}
+                    onChange={(e) => setPikPakProxyUrl(e.target.value)}
+                    autoComplete="off"
+                    placeholder="http://127.0.0.1:7890"
+                    className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    网络出口受限时可指定单个 PikPak 源代理；仅支持 http/https，不允许账号密码、query 或 fragment。
+                  </p>
                 </div>
               </div>
               <label htmlFor="source-create-pikpak-disable-media-link" className="flex items-start gap-2 text-sm text-foreground">

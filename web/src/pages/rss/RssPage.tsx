@@ -27,7 +27,7 @@ import { rssApi } from '@/api/rss'
 import { useHasCapability } from '@/hooks/useCapability'
 import { useAuthStore } from '@/stores/authStore'
 import { useUIStore } from '@/stores/uiStore'
-import { cn, formatDate } from '@/utils'
+import { cn, formatDate, getApiErrorMessage } from '@/utils'
 import type {
   RSSItemStatus,
   RSSItemBatchActionResponse,
@@ -128,7 +128,18 @@ function listToText(value: string[]) {
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback
+  return getApiErrorMessage(error, fallback)
+}
+
+function isMetadataCommitFailureMessage(message?: string | null) {
+  return (message || '').toLowerCase().includes('metadata vfs commit failed')
+}
+
+function getRSSItemIssueMessage(item: RSSItemView) {
+  if (isMetadataCommitFailureMessage(item.error_message) || isMetadataCommitFailureMessage(item.retry_reason)) {
+    return '文件已写入底层存储，但目录索引提交失败。请刷新目标目录或联系管理员处理。'
+  }
+  return item.error_message || retryReasonLabel(item.retry_reason)
 }
 
 function sourceHealthLabel(status?: string) {
@@ -1761,6 +1772,20 @@ export function RssPage() {
     }
   }
 
+  const handleOpenRSSResultDirectory = (item: RSSItemView, subscription?: RSSSubscriptionView) => {
+    if (!item.result_vfs_node_id) {
+      addToast('该条目没有返回结果节点，暂不能定位结果', 'warning')
+      return
+    }
+    const targetPath = subscription?.target_virtual_parent_path
+    if (!targetPath) {
+      addToast(`结果节点 #${item.result_vfs_node_id} 已记录，但缺少可打开的订阅目标目录`, 'warning')
+      return
+    }
+    void queryClient.invalidateQueries({ queryKey: ['vfs', targetPath] })
+    navigate(`/files?path=${encodeURIComponent(targetPath)}`)
+  }
+
   const handleBatchIgnoreItems = async () => {
     const ids = [...validSelectedItemIds]
     if (ids.length === 0) {
@@ -2366,6 +2391,8 @@ export function RssPage() {
                 )
                 const isNeedsAttention = item.status === 'needs_attention'
                 const isRetryPending = item.status === 'retry_pending'
+                const completedWithResultNode = item.status === 'completed' && Boolean(item.result_vfs_node_id)
+                const completedWithoutResultNode = item.status === 'completed' && !item.result_vfs_node_id
                 const isDownloading = activeItemAction?.id === item.id && activeItemAction.type === 'download'
                 const isReprocessing = activeItemAction?.id === item.id && activeItemAction.type === 'reprocess'
                 const isRetrying = activeItemAction?.id === item.id && activeItemAction.type === 'retry'
@@ -2387,7 +2414,7 @@ export function RssPage() {
                           <div className="mb-2 flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
                             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                             <span>
-                              需要人工处理：{item.error_message || retryReasonLabel(item.retry_reason)}
+                              需要人工处理：{getRSSItemIssueMessage(item)}
                             </span>
                           </div>
                         )}
@@ -2447,7 +2474,16 @@ export function RssPage() {
                               : '-'}
                           </span>
                           <span>发布时间：{formatDate(item.published_at)}</span>
+                          {completedWithResultNode && (
+                            <span className="text-emerald-500">结果节点 #{item.result_vfs_node_id}</span>
+                          )}
                         </div>
+                        {completedWithoutResultNode && (
+                          <div className="mt-2 flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600">
+                            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                            <span>该条目已完成但未返回结果节点，请刷新 RSS 或目标目录确认。</span>
+                          </div>
+                        )}
                         <p className="text-xs text-muted-foreground break-all mt-2">
                           下载链接：{item.download_url || item.link}
                         </p>
@@ -2466,7 +2502,7 @@ export function RssPage() {
                           <span>下次重试：{formatDate(item.next_retry_at)}</span>
                         </div>
                         {item.error_message && (
-                          <p className="text-xs text-destructive mt-2 break-all">{item.error_message}</p>
+                          <p className="text-xs text-destructive mt-2 break-all">{getRSSItemIssueMessage(item)}</p>
                         )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -2478,6 +2514,16 @@ export function RssPage() {
                             title={`查看任务 #${item.task_id}`}
                           >
                             <ExternalLink className="w-4 h-4" />
+                          </button>
+                        )}
+                        {completedWithResultNode && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenRSSResultDirectory(item, matchedSubscription)}
+                            className="px-2 py-1.5 rounded-md border border-border hover:bg-accent text-xs text-foreground"
+                            title={`打开结果节点 #${item.result_vfs_node_id} 所在订阅目录`}
+                          >
+                            打开结果目录
                           </button>
                         )}
                         {canManage && (

@@ -17,6 +17,7 @@ interface UploadFile {
   status: 'pending' | 'hashing' | 'uploading' | 'success' | 'error'
   error?: string
   speed: number
+  resultVfsNodeId?: number
 }
 
 async function runWithConcurrency<T>(
@@ -121,7 +122,11 @@ export function UploadModal() {
 
       if (initRes.is_fast_upload && initRes.file) {
         setFiles((prev) =>
-          prev.map((f) => (f.id === item.id ? { ...f, status: 'success' as const, progress: 100 } : f))
+          prev.map((f) => (
+            f.id === item.id
+              ? { ...f, status: 'success' as const, progress: 100, resultVfsNodeId: initRes.result_vfs_node_id }
+              : f
+          ))
         )
         refreshAfterUpload(initRes.file.source_id)
         return
@@ -193,9 +198,16 @@ export function UploadModal() {
       }
 
       const finishRes = await uploadApi.finish(finishRequest)
+      if (finishRes.completed !== true) {
+        throw new Error('上传已写入但未完成目录索引提交，请稍后刷新目录确认。')
+      }
 
       setFiles((prev) =>
-        prev.map((f) => (f.id === item.id ? { ...f, status: 'success' as const, progress: 100 } : f))
+        prev.map((f) => (
+          f.id === item.id
+            ? { ...f, status: 'success' as const, progress: 100, resultVfsNodeId: finishRes.result_vfs_node_id }
+            : f
+        ))
       )
       refreshAfterUpload(finishRes.file.source_id)
     } catch (err: unknown) {
@@ -298,6 +310,7 @@ export function UploadModal() {
                     <p className="text-xs text-muted-foreground">
                       {formatBytes(item.size)}
                       {item.status === 'uploading' && ` · ${item.progress}%`}
+                      {item.status === 'success' && item.resultVfsNodeId && ` · 结果节点 #${item.resultVfsNodeId}`}
                     </p>
                     {item.status === 'uploading' && (
                       <div className="w-full h-1 bg-muted rounded-full mt-1 overflow-hidden">

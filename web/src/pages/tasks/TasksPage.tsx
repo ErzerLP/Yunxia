@@ -76,7 +76,15 @@ function getTaskBytesLabel(task: DownloadTask) {
 }
 
 function getTaskSavePathLabel(task: DownloadTask) {
-  return task.save_virtual_path || task.save_path || '/'
+  return task.save_virtual_path || task.target_virtual_parent_path || task.save_path || '/'
+}
+
+function getTaskTargetDirectoryPath(task: DownloadTask) {
+  return task.save_virtual_path || task.target_virtual_parent_path || ''
+}
+
+function isMetadataCommitFailure(message?: string | null) {
+  return (message || '').toLowerCase().includes('metadata vfs commit failed')
 }
 
 function shouldShowTaskProgress(task: DownloadTask) {
@@ -89,6 +97,9 @@ function shouldShowTaskProgress(task: DownloadTask) {
 
 function getTaskIssueMessage(task: DownloadTask) {
   if (task.status === 'failed') {
+    if (isMetadataCommitFailure(task.error_message)) {
+      return '文件已写入底层存储，但目录索引提交失败。请刷新目标目录或联系管理员处理。'
+    }
     return task.error_message || '任务失败，但后端未返回具体原因。请稍后刷新或查看后端日志。'
   }
   if (task.status === 'canceled') {
@@ -334,6 +345,16 @@ export function TasksPage() {
     }
   }
 
+  const handleOpenTaskDirectory = (task: DownloadTask) => {
+    const targetPath = getTaskTargetDirectoryPath(task)
+    if (!targetPath) {
+      addToast('该任务没有返回可打开的虚拟目录', 'warning')
+      return
+    }
+    void queryClient.invalidateQueries({ queryKey: ['vfs', targetPath] })
+    navigate(`/files?path=${encodeURIComponent(targetPath)}`)
+  }
+
   if (authLoading || isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -489,9 +510,24 @@ export function TasksPage() {
                   {task.downloader_type === 'pikpak_native' && (
                     <span>PikPak 原生任务暂不支持暂停/恢复，可取消</span>
                   )}
+                  {task.status === 'completed' && task.result_vfs_node_id && (
+                    <span className="text-emerald-500">结果节点 #{task.result_vfs_node_id}</span>
+                  )}
+                  {task.status === 'completed' && !task.result_vfs_node_id && (
+                    <span className="text-amber-500">未返回结果节点，请刷新目录确认</span>
+                  )}
                   <span>创建于: {formatDate(task.created_at)}</span>
                   {task.status === 'completed' && task.finished_at && (
                     <span>完成于: {formatDate(task.finished_at)}</span>
+                  )}
+                  {getTaskTargetDirectoryPath(task) && (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenTaskDirectory(task)}
+                      className="rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-accent"
+                    >
+                      打开保存目录
+                    </button>
                   )}
                 </div>
               </div>

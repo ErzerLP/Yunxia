@@ -42,12 +42,12 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 详情 |
 |---|---|---|---|---|---|---|
-| 待适配 | 2026-05-08 | 分享 | 分享管理页、公开分享页、下载跳转 | P2 | `/api/v1/shares*`、`/s/:token`、`/api/v2/fs/download` | [详情](#handoff-2026-05-08-share-node-first) |
-| 待适配 | 2026-05-08 | ACL | 权限配置页、文件/VFS 页、挂载导航 | P2 | `/api/v1/acl/rules*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-acl-node-first) |
-| 待适配 | 2026-05-08 | 上传/任务/RSS | 上传完成、离线任务页、RSS 条目列表/告警 | P2 | `/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-node-first-completion) |
-| 待适配 | 2026-05-07 | VFS 刷新 | 文件/VFS 页、目录刷新按钮、错误提示 | P2 | `POST /api/v2/fs/refresh`、`GET /api/v2/fs/list` | [详情](#handoff-2026-05-07-vfs-refresh-sync) |
-| 待适配 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
-| 待适配 | 2026-05-07 | VFS 标签 | 文件/VFS 页、文件详情/右键菜单、后续筛选入口 | P2 | `/api/v1/tags*`、`/api/v2/fs/tags*` | [详情](#handoff-2026-05-07-vfs-tags) |
+| 待联调 | 2026-05-08 | 分享 | 分享管理页、公开分享页、下载跳转 | P2 | `/api/v1/shares*`、`/s/:token`、`/api/v2/fs/download` | [详情](#handoff-2026-05-08-share-node-first) |
+| 待联调 | 2026-05-08 | ACL | 权限配置页、文件/VFS 页、挂载导航 | P2 | `/api/v1/acl/rules*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-acl-node-first) |
+| 待联调 | 2026-05-08 | 上传/任务/RSS | 上传完成、离线任务页、RSS 条目列表/告警 | P2 | `/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v2/fs/list` | [详情](#handoff-2026-05-08-node-first-completion) |
+| 待联调 | 2026-05-07 | VFS 刷新 | 文件/VFS 页、目录刷新按钮、错误提示 | P2 | `POST /api/v2/fs/refresh`、`GET /api/v2/fs/list` | [详情](#handoff-2026-05-07-vfs-refresh-sync) |
+| 待联调 | 2026-05-07 | VFS 写操作 | 文件/VFS 页、右键菜单、批量操作提示 | P2 | `/api/v2/fs/mkdir`、`/api/v2/fs/rename`、`/api/v2/fs/move`、`/api/v2/fs/copy`、`DELETE /api/v2/fs` | [详情](#handoff-2026-05-07-vfs-mutation-metadata-sync) |
+| 待联调 | 2026-05-07 | VFS 标签 | 文件/VFS 页、文件详情/右键菜单、后续筛选入口 | P2 | `/api/v1/tags*`、`/api/v2/fs/tags*` | [详情](#handoff-2026-05-07-vfs-tags) |
 | 待联调 | 2026-05-04 | 存储源/PikPak | 设置/存储源页、文件/VFS 页、上传入口、离线任务/RSS 目标选择 | P1 | `/api/v1/sources*`、`/api/v1/files*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks` | [详情](#handoff-2026-05-04-pikpak-source-readonly) |
 | 待联调 | 2026-05-02 | 通知告警 | 设置/通知页、RSS 待处理入口 | P1 | `/api/v1/notifications/channels`、`/api/v1/notifications/events` | [详情](#handoff-2026-05-02-notifications) |
 | 待联调 | 2026-05-02 | RSS 导入导出 | RSS/追番页、设置/备份页 | P1 | `/api/v1/rss/export`、`/api/v1/rss/import` | [详情](#handoff-2026-05-02-rss-import-export) |
@@ -860,7 +860,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 
 - [x] 存储源创建/编辑表单新增 `driver_type="pikpak"` 选项。
 - [x] 表单支持 PikPak public config：`root_folder_id`、`platform`、`disable_media_link`、`cache_ttl_seconds`、`download_strategy`。
-- [ ] 可选支持 PikPak public config：`proxy_url`，用于在后端部署网络出口受限时为单个 PikPak 源指定 HTTP/HTTPS 代理。
+- [x] 可选支持 PikPak public config：`proxy_url`，用于在后端部署网络出口受限时为单个 PikPak 源指定 HTTP/HTTPS 代理。
 - [x] 表单支持 secret patch：`username`、`password`、`refresh_token`、`captcha_token`、`device_id`；编辑时省略未改 secret，清空时传 `null`。
 - [x] 详情页展示 `secret_fields` 掩码；仅在具备 `source.secret.read` 时展示明文 secret。
 - [x] 文件/VFS 页面不要再把 PikPak 硬编码成只读；`mkdir` / `rename` / `move` / `copy` / `delete` 按后端 capability、ACL 与接口错误展示。
@@ -872,7 +872,7 @@ type NotificationEventStatus = "pending" | "delivered" | "retry_pending" | "fail
 - [x] 不持久化、不日志输出 PikPak `direct_parts` 返回的临时 `Authorization` / `X-OSS-Security-Token` 上传 header。
 - [x] 删除文案标注为“移入 PikPak 回收站”；不要提示永久删除，`delete_mode=permanent` 当前返回 `SOURCE_OPERATION_UNSUPPORTED`。
 - [x] 错误提示新增/确认 `SOURCE_OPERATION_UNSUPPORTED`、`FILE_ALREADY_EXISTS` / `NAME_CONFLICT`、`CLOUD_AUTH_FAILED`、`CLOUD_TOKEN_INVALID`、`CLOUD_CAPTCHA_REQUIRED`、`CLOUD_RATE_LIMITED`、`CLOUD_PROVIDER_UNAVAILABLE`。
-- [ ] 错误提示新增 `CLOUD_REGION_BLOCKED`：表示 PikPak provider 拒绝当前后端网络出口区域，建议提示管理员配置可用代理或调整部署网络。
+- [x] 错误提示新增 `CLOUD_REGION_BLOCKED`：表示 PikPak provider 拒绝当前后端网络出口区域，建议提示管理员配置可用代理或调整部署网络。
 - [x] 下载沿用现有 access-url/download 流程；PikPak 会在后端鉴权后 302 到 provider 临时链接。
 - [x] WebDAV 暴露不再只限 local；PikPak/S3 等非 local 源设置 `is_webdav_exposed=true` 后可通过 `/dav/{webdav_slug}` 访问，但前端只需要展示开关与 slug，不需要实现 WebDAV 客户端。
 
@@ -934,19 +934,30 @@ type PikPakSecretPatch = {
   - `cd web && node scripts/check-vfs-integration.mjs` # pass
 - 2026-05-05：后端补充 PikPak `proxy_url` 与 `CLOUD_REGION_BLOCKED`。测试机直连 PikPak 时 provider 返回区域限制，后端不再误报 `CLOUD_AUTH_FAILED`；如需要在 UI 中配置单源代理，请按上方 checklist 增加高级配置项。
 - 2026-05-05：后端补充 `CLOUD_CAPTCHA_REQUIRED` 的 `error.details.verification_url` 透出，避免真实账号触发 PikPak 人工验证时前端/测试人员拿不到验证入口。
+- 2026-05-08：前端补齐 PikPak `proxy_url` 创建/编辑表单、卡片展示和格式预校验，并确认 `CLOUD_REGION_BLOCKED` 通过统一错误映射展示为代理/网络出口提示；本轮静态验证通过，真实 PikPak 正向链路仍等待 captcha/token 联调。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 <a id="handoff-2026-05-07-vfs-tags"></a>
 
-### [P2][待适配][VFS 标签] 2026-05-07 VFS 节点标签最小能力
+### [P2][待联调][VFS 标签] 2026-05-07 VFS 节点标签最小能力
 
 #### 前端适配 checklist
 
-- [ ] 新增或复用标签 API client：`GET/POST/PATCH/DELETE /api/v1/tags`。
-- [ ] 在文件/VFS 页的文件详情、右键菜单或侧边信息中接入节点标签查询：`GET /api/v2/fs/tags?path=<item.path>`。
-- [ ] 支持给当前 VFS 节点绑定标签：`POST /api/v2/fs/tags/attach`。
-- [ ] 支持从当前 VFS 节点解绑标签：`POST /api/v2/fs/tags/detach`。
-- [ ] 处理稳定错误码：`TAG_INVALID`、`TAG_NOT_FOUND`、`TAG_BINDING_NOT_FOUND`、`FILE_NOT_FOUND`、`PERMISSION_DENIED`。
-- [ ] 若目标文件刚由第三方存储源懒加载进入目录，先调用 `/api/v2/fs/list?path=<parent>`，保证 metadata node 已存在后再绑定标签。
+- [x] 新增或复用标签 API client：`GET/POST/PATCH/DELETE /api/v1/tags`。
+- [x] 在文件/VFS 页的文件详情、右键菜单或侧边信息中接入节点标签查询：`GET /api/v2/fs/tags?path=<item.path>`。
+- [x] 支持给当前 VFS 节点绑定标签：`POST /api/v2/fs/tags/attach`。
+- [x] 支持从当前 VFS 节点解绑标签：`POST /api/v2/fs/tags/detach`。
+- [x] 处理稳定错误码：`TAG_INVALID`、`TAG_NOT_FOUND`、`TAG_BINDING_NOT_FOUND`、`FILE_NOT_FOUND`、`PERMISSION_DENIED`。
+- [x] 若目标文件刚由第三方存储源懒加载进入目录，先调用 `/api/v2/fs/list?path=<parent>`，保证 metadata node 已存在后再绑定标签。
+
+#### 前端验证记录
+
+- 2026-05-08：前端已完成标签 API client、VFS 右键标签管理弹窗、节点标签查询/绑定/解绑、绑定前父目录 list 触发和稳定错误码映射；静态验证通过，尚未连接真实后端完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 #### 本次后端新增能力
 
@@ -964,13 +975,20 @@ type PikPakSecretPatch = {
 
 <a id="handoff-2026-05-07-vfs-mutation-metadata-sync"></a>
 
-### [P2][待适配][VFS 写操作] 2026-05-07 Metadata VFS 写后同步错误码
+### [P2][待联调][VFS 写操作] 2026-05-07 Metadata VFS 写后同步错误码
 
 #### 前端适配 checklist
 
-- [ ] `/api/v2/fs` 写操作成功后直接按现有流程刷新列表；后端已保证 metadata list 立即反映 `mkdir`、`rename`、`move`、`copy`、`delete` 结果。
-- [ ] 新增错误码处理：`METADATA_VFS_MUTATION_SYNC_FAILED`（HTTP 500），提示“文件已写入底层存储，但同步目录索引失败，请刷新目录或稍后重试”，不要展示原始 `message` 之外的低层详情。
-- [ ] 跨 source `move/copy` 仍按现有 unsupported 错误处理；不要在 UI 中提示已创建完整跨源传输任务。
+- [x] `/api/v2/fs` 写操作成功后直接按现有流程刷新列表；后端已保证 metadata list 立即反映 `mkdir`、`rename`、`move`、`copy`、`delete` 结果。
+- [x] 新增错误码处理：`METADATA_VFS_MUTATION_SYNC_FAILED`（HTTP 500），提示“文件已写入底层存储，但同步目录索引失败，请刷新目录或稍后重试”，不要展示原始 `message` 之外的低层详情。
+- [x] 跨 source `move/copy` 仍按现有 unsupported 错误处理；不要在 UI 中提示已创建完整跨源传输任务。
+
+#### 前端验证记录
+
+- 2026-05-08：前端已补齐 `METADATA_VFS_MUTATION_SYNC_FAILED` 等稳定错误码友好提示；现有 VFS mkdir/rename/move/copy/delete 成功后仍刷新当前列表，跨源 unsupported 继续按统一错误映射展示；静态验证通过，尚未连接真实后端完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 #### 本次后端行为变化
 
@@ -980,15 +998,22 @@ type PikPakSecretPatch = {
 
 <a id="handoff-2026-05-07-vfs-refresh-sync"></a>
 
-### [P2][待适配][VFS 刷新] 2026-05-07 手动刷新 metadata VFS 目录
+### [P2][待联调][VFS 刷新] 2026-05-07 手动刷新 metadata VFS 目录
 
 #### 前端适配 checklist
 
-- [ ] 在文件/VFS 页当前目录增加或接入“刷新”动作：`POST /api/v2/fs/refresh { path: currentPath, mode: "sync" }`。
-- [ ] 刷新成功后重新调用 `GET /api/v2/fs/list?path=<currentPath>`；不要只用 refresh 返回的统计替换目录列表。
-- [ ] 在文件列表类型中接收可选 `sync_state`，并对 `missing` / `conflict` / `error` / `stale` 做弱提示或禁用下载（后端也会返回 `can_download=false`）。
-- [ ] 处理稳定错误码：`FILE_NOT_FOUND`、`PATH_INVALID`、`ACL_DENIED`、`SOURCE_DRIVER_UNSUPPORTED`、`CLOUD_PROVIDER_UNAVAILABLE`、`VFS_SYNC_CONFLICT`。
-- [ ] 未授权 refresh 返回 403/404 时只展示通用无权限/不存在提示；不要把用户输入 path 或猜测的挂载名回显成“真实存在”。
+- [x] 在文件/VFS 页当前目录增加或接入“刷新”动作：`POST /api/v2/fs/refresh { path: currentPath, mode: "sync" }`。
+- [x] 刷新成功后重新调用 `GET /api/v2/fs/list?path=<currentPath>`；不要只用 refresh 返回的统计替换目录列表。
+- [x] 在文件列表类型中接收可选 `sync_state`，并对 `missing` / `conflict` / `error` / `stale` 做弱提示或禁用下载（后端也会返回 `can_download=false`）。
+- [x] 处理稳定错误码：`FILE_NOT_FOUND`、`PATH_INVALID`、`ACL_DENIED`、`SOURCE_DRIVER_UNSUPPORTED`、`CLOUD_PROVIDER_UNAVAILABLE`、`VFS_SYNC_CONFLICT`。
+- [x] 未授权 refresh 返回 403/404 时只展示通用无权限/不存在提示；不要把用户输入 path 或猜测的挂载名回显成“真实存在”。
+
+#### 前端验证记录
+
+- 2026-05-08：前端刷新按钮已改为调用 `POST /api/v2/fs/refresh { path, mode: "sync" }`，成功后重新 refetch 当前 `/api/v2/fs/list`；VFS 列表/网格接收并展示 `sync_state` 弱提示，并按 `can_download=false` 隐藏下载入口；静态验证通过，尚未连接真实后端完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 #### 本次后端新增能力
 
@@ -1000,15 +1025,22 @@ type PikPakSecretPatch = {
 
 <a id="handoff-2026-05-08-node-first-completion"></a>
 
-### [P2][待适配][上传/任务/RSS] 2026-05-08 Upload/task/RSS node-first 完成语义
+### [P2][待联调][上传/任务/RSS] 2026-05-08 Upload/task/RSS node-first 完成语义
 
 #### 前端适配 checklist
 
-- [ ] 上传完成页/通知：`/api/v1/upload/finish` 成功时要求 `completed=true` 且读取 `result_vfs_node_id`；随后刷新目标父目录的 `/api/v2/fs/list`，不要仅依赖旧 `/api/v1/files` 列表。
-- [ ] 上传失败错误码新增/确认 `METADATA_VFS_COMMIT_FAILED`：提示“文件已写入底层存储，但目录索引提交失败，请稍后重试或联系管理员”，不要展示低层路径/SQL/provider payload。
-- [ ] 离线任务页：`DownloadTaskView.status="completed"` 时应有 `result_vfs_node_id`；`failed` 且 `error_message="metadata vfs commit failed"` 时展示安全摘要，并引导用户刷新目录或联系管理员。
-- [ ] RSS 条目列表：只有 `RSSItemView.status="completed"` 且 `result_vfs_node_id` 非空时展示“定位结果节点/打开目录”的强入口。
-- [ ] RSS 条目 `needs_attention` 需要显示 `error_message` / `retry_reason`；metadata commit failed 或 completed 但缺失 result node 会进入 `needs_attention`，不要停留在 matched/enqueued loading 态。
+- [x] 上传完成页/通知：`/api/v1/upload/finish` 成功时要求 `completed=true` 且读取 `result_vfs_node_id`；随后刷新目标父目录的 `/api/v2/fs/list`，不要仅依赖旧 `/api/v1/files` 列表。
+- [x] 上传失败错误码新增/确认 `METADATA_VFS_COMMIT_FAILED`：提示“文件已写入底层存储，但目录索引提交失败，请稍后重试或联系管理员”，不要展示低层路径/SQL/provider payload。
+- [x] 离线任务页：`DownloadTaskView.status="completed"` 时应有 `result_vfs_node_id`；`failed` 且 `error_message="metadata vfs commit failed"` 时展示安全摘要，并引导用户刷新目录或联系管理员。
+- [x] RSS 条目列表：只有 `RSSItemView.status="completed"` 且 `result_vfs_node_id` 非空时展示“定位结果节点/打开目录”的强入口。
+- [x] RSS 条目 `needs_attention` 需要显示 `error_message` / `retry_reason`；metadata commit failed 或 completed 但缺失 result node 会进入 `needs_attention`，不要停留在 matched/enqueued loading 态。
+
+#### 前端验证记录
+
+- 2026-05-08：前端已补齐上传 `completed/result_vfs_node_id` 展示与 VFS 刷新、离线任务 result node/metadata commit failed 安全摘要/打开保存目录、RSS completed result node 强入口与 needs_attention 原因展示；静态验证通过，尚未连接真实后端完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 #### 本次后端行为变化
 
@@ -1022,16 +1054,23 @@ type PikPakSecretPatch = {
 
 <a id="handoff-2026-05-08-share-node-first"></a>
 
-### [P2][待适配][分享] 2026-05-08 Share node-first 与公开下载 302
+### [P2][待联调][分享] 2026-05-08 Share node-first 与公开下载 302
 
 #### 前端适配 checklist
 
-- [ ] 分享管理页继续展示 `ShareView.target_vfs_node_id`；把它视为长期身份，`target_virtual_path` / `resolved_inner_path` 只作为创建时快照或兼容展示。
-- [ ] 公开分享文件下载直接使用浏览器跳转 `/s/:token?...` 或后端返回的 `Location`；不要用 JSON API client 解析 302。
-- [ ] 如果前端自行展示分享下载地址，接受 `Location` 变为 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`，不再假设 `/api/v1/files/download?source_id=...&path=...`。
-- [ ] 目录分享列表只消费 `PublicShareEntry` 字段；不要期待或展示 `source_id`、provider file id、locator、底层路径等 provider 细节。
-- [ ] 目录分享中 missing/error/pending/conflict 等不可用子节点不会返回；前端不要用旧缓存补回后端已隐藏的条目。
-- [ ] 错误展示：分享目标被删除、missing/error/conflict 或 node 不存在时，公开打开返回 `FILE_NOT_FOUND`；分享链接不存在仍是 `SHARE_NOT_FOUND`。
+- [x] 分享管理页继续展示 `ShareView.target_vfs_node_id`；把它视为长期身份，`target_virtual_path` / `resolved_inner_path` 只作为创建时快照或兼容展示。
+- [x] 公开分享文件下载直接使用浏览器跳转 `/s/:token?...` 或后端返回的 `Location`；不要用 JSON API client 解析 302。
+- [x] 如果前端自行展示分享下载地址，接受 `Location` 变为 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`，不再假设 `/api/v1/files/download?source_id=...&path=...`。
+- [x] 目录分享列表只消费 `PublicShareEntry` 字段；不要期待或展示 `source_id`、provider file id、locator、底层路径等 provider 细节。
+- [x] 目录分享中 missing/error/pending/conflict 等不可用子节点不会返回；前端不要用旧缓存补回后端已隐藏的条目。
+- [x] 错误展示：分享目标被删除、missing/error/conflict 或 node 不存在时，公开打开返回 `FILE_NOT_FOUND`；分享链接不存在仍是 `SHARE_NOT_FOUND`。
+
+#### 前端验证记录
+
+- 2026-05-08：前端分享创建/右键分享已优先提交 `vfs_node_id`，管理页展示 `target_vfs_node_id` 与路径快照，公开分享仍使用浏览器直接跳转并对 `FILE_NOT_FOUND` / `SHARE_NOT_FOUND` 做友好提示；静态验证通过，尚未连接真实后端完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 #### 本次后端行为变化
 
@@ -1044,15 +1083,22 @@ type PikPakSecretPatch = {
 
 <a id="handoff-2026-05-08-acl-node-first"></a>
 
-### [P2][待适配][ACL] 2026-05-08 ACL node-first 规则配置
+### [P2][待联调][ACL] 2026-05-08 ACL node-first 规则配置
 
 #### 前端适配 checklist
 
-- [ ] 权限配置页选择 VFS 目录/文件时，优先读取 `/api/v2/fs/list` 返回项的 `id`，创建/更新 ACL 时传 `vfs_node_id`。
-- [ ] 保留旧 `source_id + path` 提交流程作为兼容 fallback；但新 UI 不要把 path 当长期身份，rename/move 后只有 `vfs_node_id` 规则会跟随 node。
-- [ ] ACL 列表/详情类型接收可选 `vfs_node_id` 与 `virtual_path`；`virtual_path` 是创建/更新时快照，适合展示/审计，不适合作为长期身份。
-- [ ] 处理新增错误码 `VFS_NODE_NOT_FOUND`：所选 node 已删除或不可解析时提示重新选择路径。
-- [ ] 文件/VFS 页和挂载导航只展示后端 `/api/v2/fs/list` 返回的条目；不要用本地缓存补回后端已过滤的未授权节点或挂载点名称。
+- [x] 权限配置页选择 VFS 目录/文件时，优先读取 `/api/v2/fs/list` 返回项的 `id`，创建/更新 ACL 时传 `vfs_node_id`。
+- [x] 保留旧 `source_id + path` 提交流程作为兼容 fallback；但新 UI 不要把 path 当长期身份，rename/move 后只有 `vfs_node_id` 规则会跟随 node。
+- [x] ACL 列表/详情类型接收可选 `vfs_node_id` 与 `virtual_path`；`virtual_path` 是创建/更新时快照，适合展示/审计，不适合作为长期身份。
+- [x] 处理新增错误码 `VFS_NODE_NOT_FOUND`：所选 node 已删除或不可解析时提示重新选择路径。
+- [x] 文件/VFS 页和挂载导航只展示后端 `/api/v2/fs/list` 返回的条目；不要用本地缓存补回后端已过滤的未授权节点或挂载点名称。
+
+#### 前端验证记录
+
+- 2026-05-08：前端 ACL 创建/编辑弹窗已改为目标 VFS 路径优先，提交前通过 `/api/v2/fs/list` 解析 `VFSItem.id` 并传 `vfs_node_id`，保留 source/path fallback；列表展示 node id 与 virtual path 快照，并补齐 `VFS_NODE_NOT_FOUND` 错误映射；静态验证通过，尚未连接真实后端完成端到端 smoke，因此状态为 `待联调`。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
 
 #### 本次后端行为变化
 

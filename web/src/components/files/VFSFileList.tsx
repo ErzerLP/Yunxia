@@ -6,7 +6,7 @@ import { shareApi } from '@/api/share'
 import { sourceApi } from '@/api/source'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
-import { formatBytes, formatDate, getFileIconClass } from '@/utils'
+import { formatBytes, formatDate, getApiErrorMessage, getFileIconClass } from '@/utils'
 import { cn } from '@/utils'
 import { buildVfsShareRequest, toFrontendShareLink } from '@/utils/vfs'
 import { FileContextMenu } from './FileContextMenu'
@@ -14,6 +14,8 @@ import { VFSRenameModal } from './VFSRenameModal'
 import { VFSDeleteConfirmModal } from './VFSDeleteConfirmModal'
 import { VFSMoveCopyModal } from './VFSMoveCopyModal'
 import { VFSSelectionBar } from './VFSSelectionBar'
+import { VFSSyncStateBadge } from './VFSSyncStateBadge'
+import { VFSTagModal } from './VFSTagModal'
 import type { VFSItem } from '@/types/api'
 
 const iconMap = {
@@ -51,6 +53,7 @@ export function VFSFileList() {
   const [renameTarget, setRenameTarget] = useState<VFSItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<VFSItem | null>(null)
   const [moveCopyTarget, setMoveCopyTarget] = useState<{ item: VFSItem; mode: 'move' | 'copy' } | null>(null)
+  const [tagTarget, setTagTarget] = useState<VFSItem | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['vfs', currentVirtualPath],
@@ -107,6 +110,10 @@ export function VFSFileList() {
   }
 
   const handleDownload = async (item: VFSItem) => {
+    if (item.can_download === false) {
+      addToast('该条目当前不可下载，请刷新目录后重试', 'error')
+      return
+    }
     try {
       const res = await fileV2Api.accessUrl({
         path: item.path,
@@ -115,7 +122,7 @@ export function VFSFileList() {
       })
       window.open(res.url, '_blank')
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '获取下载链接失败'
+      const msg = getApiErrorMessage(err, '获取下载链接失败')
       addToast(msg, 'error')
     }
   }
@@ -134,7 +141,7 @@ export function VFSFileList() {
       addToast('分享链接已创建并复制', 'success')
       queryClient.invalidateQueries({ queryKey: ['shares'] })
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '创建分享失败'
+      const msg = getApiErrorMessage(err, '创建分享失败')
       addToast(msg, 'error')
     }
   }
@@ -156,6 +163,11 @@ export function VFSFileList() {
 
   const handleCopy = (item: VFSItem) => {
     setMoveCopyTarget({ item, mode: 'copy' })
+    setContextMenu(null)
+  }
+
+  const handleTags = (item: VFSItem) => {
+    setTagTarget(item)
     setContextMenu(null)
   }
 
@@ -242,6 +254,10 @@ export function VFSFileList() {
                       {item.is_mount_point && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">挂载点</span>
                       )}
+                      <VFSSyncStateBadge
+                        syncState={item.sync_state}
+                        canDownload={item.entry_kind === 'file' ? item.can_download : true}
+                      />
                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground">
@@ -258,6 +274,7 @@ export function VFSFileList() {
                         e.stopPropagation()
                         handleContextMenu(e, item)
                       }}
+                      title={`打开 ${item.name} 操作菜单`}
                     >
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
@@ -283,11 +300,12 @@ export function VFSFileList() {
             mime_type: contextMenu.item.mime_type,
             mode: 'v2',
           }) : undefined}
-          onDownload={contextMenu.item.entry_kind === 'file' ? () => handleDownload(contextMenu.item) : undefined}
+          onDownload={contextMenu.item.entry_kind === 'file' && contextMenu.item.can_download !== false ? () => handleDownload(contextMenu.item) : undefined}
           onRename={canWriteCurrentDirectory ? () => handleRename(contextMenu.item) : undefined}
           onCopy={canWriteCurrentDirectory ? () => handleCopy(contextMenu.item) : undefined}
           onMove={canWriteCurrentDirectory ? () => handleMove(contextMenu.item) : undefined}
           onShare={() => handleShare(contextMenu.item)}
+          onTags={() => handleTags(contextMenu.item)}
           onDelete={contextMenu.item.can_delete ? () => handleDelete(contextMenu.item) : undefined}
         />
       )}
@@ -320,6 +338,13 @@ export function VFSFileList() {
           sourcePath={moveCopyTarget.item.path}
           fileName={moveCopyTarget.item.name}
           onSuccess={refreshFiles}
+        />
+      )}
+
+      {tagTarget && (
+        <VFSTagModal
+          item={tagTarget}
+          onClose={() => setTagTarget(null)}
         />
       )}
     </>

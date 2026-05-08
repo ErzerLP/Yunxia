@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { shareApi } from '@/api/share'
+import { fileV2Api } from '@/api/fileV2'
 import { useUIStore } from '@/stores/uiStore'
 import {
   Link,
@@ -20,11 +21,11 @@ import {
   Copy,
   Pencil,
 } from 'lucide-react'
-import { formatDate, getFileIconClass } from '@/utils'
+import { formatDate, getApiErrorMessage, getFileIconClass } from '@/utils'
 import { cn } from '@/utils'
 import { useHasCapability } from '@/hooks/useCapability'
-import { toFrontendShareLink } from '@/utils/vfs'
-import type { Share } from '@/types/api'
+import { getVfsParentPath, normalizeVfsPath, toFrontendShareLink } from '@/utils/vfs'
+import type { CreateShareRequest, Share } from '@/types/api'
 
 const iconMap = {
   folder: Folder,
@@ -177,22 +178,46 @@ function CreateShareModal({
   onClose: () => void
   onSuccess: () => void
 }) {
-  const [sourceId, setSourceId] = useState('')
-  const [path, setPath] = useState('/')
+  const { addToast } = useUIStore()
+  const [vfsPath, setVfsPath] = useState('/')
+  const [legacySourceId, setLegacySourceId] = useState('')
+  const [legacyPath, setLegacyPath] = useState('/')
   const [expiresIn, setExpiresIn] = useState('')
   const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const resolveShareTarget = async (targetPath: string): Promise<CreateShareRequest | null> => {
+    const normalizedPath = normalizeVfsPath(targetPath)
+    if (normalizedPath !== '/') {
+      const parentPath = getVfsParentPath(normalizedPath)
+      const list = await fileV2Api.list({ path: parentPath, page: 1, page_size: 200 })
+      const target = list.items.find((item) => normalizeVfsPath(item.path) === normalizedPath)
+      if (target?.id) {
+        return { vfs_node_id: target.id }
+      }
+    }
+
+    const sid = parseInt(legacySourceId, 10)
+    if (sid && legacyPath.trim()) {
+      return {
+        source_id: sid,
+        path: legacyPath.trim(),
+      }
+    }
+    return null
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const sid = parseInt(sourceId, 10)
-    if (!sid || !path.trim()) return
+    if (!vfsPath.trim()) return
 
     setIsSubmitting(true)
+    setError('')
     try {
-      const data: { source_id: number; path: string; expires_in?: number; password?: string } = {
-        source_id: sid,
-        path: path.trim(),
+      const data = await resolveShareTarget(vfsPath)
+      if (!data) {
+        throw new Error('未找到可分享的 VFS 节点；请先进入该目录触发索引，或填写兼容 source_id + 源内路径。')
       }
       const exp = parseInt(expiresIn, 10)
       if (expiresIn && !isNaN(exp) && exp > 0) {
@@ -204,8 +229,10 @@ function CreateShareModal({
       await shareApi.create(data)
       onSuccess()
       onClose()
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const message = getApiErrorMessage(err, '创建分享失败')
+      setError(message)
+      addToast(message, 'error')
     } finally {
       setIsSubmitting(false)
     }
@@ -225,45 +252,81 @@ function CreateShareModal({
           </button>
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-3">
+          {error && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">存储源 ID</label>
+            <label htmlFor="share-create-vfs-path" className="text-sm text-muted-foreground mb-1 block">目标 VFS 路径</label>
             <input
-              type="number"
-              value={sourceId}
-              onChange={(e) => setSourceId(e.target.value)}
-              placeholder="1"
-              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm text-muted-foreground mb-1 block">文件路径</label>
-            <input
+              id="share-create-vfs-path"
+              name="vfs_path"
               type="text"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="/docs/hello.txt"
-              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              value={vfsPath}
+              onChange={(e) => setVfsPath(e.target.value)}
+              placeholder="/local/docs/hello.txt"
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
               required
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              前端会优先解析为 metadata VFS 节点，分享会在重命名/移动后跟随同一节点。
+            </p>
+          </div>
+          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-3">
+            <p className="text-xs font-medium text-muted-foreground">兼容 fallback（仅旧数据或无法解析节点时填写）</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="share-create-legacy-source-id" className="text-sm text-muted-foreground mb-1 block">存储源 ID</label>
+                <input
+                  id="share-create-legacy-source-id"
+                  name="legacy_source_id"
+                  type="number"
+                  value={legacySourceId}
+                  onChange={(e) => setLegacySourceId(e.target.value)}
+                  placeholder="1"
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label htmlFor="share-create-legacy-path" className="text-sm text-muted-foreground mb-1 block">源内路径</label>
+                <input
+                  id="share-create-legacy-path"
+                  name="legacy_path"
+                  type="text"
+                  value={legacyPath}
+                  onChange={(e) => setLegacyPath(e.target.value)}
+                  placeholder="/docs/hello.txt"
+                  autoComplete="off"
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                />
+              </div>
+            </div>
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">有效期（秒，可选）</label>
+            <label htmlFor="share-create-expires-in" className="text-sm text-muted-foreground mb-1 block">有效期（秒，可选）</label>
             <input
+              id="share-create-expires-in"
+              name="expires_in"
               type="number"
               value={expiresIn}
               onChange={(e) => setExpiresIn(e.target.value)}
               placeholder="86400"
+              autoComplete="off"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">密码（可选）</label>
+            <label htmlFor="share-create-password" className="text-sm text-muted-foreground mb-1 block">密码（可选）</label>
             <input
+              id="share-create-password"
+              name="password"
               type="text"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder=""
+              autoComplete="new-password"
               className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -277,10 +340,10 @@ function CreateShareModal({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !sourceId || !path.trim()}
+              disabled={isSubmitting || !vfsPath.trim()}
               className={cn(
                 'px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors',
-                (isSubmitting || !sourceId || !path.trim()) && 'opacity-50 cursor-not-allowed'
+                (isSubmitting || !vfsPath.trim()) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isSubmitting ? '创建中...' : '创建'}
@@ -373,6 +436,9 @@ export function SharesPage() {
                   <p className="text-sm text-foreground truncate">{share.name}</p>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
                     <span>{share.is_dir ? '文件夹' : '文件'}</span>
+                    {share.target_vfs_node_id && (
+                      <span className="text-primary">节点 #{share.target_vfs_node_id}</span>
+                    )}
                     {share.has_password && (
                       <span className="inline-flex items-center gap-0.5">
                         <Lock className="w-3 h-3" /> 密码保护
@@ -384,6 +450,13 @@ export function SharesPage() {
                       </span>
                     )}
                   </div>
+                  <p
+                    className="mt-1 truncate font-mono text-[11px] text-muted-foreground"
+                    title={share.target_virtual_path || share.path}
+                  >
+                    快照路径：{share.target_virtual_path || share.path}
+                    {share.resolved_inner_path && ` · 源内 ${share.resolved_inner_path}`}
+                  </p>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <button

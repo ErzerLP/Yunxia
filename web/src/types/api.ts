@@ -300,6 +300,7 @@ export interface UploadTransport {
 export interface UploadInitResponse {
   is_fast_upload: boolean;
   file?: FileItem;
+  result_vfs_node_id?: number;
   upload?: UploadSession;
   transport?: UploadTransport;
   part_instructions?: PartInstruction[];
@@ -321,6 +322,7 @@ export interface UploadFinishResponse {
   completed: boolean;
   upload_id: string;
   file: FileItem;
+  result_vfs_node_id?: number;
 }
 
 // Task
@@ -350,6 +352,8 @@ export interface DownloadTask {
   save_virtual_path?: string;
   resolved_source_id?: number;
   resolved_inner_save_path?: string;
+  target_vfs_parent_node_id?: number;
+  result_vfs_node_id?: number;
   target_filename?: string;
 }
 
@@ -543,6 +547,7 @@ export interface RSSItemView {
   status: RSSItemStatus;
   matched_subscription_id: number | null;
   task_id: number | null;
+  result_vfs_node_id?: number;
   error_message: string | null;
   retry_count: number;
   max_retry_count: number;
@@ -734,7 +739,7 @@ export interface TrashItem {
 // Share
 export interface Share {
   id: number;
-  source_id: number;
+  source_id: number | null;
   path: string;
   name: string;
   is_dir: boolean;
@@ -742,14 +747,16 @@ export interface Share {
   has_password: boolean;
   expires_at: string | null;
   created_at: string;
+  target_vfs_node_id?: number;
   target_virtual_path?: string;
   resolved_source_id?: number;
   resolved_inner_path?: string;
 }
 
 export interface CreateShareRequest {
-  source_id: number;
-  path: string;
+  vfs_node_id?: number;
+  source_id?: number;
+  path?: string;
   expires_in?: number;
   password?: string;
 }
@@ -780,8 +787,10 @@ export interface UpdateUserRequest {
 // ACL
 export interface AclRule {
   id: number;
-  source_id: number;
+  source_id: number | null;
   path: string;
+  vfs_node_id?: number;
+  virtual_path?: string;
   subject_type: 'user' | 'role';
   subject_id: number;
   effect: 'allow' | 'deny';
@@ -796,8 +805,9 @@ export interface AclRule {
 }
 
 export interface CreateAclRuleRequest {
-  source_id: number;
-  path: string;
+  source_id?: number;
+  path?: string;
+  vfs_node_id?: number;
   subject_type: string;
   subject_id: number;
   effect: string;
@@ -812,7 +822,38 @@ export interface CreateAclRuleRequest {
 }
 
 // V2 Virtual Filesystem
+export type VFSSyncState =
+  | 'indexed'
+  | 'pending'
+  | 'syncing'
+  | 'stale'
+  | 'missing'
+  | 'conflict'
+  | 'error';
+
+export interface VFSTag {
+  id: number;
+  name: string;
+  color: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface VFSRefreshResponse {
+  path: string;
+  node_id?: number;
+  seen: number;
+  indexed: number;
+  updated: number;
+  missing: number;
+  conflicts: number;
+  errors: number;
+  sync_state?: VFSSyncState;
+  error?: string | null;
+}
+
 export interface VFSItem {
+  id?: number;
   name: string;
   path: string;
   parent_path: string;
@@ -829,6 +870,7 @@ export interface VFSItem {
   can_preview: boolean;
   can_download: boolean;
   can_delete: boolean;
+  sync_state?: VFSSyncState;
   thumbnail_url: string | null;
 }
 

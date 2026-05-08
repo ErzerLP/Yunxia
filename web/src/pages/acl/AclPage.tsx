@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { aclApi } from '@/api/acl'
+import { fileV2Api } from '@/api/fileV2'
 import { sourceApi } from '@/api/source'
 import { useUIStore } from '@/stores/uiStore'
 import {
@@ -16,9 +17,10 @@ import {
   User,
   Users,
 } from 'lucide-react'
-import { cn } from '@/utils'
+import { cn, getApiErrorMessage } from '@/utils'
 import { useHasCapability } from '@/hooks/useCapability'
-import type { AclRule, StorageSource } from '@/types/api'
+import { getVfsParentPath, normalizeVfsPath } from '@/utils/vfs'
+import type { AclRule, CreateAclRuleRequest, StorageSource } from '@/types/api'
 
 function EffectBadge({ effect }: { effect: AclRule['effect'] }) {
   return (
@@ -57,8 +59,9 @@ function AclRuleModal({
   sources: StorageSource[]
 }) {
   const { addToast } = useUIStore()
-  const [sourceId, setSourceId] = useState(rule ? String(rule.source_id) : sources[0]?.id ? String(sources[0].id) : '')
-  const [path, setPath] = useState(rule?.path ?? '/')
+  const [vfsPath, setVfsPath] = useState(rule?.virtual_path || rule?.path || '/')
+  const [legacySourceId, setLegacySourceId] = useState(rule?.source_id ? String(rule.source_id) : sources[0]?.id ? String(sources[0].id) : '')
+  const [legacyPath, setLegacyPath] = useState(rule?.path ?? '/')
   const [subjectType, setSubjectType] = useState<'user' | 'role'>(rule?.subject_type ?? 'user')
   const [subjectId, setSubjectId] = useState(rule ? String(rule.subject_id) : '')
   const [effect, setEffect] = useState<'allow' | 'deny'>(rule?.effect ?? 'allow')
@@ -69,30 +72,62 @@ function AclRuleModal({
   const [share, setShare] = useState(rule?.permissions.share ?? false)
   const [inherit, setInherit] = useState(rule?.inherit_to_children ?? true)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  const resolveAclTarget = async (targetPath: string): Promise<Pick<CreateAclRuleRequest, 'vfs_node_id' | 'source_id' | 'path'> | null> => {
+    const normalizedPath = normalizeVfsPath(targetPath)
+    if (
+      rule?.vfs_node_id
+      && normalizeVfsPath(rule.virtual_path || rule.path) === normalizedPath
+    ) {
+      return { vfs_node_id: rule.vfs_node_id }
+    }
+
+    if (normalizedPath !== '/') {
+      const parentPath = getVfsParentPath(normalizedPath)
+      const list = await fileV2Api.list({ path: parentPath, page: 1, page_size: 200 })
+      const target = list.items.find((item) => normalizeVfsPath(item.path) === normalizedPath)
+      if (target?.id) {
+        return { vfs_node_id: target.id }
+      }
+    }
+
+    const sid = parseInt(legacySourceId, 10)
+    if (sid && legacyPath.trim()) {
+      return {
+        source_id: sid,
+        path: legacyPath.trim(),
+      }
+    }
+    return null
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const sid = parseInt(sourceId, 10)
     const subId = parseInt(subjectId, 10)
     const pri = parseInt(priority, 10)
-    if (!sid || !subId || isNaN(pri)) {
+    if (!subId || isNaN(pri)) {
       addToast('请填写完整的规则信息', 'error')
       return
     }
 
-    const data = {
-      source_id: sid,
-      path: path.trim() || '/',
-      subject_type: subjectType,
-      subject_id: subId,
-      effect,
-      priority: pri,
-      permissions: { read, write, delete: deleteP, share },
-      inherit_to_children: inherit,
-    }
-
     setIsSubmitting(true)
+    setError('')
     try {
+      const target = await resolveAclTarget(vfsPath)
+      if (!target) {
+        throw new Error('未找到可绑定的 VFS 节点；请先进入该目录触发索引，或填写兼容 source_id + 源内路径。')
+      }
+      const data: CreateAclRuleRequest = {
+        ...target,
+        subject_type: subjectType,
+        subject_id: subId,
+        effect,
+        priority: pri,
+        permissions: { read, write, delete: deleteP, share },
+        inherit_to_children: inherit,
+      }
+
       if (rule) {
         await aclApi.update(rule.id, data)
         addToast('规则已更新', 'success')
@@ -103,7 +138,8 @@ function AclRuleModal({
       onSuccess()
       onClose()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '操作失败'
+      const msg = getApiErrorMessage(err, '操作失败')
+      setError(msg)
       addToast(msg, 'error')
     } finally {
       setIsSubmitting(false)
@@ -125,26 +161,53 @@ function AclRuleModal({
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-3">
           <div>
-            <label className="text-sm text-muted-foreground mb-1 block">存储源</label>
-            <select
-              value={sourceId}
-              onChange={(e) => setSourceId(e.target.value)}
-              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {sources.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-sm text-muted-foreground mb-1 block">路径</label>
+            <label htmlFor="acl-rule-vfs-path" className="text-sm text-muted-foreground mb-1 block">目标 VFS 路径</label>
             <input
+              id="acl-rule-vfs-path"
+              name="vfs_path"
               type="text"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="/"
-              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              value={vfsPath}
+              onChange={(e) => setVfsPath(e.target.value)}
+              placeholder="/local/docs"
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              优先解析为 VFS node id；node-first 规则在目标重命名/移动后仍跟随同一节点。
+            </p>
+          </div>
+          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-3">
+            <p className="text-xs font-medium text-muted-foreground">兼容 fallback（无法解析 VFS 节点时填写旧 source_id + 源内路径）</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="acl-rule-legacy-source-id" className="text-sm text-muted-foreground mb-1 block">存储源</label>
+                <select
+                  id="acl-rule-legacy-source-id"
+                  name="legacy_source_id"
+                  value={legacySourceId}
+                  onChange={(e) => setLegacySourceId(e.target.value)}
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="">不使用 fallback</option>
+                  {sources.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="acl-rule-legacy-path" className="text-sm text-muted-foreground mb-1 block">源内路径</label>
+                <input
+                  id="acl-rule-legacy-path"
+                  name="legacy_path"
+                  type="text"
+                  value={legacyPath}
+                  onChange={(e) => setLegacyPath(e.target.value)}
+                  placeholder="/docs"
+                  autoComplete="off"
+                  className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                />
+              </div>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -241,6 +304,11 @@ function AclRuleModal({
             />
             <span className="text-sm text-foreground">继承到子目录</span>
           </label>
+          {error && (
+            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </p>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -251,10 +319,10 @@ function AclRuleModal({
             </button>
             <button
               type="submit"
-              disabled={isSubmitting || !sourceId || !subjectId}
+              disabled={isSubmitting || !subjectId}
               className={cn(
                 'px-4 py-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors',
-                (isSubmitting || !sourceId || !subjectId) && 'opacity-50 cursor-not-allowed'
+                (isSubmitting || !subjectId) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isSubmitting ? '保存中...' : rule ? '更新' : '创建'}
@@ -400,8 +468,8 @@ export function AclPage() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr className="border-b border-border text-muted-foreground">
-                  <th className="px-4 py-2 text-left font-medium">存储源</th>
-                  <th className="px-4 py-2 text-left font-medium">路径</th>
+                  <th className="px-4 py-2 text-left font-medium">目标</th>
+                  <th className="px-4 py-2 text-left font-medium">快照路径</th>
                   <th className="px-4 py-2 text-left font-medium">主体</th>
                   <th className="px-4 py-2 text-left font-medium">效果</th>
                   <th className="px-4 py-2 text-left font-medium">权限</th>
@@ -413,9 +481,29 @@ export function AclPage() {
                 {rules.map((rule) => (
                   <tr key={rule.id} className="border-b border-border/50 hover:bg-accent/30 transition-colors">
                     <td className="px-4 py-2.5">
-                      {sources.find((s) => s.id === rule.source_id)?.name || rule.source_id}
+                      <div className="space-y-1">
+                        {rule.vfs_node_id ? (
+                          <span className="inline-flex rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                            VFS 节点 #{rule.vfs_node_id}
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                            Legacy source/path
+                          </span>
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                          存储源：{rule.source_id ? sources.find((s) => s.id === rule.source_id)?.name || rule.source_id : '按节点解析'}
+                        </p>
+                      </div>
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-xs">{rule.path}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="space-y-1 font-mono text-xs">
+                        <p title={rule.virtual_path || rule.path}>{rule.virtual_path || rule.path}</p>
+                        {rule.virtual_path && rule.path && rule.virtual_path !== rule.path && (
+                          <p className="text-muted-foreground" title={rule.path}>源内：{rule.path}</p>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1.5">
                         <SubjectBadge type={rule.subject_type} />

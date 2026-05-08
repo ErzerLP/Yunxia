@@ -29,6 +29,12 @@ export function buildVfsShareRequest(
   item: VFSItem,
   sources: StorageSource[],
 ): CreateShareRequest | null {
+  if (item.id) {
+    return {
+      vfs_node_id: item.id,
+    }
+  }
+
   if (item.source_id == null) return null
 
   const source = sources.find((candidate) => candidate.id === item.source_id)
@@ -41,6 +47,21 @@ export function buildVfsShareRequest(
     source_id: item.source_id,
     path: innerPath,
   }
+}
+
+export function getVfsParentPath(path: string): string {
+  const normalizedPath = normalizeVfsPath(path)
+  if (normalizedPath === '/') return '/'
+  const parts = normalizedPath.split('/').filter(Boolean)
+  parts.pop()
+  return parts.length === 0 ? '/' : `/${parts.join('/')}`
+}
+
+export function getVfsBasename(path: string): string {
+  const normalizedPath = normalizeVfsPath(path)
+  if (normalizedPath === '/') return '/'
+  const parts = normalizedPath.split('/').filter(Boolean)
+  return parts.at(-1) ?? '/'
 }
 
 export function toAbsoluteShareLink(link: string): string {

@@ -6,13 +6,15 @@ import { shareApi } from '@/api/share'
 import { sourceApi } from '@/api/source'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
-import { formatBytes, getFileIconClass, cn } from '@/utils'
+import { formatBytes, getApiErrorMessage, getFileIconClass, cn } from '@/utils'
 import { buildVfsShareRequest, toFrontendShareLink } from '@/utils/vfs'
 import { FileContextMenu } from './FileContextMenu'
 import { VFSRenameModal } from './VFSRenameModal'
 import { VFSDeleteConfirmModal } from './VFSDeleteConfirmModal'
 import { VFSMoveCopyModal } from './VFSMoveCopyModal'
 import { VFSSelectionBar } from './VFSSelectionBar'
+import { VFSSyncStateBadge } from './VFSSyncStateBadge'
+import { VFSTagModal } from './VFSTagModal'
 import type { VFSItem } from '@/types/api'
 
 const iconMap = {
@@ -51,6 +53,7 @@ export function VFSFileGrid() {
   const [renameTarget, setRenameTarget] = useState<VFSItem | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<VFSItem | null>(null)
   const [moveCopyTarget, setMoveCopyTarget] = useState<{ item: VFSItem; mode: 'move' | 'copy' } | null>(null)
+  const [tagTarget, setTagTarget] = useState<VFSItem | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['vfs', currentVirtualPath],
@@ -107,6 +110,10 @@ export function VFSFileGrid() {
   }
 
   const handleDownload = async (item: VFSItem) => {
+    if (item.can_download === false) {
+      addToast('该条目当前不可下载，请刷新目录后重试', 'error')
+      return
+    }
     try {
       const res = await fileV2Api.accessUrl({
         path: item.path,
@@ -115,7 +122,7 @@ export function VFSFileGrid() {
       })
       window.open(res.url, '_blank')
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '获取下载链接失败'
+      const msg = getApiErrorMessage(err, '获取下载链接失败')
       addToast(msg, 'error')
     }
   }
@@ -134,7 +141,7 @@ export function VFSFileGrid() {
       addToast('分享链接已创建并复制', 'success')
       queryClient.invalidateQueries({ queryKey: ['shares'] })
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '创建分享失败'
+      const msg = getApiErrorMessage(err, '创建分享失败')
       addToast(msg, 'error')
     }
   }
@@ -156,6 +163,11 @@ export function VFSFileGrid() {
 
   const handleCopy = (item: VFSItem) => {
     setMoveCopyTarget({ item, mode: 'copy' })
+    setContextMenu(null)
+  }
+
+  const handleTags = (item: VFSItem) => {
+    setTagTarget(item)
     setContextMenu(null)
   }
 
@@ -227,6 +239,12 @@ export function VFSFileGrid() {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {item.entry_kind === 'directory' ? '文件夹' : formatBytes(item.size)}
                 </p>
+                <div className="mt-1 flex justify-center">
+                  <VFSSyncStateBadge
+                    syncState={item.sync_state}
+                    canDownload={item.entry_kind === 'file' ? item.can_download : true}
+                  />
+                </div>
               </div>
             </div>
           )
@@ -247,11 +265,12 @@ export function VFSFileGrid() {
             mime_type: contextMenu.item.mime_type,
             mode: 'v2',
           }) : undefined}
-          onDownload={contextMenu.item.entry_kind === 'file' ? () => handleDownload(contextMenu.item) : undefined}
+          onDownload={contextMenu.item.entry_kind === 'file' && contextMenu.item.can_download !== false ? () => handleDownload(contextMenu.item) : undefined}
           onRename={canWriteCurrentDirectory ? () => handleRename(contextMenu.item) : undefined}
           onCopy={canWriteCurrentDirectory ? () => handleCopy(contextMenu.item) : undefined}
           onMove={canWriteCurrentDirectory ? () => handleMove(contextMenu.item) : undefined}
           onShare={() => handleShare(contextMenu.item)}
+          onTags={() => handleTags(contextMenu.item)}
           onDelete={contextMenu.item.can_delete ? () => handleDelete(contextMenu.item) : undefined}
         />
       )}
@@ -284,6 +303,13 @@ export function VFSFileGrid() {
           sourcePath={moveCopyTarget.item.path}
           fileName={moveCopyTarget.item.name}
           onSuccess={refreshFiles}
+        />
+      )}
+
+      {tagTarget && (
+        <VFSTagModal
+          item={tagTarget}
+          onClose={() => setTagTarget(null)}
         />
       )}
       </div>

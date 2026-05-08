@@ -143,6 +143,16 @@ assertIncludes(
   'VFS 上传完成后必须刷新 VFS 查询缓存。',
 )
 assertIncludes(
+  'src/components/files/UploadModal.tsx',
+  'result_vfs_node_id',
+  '上传完成响应需要读取 result_vfs_node_id，保证完成语义以 metadata VFS result node 为准。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'METADATA_VFS_COMMIT_FAILED',
+  '上传/任务 metadata commit failed 必须映射为安全中文提示。',
+)
+assertIncludes(
   'src/api/sharePublic.ts',
   'getOpenUrl',
   '公开分享中的文件下载/预览必须使用直接打开 URL，不能用 XHR 追 302。',
@@ -151,6 +161,31 @@ assertIncludes(
   'src/pages/shares/ShareAccessPage.tsx',
   'verifiedPassword',
   '公开分享密码验证后需要保留密码用于目录继续浏览和文件下载。',
+)
+assertIncludes(
+  'src/pages/shares/ShareAccessPage.tsx',
+  'FILE_NOT_FOUND',
+  '公开分享目标删除或不可用时需要把 FILE_NOT_FOUND 展示为用户可理解的提示。',
+)
+assertIncludes(
+  'src/types/api.ts',
+  'target_vfs_node_id',
+  'ShareView 类型必须接收 target_vfs_node_id，分享管理页才能展示长期身份。',
+)
+assertIncludes(
+  'src/utils/vfs.ts',
+  'vfs_node_id: item.id',
+  'VFS 右键分享应优先使用 VFSItem.id 创建 node-first 分享。',
+)
+assertIncludes(
+  'src/pages/shares/SharesPage.tsx',
+  'vfs_node_id',
+  '分享管理页手动创建分享应优先解析并提交 vfs_node_id。',
+)
+assertIncludes(
+  'src/pages/shares/SharesPage.tsx',
+  'target_vfs_node_id',
+  '分享管理页列表需要展示 target_vfs_node_id，避免把路径快照误认为长期身份。',
 )
 
 // Regression checks for reported frontend issues.
@@ -318,6 +353,26 @@ assertIncludes(
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
+  'proxy_url: pikPakProxyUrl.trim()',
+  'PikPak 创建表单必须能提交 config.proxy_url，便于单源代理配置。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'proxy_url: effectivePikPakProxyUrl.trim()',
+  'PikPak 编辑表单必须能保留/更新 config.proxy_url。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'isValidPikPakProxyUrl',
+  'PikPak proxy_url 前端需要预校验 http/https 且不能带账号密码/query/fragment。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'CLOUD_REGION_BLOCKED',
+  'PikPak 区域阻塞错误需要映射为网络/代理中文提示。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
   'getApiErrorMessage(err, fallback)',
   '创建存储源失败需要复用统一错误映射，不能把 source connection failed: cloud captcha required 等后端英文原文直接展示给用户。',
 )
@@ -440,6 +495,16 @@ assertIncludes(
 )
 assertIncludes(
   'src/pages/tasks/TasksPage.tsx',
+  'result_vfs_node_id',
+  '离线下载 completed 任务需要展示 result_vfs_node_id，用户才能确认 metadata VFS 完成结果。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
+  '打开保存目录',
+  '离线下载任务需要提供打开目标 VFS 目录入口。',
+)
+assertIncludes(
+  'src/pages/tasks/TasksPage.tsx',
   'save_virtual_path',
   '离线下载任务保存路径展示必须优先使用后端返回的虚拟路径 save_virtual_path。',
 )
@@ -477,6 +542,91 @@ assertIncludes(
   'src/components/files/VFSFileGrid.tsx',
   "refetchOnMount: 'always'",
   'VFS 文件网格进入页面时必须强制刷新，避免使用 staleTime 内的旧缓存。',
+)
+assertIncludes(
+  'src/api/fileV2.ts',
+  '/fs/refresh',
+  'VFS 手动刷新必须通过 fileV2Api 调用 POST /api/v2/fs/refresh。',
+)
+assertIncludes(
+  'src/components/files/VFSFileToolbar.tsx',
+  'fileV2Api.refresh',
+  '文件页刷新按钮必须调用后端 metadata refresh，而不是只 invalidate 本地缓存。',
+)
+assertIncludes(
+  'src/types/api.ts',
+  'sync_state',
+  'VFSItem 类型必须接收 sync_state 供列表展示弱提示。',
+)
+assertIncludes(
+  'src/components/files/VFSSyncStateBadge.tsx',
+  'missing',
+  'VFS sync_state missing/conflict/error/stale 等状态需要有可见弱提示。',
+)
+assertIncludes(
+  'src/components/files/VFSFileList.tsx',
+  'can_download !== false',
+  'VFS 文件列表需要按 can_download=false 隐藏下载入口。',
+)
+assertIncludes(
+  'src/api/tag.ts',
+  "apiClient.get<{ items: VFSTag[] }>('/tags')",
+  'VFS 标签需要 /api/v1/tags CRUD client。',
+)
+assertIncludes(
+  'src/api/fileV2.ts',
+  '/fs/tags/attach',
+  'VFS 标签绑定必须通过 /api/v2/fs/tags/attach。',
+)
+assertIncludes(
+  'src/components/files/FileContextMenu.tsx',
+  'onTags',
+  'VFS 右键菜单需要提供标签管理入口。',
+)
+assertIncludes(
+  'src/components/files/VFSTagModal.tsx',
+  'fileV2Api.getTags',
+  'VFS 标签弹窗需要查询当前节点标签。',
+)
+assertIncludes(
+  'src/components/files/VFSTagModal.tsx',
+  'fileV2Api.attachTag',
+  'VFS 标签弹窗需要支持绑定标签。',
+)
+assertIncludes(
+  'src/components/files/VFSTagModal.tsx',
+  'fileV2Api.detachTag',
+  'VFS 标签弹窗需要支持解绑标签。',
+)
+assertIncludes(
+  'src/components/files/VFSTagModal.tsx',
+  'getVfsParentPath(item.path)',
+  '绑定标签前需要先 list 父目录，确保 metadata node 已存在。',
+)
+assertIncludes(
+  'src/pages/acl/AclPage.tsx',
+  'vfs_node_id',
+  'ACL 管理页创建/编辑规则需要优先提交 vfs_node_id。',
+)
+assertIncludes(
+  'src/pages/acl/AclPage.tsx',
+  'virtual_path',
+  'ACL 管理页列表需要展示 virtual_path 快照。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'VFS_NODE_NOT_FOUND',
+  'ACL 选择的 VFS node 不存在时需要显示重新选择路径提示。',
+)
+assertIncludes(
+  'src/pages/rss/RssPage.tsx',
+  'result_vfs_node_id',
+  'RSS completed 条目需要基于 result_vfs_node_id 展示结果入口。',
+)
+assertIncludes(
+  'src/pages/rss/RssPage.tsx',
+  '打开结果目录',
+  'RSS completed 且有 result node 时需要提供打开结果目录入口。',
 )
 
 // Regression checks for login-related form accessibility.

@@ -1,5 +1,13 @@
 import { v2Client } from './client'
-import type { VFSItem, VFSListResult, VFSAccessUrlRequest, AccessUrlResponse, PaginationParams } from '@/types/api'
+import type {
+  AccessUrlResponse,
+  PaginationParams,
+  VFSAccessUrlRequest,
+  VFSItem,
+  VFSListResult,
+  VFSRefreshResponse,
+  VFSTag,
+} from '@/types/api'
 
 export interface ListVFSParams extends PaginationParams {
   path?: string;
@@ -35,6 +43,16 @@ export interface VFSDeleteRequest {
   delete_mode?: 'trash' | 'permanent';
 }
 
+export interface VFSRefreshRequest {
+  path: string;
+  mode?: 'sync';
+}
+
+export interface VFSTagRequest {
+  path: string;
+  tag_id: number;
+}
+
 export const fileV2Api = {
   list: (params?: ListVFSParams) =>
     v2Client.get<VFSListResult>('/fs/list', { params }),
@@ -57,8 +75,20 @@ export const fileV2Api = {
   delete: (data: VFSDeleteRequest) =>
     v2Client.delete<{ deleted: boolean; delete_mode: string; path: string; deleted_at: string }>('/fs', { data }),
 
+  refresh: (data: VFSRefreshRequest) =>
+    v2Client.post<VFSRefreshResponse>('/fs/refresh', data),
+
   accessUrl: (data: VFSAccessUrlRequest) =>
     v2Client.post<AccessUrlResponse>('/fs/access-url', data),
+
+  getTags: (path: string) =>
+    v2Client.get<{ path: string; tags: VFSTag[] }>('/fs/tags', { params: { path } }),
+
+  attachTag: (data: VFSTagRequest) =>
+    v2Client.post<{ path: string; tags: VFSTag[] }>('/fs/tags/attach', data),
+
+  detachTag: (data: VFSTagRequest) =>
+    v2Client.post<{ path: string; tags: VFSTag[] }>('/fs/tags/detach', data),
 
   download: (path: string) => {
     const encoded = encodeURIComponent(path)

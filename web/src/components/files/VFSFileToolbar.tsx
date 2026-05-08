@@ -15,16 +15,17 @@ import { useAuthStore } from '@/stores/authStore'
 import { fileV2Api } from '@/api/fileV2'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { VFSMkdirModal } from './VFSMkdirModal'
-import { cn } from '@/utils'
+import { cn, getApiErrorMessage } from '@/utils'
 
 export function VFSFileToolbar() {
   const { currentVirtualPath, currentPermissions, viewMode, setViewMode, navigateVirtualUp, setVfsItems } = useFileStore()
-  const { setUploadModalOpen } = useUIStore()
+  const { setUploadModalOpen, addToast } = useUIStore()
   const { user } = useAuthStore()
   const queryClient = useQueryClient()
   const [searchQuery, setSearchQuery] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [mkdirOpen, setMkdirOpen] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const canGoUp = currentVirtualPath !== '/'
@@ -75,6 +76,22 @@ export function VFSFileToolbar() {
     queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })
   }
 
+  const handleRefresh = async () => {
+    setIsRefreshing(true)
+    try {
+      const result = await fileV2Api.refresh({ path: currentVirtualPath, mode: 'sync' })
+      await queryClient.refetchQueries({ queryKey: ['vfs', currentVirtualPath] })
+      addToast(
+        `目录已刷新：新增/索引 ${result.indexed}，更新 ${result.updated}，缺失 ${result.missing}，冲突 ${result.conflicts}`,
+        result.conflicts > 0 || result.errors > 0 ? 'warning' : 'success'
+      )
+    } catch (err: unknown) {
+      addToast(getApiErrorMessage(err, '刷新目录失败'), 'error')
+    } finally {
+      setIsRefreshing(false)
+    }
+  }
+
   return (
     <div className="flex items-center gap-2 px-4 h-14 border-b border-border shrink-0">
       <span className="text-sm font-medium text-foreground px-2">虚拟目录</span>
@@ -118,11 +135,12 @@ export function VFSFileToolbar() {
       )}
 
       <button
-        onClick={() => queryClient.invalidateQueries({ queryKey: ['vfs', currentVirtualPath] })}
-        className="p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-        title="刷新"
+        onClick={() => void handleRefresh()}
+        disabled={isRefreshing}
+        className="p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        title="同步刷新当前目录"
       >
-        <RefreshCw className="w-4 h-4" />
+        <RefreshCw className={cn('w-4 h-4', isRefreshing && 'animate-spin')} />
       </button>
 
       <div className="flex-1" />

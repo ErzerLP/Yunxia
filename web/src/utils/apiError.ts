@@ -20,6 +20,15 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   SOURCE_NAME_CONFLICT: '存储源名称已存在，请换一个名称。',
   SOURCE_DRIVER_UNSUPPORTED: '当前后端不支持该存储源驱动。',
   SOURCE_CONNECTION_FAILED: '存储源连接测试失败，请检查网络和配置。',
+  METADATA_VFS_COMMIT_FAILED: '文件已写入底层存储，但目录索引提交失败，请稍后重试或联系管理员。',
+  METADATA_VFS_MUTATION_SYNC_FAILED: '文件已写入底层存储，但同步目录索引失败，请刷新目录或稍后重试。',
+  VFS_SYNC_CONFLICT: '目录刷新发现文件状态冲突，请稍后重试或联系管理员处理。',
+  VFS_NODE_NOT_FOUND: '所选文件或目录节点已删除或不可解析，请重新选择路径。',
+  FILE_NOT_FOUND: '目标不存在或当前不可用。',
+  ACL_DENIED: '当前账号无权访问该路径。',
+  TAG_INVALID: '标签名称或颜色不合法，请检查后重试。',
+  TAG_NOT_FOUND: '标签不存在或已被删除。',
+  TAG_BINDING_NOT_FOUND: '该文件未绑定此标签，可能已被其他操作移除。',
 }
 
 export function getApiErrorCode(error: unknown) {
@@ -64,6 +73,12 @@ export function getApiErrorMessage(error: unknown, fallback = '操作失败') {
   }
   if (normalizedMessage.includes('cloud region blocked') || normalizedMessage.includes('region blocked')) {
     return ERROR_CODE_MESSAGES.CLOUD_REGION_BLOCKED
+  }
+  if (normalizedMessage.includes('metadata vfs commit failed')) {
+    return ERROR_CODE_MESSAGES.METADATA_VFS_COMMIT_FAILED
+  }
+  if (normalizedMessage.includes('metadata vfs mutation sync failed')) {
+    return ERROR_CODE_MESSAGES.METADATA_VFS_MUTATION_SYNC_FAILED
   }
 
   const code = getApiErrorCode(error)

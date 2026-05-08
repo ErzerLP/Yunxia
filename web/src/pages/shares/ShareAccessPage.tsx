@@ -102,6 +102,18 @@ function PasswordForm({
   )
 }
 
+function getPublicShareErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : '分享加载失败'
+  const normalized = message.toUpperCase()
+  if (normalized.includes('SHARE_NOT_FOUND')) {
+    return '分享链接不存在或已被删除。'
+  }
+  if (normalized.includes('FILE_NOT_FOUND')) {
+    return '分享目标不存在或当前不可用，可能已被删除、移动到不可下载状态或同步异常。'
+  }
+  return message
+}
+
 export function ShareAccessPage() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
@@ -175,7 +187,7 @@ export function ShareAccessPage() {
           setPasswordError('密码错误或已过期')
         }
       } else {
-        setError(msg)
+        setError(getPublicShareErrorMessage(err))
       }
     } finally {
       setIsLoading(false)
@@ -206,7 +218,7 @@ export function ShareAccessPage() {
     try {
       await loadShare(item.path, verifiedPassword)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '加载失败'
+      const msg = getPublicShareErrorMessage(err)
       setError(msg)
     } finally {
       setIsLoading(false)
@@ -220,7 +232,7 @@ export function ShareAccessPage() {
     try {
       await loadShare(parent, verifiedPassword)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '加载失败'
+      const msg = getPublicShareErrorMessage(err)
       setError(msg)
     } finally {
       setIsLoading(false)

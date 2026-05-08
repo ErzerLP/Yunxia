@@ -56,7 +56,8 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
-| 阻塞 | 2026-05-05 | 存储源/PikPak | 存储源管理页、文件页/VFS、上传弹窗、离线下载页、RSS/追番目标目录、WebDAV 配置 | P1 | `/api/v1/sources*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks`、`/dav/{slug}` | PikPak 源创建/编辑/secret 掩码，PikPak VFS 写操作/删除回收站文案，上传 server/direct 分支，`pikpak_native` 任务展示与取消，非 local WebDAV 暴露；captcha 验证链接入口和 `/files?path=` 深链已回归通过，PikPak 正向链路仍阻塞 | [详情](#test-handoff-2026-05-05-pikpak-storage-adaptation) |
+| 待联调 | 2026-05-08 | VFS/分享/ACL/任务/RSS node-first | 文件页、分享管理页、公开分享页、ACL 管理页、上传弹窗、离线下载页、RSS/追番页、存储源管理页 | P2 | `/api/v2/fs/refresh`、`/api/v1/tags*`、`/api/v2/fs/tags*`、`/api/v1/shares*`、`/api/v1/acl/rules*`、`/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v1/sources*` | VFS 手动刷新/sync_state/标签，分享和 ACL 优先 node id，上传/任务/RSS result node 完成语义，PikPak proxy_url 与稳定错误提示 | [详情](#test-handoff-2026-05-08-vfs-node-first-adaptations) |
+| 阻塞 | 2026-05-05 | 存储源/PikPak | 存储源管理页、文件页/VFS、上传弹窗、离线下载页、RSS/追番目标目录、WebDAV 配置 | P1 | `/api/v1/sources*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks`、`/dav/{slug}` | PikPak 源创建/编辑/secret 掩码/proxy_url，PikPak VFS 写操作/删除回收站文案，上传 server/direct 分支，`pikpak_native` 任务展示与取消，非 local WebDAV 暴露；captcha 验证链接入口和 `/files?path=` 深链已回归通过，PikPak 正向链路仍阻塞 | [详情](#test-handoff-2026-05-05-pikpak-storage-adaptation) |
 | 已通过 | 2026-05-03 | 前端体验完善 | 文件页/VFS、离线下载页、RSS/追番页 | P1 | `/api/v2/fs`、`/api/v1/tasks`、`/api/v1/rss/items` | VFS 批量选择/批量删除、单项文件操作失败提示、任务失败/取消原因、RSS 条目匹配说明展示；2026-05-04 `main@23dbcd7` 回归通过 | [详情](#test-handoff-2026-05-03-frontend-ux-polish) |
 | 已通过 | 2026-05-03 | RSS/通知增强 | RSS/追番页、任务页、设置页/通知区块 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-*`、`/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/export`、`/api/v1/notifications/*` | 后端修复后已完成完整回归；订阅复制显式禁用、RSS 关联任务取消回写 `needs_attention` 和待处理通知均已通过 | [详情](#test-handoff-2026-05-03-rss-notification-handoff) |
 | 已通过 | 2026-04-30 | RSS 无人值守 | RSS/追番页、任务页 | P1 | `/api/v1/rss/sources/refresh-all`、`/api/v1/rss/subscriptions/:id/preview`、`/api/v1/rss/items/:id/reprocess`、`/api/v1/rss/items/:id/retry`、`/api/v1/rss/items?status=needs_attention` | 测试完成反馈确认：刷新全部、规则预览、重试/重处理、`needs_attention`、自动重试/完成回写展示均已覆盖 | [详情](#test-handoff-2026-04-30-rss-unattended) |
@@ -66,6 +67,77 @@
 ---
 
 ## 测试记录 / 交接记录
+
+<a id="test-handoff-2026-05-08-vfs-node-first-adaptations"></a>
+
+### [P2][待联调][VFS/分享/ACL/任务/RSS] 2026-05-08 当前前端待适配项联调测试
+
+#### 测试目标
+
+确认前端已消费 2026-05-07/08 后端 handoff：文件页仍是唯一 VFS 入口，并支持 metadata VFS 手动刷新、节点标签、sync_state 弱提示；分享/ACL 改为 node-first；上传、离线任务、RSS 条目以 `result_vfs_node_id` 作为完成语义；PikPak 存储源补齐 `proxy_url` 配置与区域阻塞提示。
+
+#### 前置条件
+
+- 使用包含 `backend/FRONTEND_HANDOFF.md` 中 2026-05-07/08 P2 接口的后端。
+- 准备管理员账号：具备文件/VFS 读写删/share、`share.manage_all`、`acl.read/manage`、`source.create/update/test`、`rss.manage`、`task.read_all`。
+- 准备至少一个可写 local 挂载目录，最好再准备一个能返回 `sync_state=missing/conflict/error/stale` 或 `can_download=false` 的测试 fixture。
+- 若验证 PikPak 正向链路，需要可用账号/refresh_token/captcha_token；没有时至少验证 `proxy_url` 表单、`CLOUD_REGION_BLOCKED` / `CLOUD_CAPTCHA_REQUIRED` 友好提示。
+
+#### 测试 checklist
+
+- [ ] 文件页点击刷新会发起 `POST /api/v2/fs/refresh { path, mode: "sync" }`，随后重新请求 `/api/v2/fs/list`；不只使用 refresh 统计替换列表。
+- [ ] VFS 列表/网格对 `sync_state=missing/conflict/error/stale` 有可见弱提示；`can_download=false` 的文件不显示下载入口或点击后有可读错误。
+- [ ] VFS 右键“管理标签”：能加载 `/api/v1/tags` 与 `/api/v2/fs/tags?path=...`，新建标签后自动绑定，已有标签可绑定/解绑；绑定前会先 list 父目录。
+- [ ] 分享管理页创建分享时优先填写 VFS 路径，提交体包含 `vfs_node_id`；分享卡片展示 `target_vfs_node_id` 与路径快照。
+- [ ] 公开分享文件下载/预览仍是浏览器直接跳转，不用 XHR 解析 302；目录列表只显示 `PublicShareEntry` 字段；目标删除/不可用显示中文 `FILE_NOT_FOUND` 说明。
+- [ ] ACL 管理页创建/编辑规则时优先填写 VFS 路径，提交体包含 `vfs_node_id`；列表展示 node id 与 `virtual_path` 快照；node 找不到时显示重新选择路径提示。
+- [ ] 上传完成后显示完成状态和 `result_vfs_node_id`（后端返回时），并刷新目标 VFS 目录；`METADATA_VFS_COMMIT_FAILED` 显示安全中文摘要。
+- [ ] 离线下载 completed 卡片显示 100%、字节数、`result_vfs_node_id` 和“打开保存目录”；failed 且 metadata commit failed 时显示安全摘要。
+- [ ] RSS completed 且有 `result_vfs_node_id` 时显示“打开结果目录”；completed 但缺少 result node 显示弱告警；`needs_attention` 展示 `error_message/retry_reason`。
+- [ ] 存储源 PikPak 创建/编辑支持 `proxy_url`，非法代理 URL 在前端阻止并提示；卡片展示代理地址或默认代理说明；`CLOUD_REGION_BLOCKED` 为中文网络/代理提示。
+
+#### 测试步骤与期望结果
+
+| 步骤 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 打开 `/files` 进入一个可写挂载目录，点击刷新 | Network 看到 `POST /api/v2/fs/refresh` 后再 `GET /api/v2/fs/list`；toast 展示 indexed/updated/missing/conflicts 统计 |
+| 2 | 对一个文件右键管理标签，新建并绑定，再解绑 | 标签列表和节点标签同步刷新；失败时弹窗内和 toast 有中文错误 |
+| 3 | 在分享管理页用 VFS 路径创建分享，并复制/打开公开链接 | 创建请求优先带 `vfs_node_id`；分享卡片显示 node id；公开页可浏览/下载或展示友好错误 |
+| 4 | 在 ACL 管理页为同一 VFS 路径创建只读规则 | 创建请求优先带 `vfs_node_id`；列表权限标签只显示实际授予权限；虚拟路径为快照展示 |
+| 5 | 上传一个小文件到当前 VFS 目录 | 上传完成后文件列表刷新，上传弹窗显示完成；若后端返回 result node 则展示节点 id |
+| 6 | 新建普通 HTTP 离线下载到 VFS 目录并等待完成 | 任务卡片明确 completed/100%/bytes/result node，点击“打开保存目录”进入 `/files?path=...` 且文件可见 |
+| 7 | 触发 RSS 条目下载完成或使用后端 fixture 生成 completed item | RSS 条目只在有 result node 时展示强入口；needs_attention 能看到具体原因 |
+| 8 | 创建/编辑 PikPak 源并填写 proxy_url | 合法代理随 `config.proxy_url` 提交；非法代理前端阻止；区域阻塞/captcha 错误显示中文行动建议 |
+
+#### 期望结果
+
+- 用户不需要理解底层存储源即可从“文件”页完成刷新、标签、分享、ACL、上传、下载结果定位。
+- node-first 字段作为长期身份展示和提交，路径只作为快照或兼容 fallback。
+- metadata commit / mutation / refresh / tag / PikPak 区域错误均为安全中文提示，不泄漏 SQL、物理路径或 provider payload。
+
+#### 回归范围
+
+- 文件页/VFS：深链、刷新、列表/网格、右键菜单、标签弹窗、下载/预览/share/access-url、写操作失败提示。
+- 分享：管理页创建/复制/删除、公开分享无登录访问、文件下载 302、目录分享浏览。
+- ACL：列表筛选、创建/编辑/删除、权限标签、普通用户只读目录写入口隐藏。
+- 上传/任务/RSS：上传 direct/server 分支、离线任务轮询和完成后文件可见、RSS 条目状态与任务跳转。
+- 存储源/PikPak：public config、secret patch、captcha/region 错误、WebDAV 地址展示不回退。
+
+#### 阻塞 / 备注
+
+- 本轮前端已完成静态验证，但尚未在真实后端运行环境完成上述端到端 smoke，因此状态为 `待联调`。
+- 若测试环境没有可用 PikPak captcha/token，可先记录 PikPak 正向链路阻塞，但仍应覆盖 `proxy_url` 表单提交/校验与错误提示。
+- VFS 标签绑定依赖目标 path 已有 metadata node；前端绑定前会先请求父目录 list，若后端仍返回 `FILE_NOT_FOUND`，请记录对应 path 和请求响应。
+
+#### 交接记录
+
+- 2026-05-08：前端实现完成并通过静态检查，等待测试负责人连接真实后端做联调。
+  - `cd web && npm run lint` # pass
+  - `cd web && npm run build` # pass
+  - `cd web && node scripts/check-vfs-integration.mjs` # pass
+
+---
+
 
 <a id="test-handoff-2026-05-05-pikpak-storage-adaptation"></a>
 
@@ -83,7 +155,8 @@
 
 #### 测试 checklist
 
-- [ ] 存储源管理页创建 `driver_type=pikpak` 源：`root_path=/`，可填写 `root_folder_id/platform/disable_media_link/cache_ttl_seconds/download_strategy` 和 secret 字段。
+- [ ] 存储源管理页创建 `driver_type=pikpak` 源：`root_path=/`，可填写 `root_folder_id/platform/disable_media_link/cache_ttl_seconds/download_strategy/proxy_url` 和 secret 字段。
+- [ ] PikPak 创建/编辑可填写 `proxy_url`；非法代理 URL（含账号密码/query/fragment 或非 http/https）有前端错误提示；卡片展示代理地址或“使用后端默认代理”。
 - [ ] 编辑 PikPak 源时未改 secret 不会覆盖；勾选清空会提交 `null`；有 `source.secret.read` 才展示明文 secret，否则展示掩码/未配置。
 - [ ] PikPak/S3/local 均可配置 WebDAV 暴露和只读开关；卡片展示 slug、可复制 `/dav/{slug}` 地址。
 - [ ] 文件页进入 PikPak 挂载目录后，mkdir/rename/move/copy/delete 按后端权限执行；删除确认文案为移入回收站，不提示永久删除。
