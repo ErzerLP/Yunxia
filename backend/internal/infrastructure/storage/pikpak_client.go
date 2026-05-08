@@ -674,7 +674,7 @@ func (c *PikPakHTTPClient) doJSONWithProxy(ctx context.Context, method string, r
 			}
 			continue
 		}
-		if err := mapPikPakHTTPError(resp.StatusCode, data); err != nil {
+		if err := mapPikPakHTTPErrorForRequest(resp.StatusCode, data, rawURL); err != nil {
 			if retryAfter > 0 {
 				if providerErr, ok := err.(*domainstorage.ProviderError); ok && providerErr.RetryAfterSeconds == 0 {
 					providerErr.RetryAfterSeconds = int(retryAfter.Seconds())
@@ -854,15 +854,20 @@ type pikPakErrorPayload struct {
 }
 
 func mapPikPakHTTPError(status int, body []byte) error {
+	return mapPikPakHTTPErrorForRequest(status, body, "")
+}
+
+func mapPikPakHTTPErrorForRequest(status int, body []byte, rawURL string) error {
 	var payload pikPakErrorPayload
 	_ = json.Unmarshal(body, &payload)
 	code := pikPakProviderErrorSignal(payload)
 	verificationURL := pikPakPayloadVerificationURL(payload)
+	authFlow := isPikPakAuthFlowURL(rawURL)
 	if isPikPakRegionBlockedPayload(payload) {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
 	}
 	if code != "" && code != "0" {
-		return mapPikPakProviderCode(code, payload)
+		return mapPikPakProviderCode(code, payload, authFlow)
 	}
 	if status >= http.StatusBadRequest && verificationURL != "" {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", VerificationURL: verificationURL}
@@ -871,6 +876,13 @@ func mapPikPakHTTPError(status int, body []byte) error {
 	case status >= 200 && status < 300:
 		return nil
 	case status == http.StatusNotFound:
+		if authFlow {
+			return &domainstorage.ProviderError{
+				Kind:         domainstorage.ErrCloudCaptchaRequired,
+				Message:      "cloud captcha required",
+				ProviderCode: "resource_not_found",
+			}
+		}
 		return os.ErrNotExist
 	case status == http.StatusConflict:
 		return fs.ErrExist
@@ -885,14 +897,20 @@ func mapPikPakHTTPError(status int, body []byte) error {
 	}
 }
 
-func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
+func mapPikPakProviderCode(code string, payload pikPakErrorPayload, authFlow bool) error {
 	message := sanitizedPikPakErrorMessage(payload)
 	verificationURL := pikPakPayloadVerificationURL(payload)
 	if isPikPakRegionBlockedPayload(payload) {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
 	}
+	if authFlow && (verificationURL != "" || strings.Contains(strings.ToLower(message), "verify") || strings.Contains(strings.ToLower(message), "captcha")) {
+		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code, VerificationURL: verificationURL}
+	}
 	switch code {
 	case "404", "not_found", "file_not_found", "resource_not_found":
+		if authFlow {
+			return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", ProviderCode: code, VerificationURL: verificationURL}
+		}
 		return os.ErrNotExist
 	case "409", "name_conflict", "file_already_exists", "already_exists", "duplicate":
 		return fs.ErrExist
@@ -912,6 +930,18 @@ func mapPikPakProviderCode(code string, payload pikPakErrorPayload) error {
 		}
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudProviderUnavailable, Message: "cloud provider request failed", ProviderCode: code}
 	}
+}
+
+func isPikPakAuthFlowURL(rawURL string) bool {
+	if strings.TrimSpace(rawURL) == "" {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	pathValue := strings.ToLower(parsed.Path)
+	return strings.Contains(pathValue, "/v1/auth/") || strings.Contains(pathValue, "/v1/shield/")
 }
 
 func pikPakProviderErrorSignal(payload pikPakErrorPayload) string {

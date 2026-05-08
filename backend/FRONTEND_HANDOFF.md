@@ -1059,6 +1059,7 @@ type PikPakSecretPatch = {
 #### 前端适配 checklist
 
 - [x] 分享管理页继续展示 `ShareView.target_vfs_node_id`；把它视为长期身份，`target_virtual_path` / `resolved_inner_path` 只作为创建时快照或兼容展示。
+- [x] 创建分享优先提交 `POST /api/v1/shares { "vfs_node_id": <VFSItem.id> }`；node-first 请求不需要同时传 `source_id/path`，旧 `source_id + path` 仅作为兼容 fallback。
 - [x] 公开分享文件下载直接使用浏览器跳转 `/s/:token?...` 或后端返回的 `Location`；不要用 JSON API client 解析 302。
 - [x] 如果前端自行展示分享下载地址，接受 `Location` 变为 `/api/v2/fs/download?path=<当前 VFS path>&access_token=...`，不再假设 `/api/v1/files/download?source_id=...&path=...`。
 - [x] 目录分享列表只消费 `PublicShareEntry` 字段；不要期待或展示 `source_id`、provider file id、locator、底层路径等 provider 细节。
@@ -1075,6 +1076,7 @@ type PikPakSecretPatch = {
 #### 本次后端行为变化
 
 - 分享公开打开优先按 `target_vfs_node_id` 解析 metadata VFS node，rename/move 后继续跟随同一 node 的当前路径。
+- 创建分享支持 node-first：`vfs_node_id` / `target_vfs_node_id` 优先解析 metadata VFS node，并保存 source/path 兼容快照；未传 node id 时才按旧 `source_id + path` 创建。
 - 文件分享先返回 `/api/v2/fs/download` 短期 access-token 302；后续由统一下载入口处理 local Range 流式或 S3/PikPak provider 302/presign。
 - 目录分享优先读取 metadata VFS children 并做相对路径输出，隐藏 missing/error/pending/conflict 等不可用子节点；保留 legacy source/path fallback 仅用于旧分享或未注入 metadata reader 的兼容场景。
 - 删除/missing 等不可用 node 收敛为稳定 `404 FILE_NOT_FOUND`，避免回退到旧 path 快照误读旧文件。

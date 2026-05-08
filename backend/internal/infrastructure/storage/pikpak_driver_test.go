@@ -920,6 +920,14 @@ func TestPikPakHTTPErrorMappingFileNotFoundAndSanitizedProviderMessage(t *testin
 	if err := mapPikPakHTTPError(http.StatusNotFound, []byte(`{"error_code":0}`)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected 404 to map to file not found, got %v", err)
 	}
+	authFlowErr := mapPikPakHTTPErrorForRequest(http.StatusNotFound, []byte(`{"error_code":"resource_not_found","error_description":"resource not found"}`), DefaultPikPakUserBaseURL+"/v1/shield/captcha/init")
+	if !errors.Is(authFlowErr, domainstorage.ErrCloudCaptchaRequired) {
+		t.Fatalf("expected auth-flow provider 404 to map to captcha required, got %v", authFlowErr)
+	}
+	var authFlowProviderErr *domainstorage.ProviderError
+	if !errors.As(authFlowErr, &authFlowProviderErr) || authFlowProviderErr.ProviderCode != "resource_not_found" {
+		t.Fatalf("expected auth-flow provider code preserved, got %+v / %v", authFlowProviderErr, authFlowErr)
+	}
 	if err := mapPikPakHTTPError(http.StatusConflict, []byte(`{"error_code":0}`)); !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("expected 409 to map to name conflict, got %v", err)
 	}

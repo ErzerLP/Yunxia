@@ -1016,6 +1016,18 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 		return err
 	}
 	if len(files) == 0 {
+		imported, nodeID, existsErr := s.completedLocalTaskTargetExists(ctx, task)
+		if existsErr != nil {
+			return existsErr
+		}
+		if imported {
+			_ = os.RemoveAll(task.StagingDir)
+			task.StagingDir = ""
+			if nodeID > 0 {
+				task.ResultVFSNodeID = nodeID
+			}
+			return nil
+		}
 		return ErrFileNotFound
 	}
 

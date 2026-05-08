@@ -139,7 +139,7 @@ function getRSSItemIssueMessage(item: RSSItemView) {
   if (isMetadataCommitFailureMessage(item.error_message) || isMetadataCommitFailureMessage(item.retry_reason)) {
     return '文件已写入底层存储，但目录索引提交失败。请刷新目标目录或联系管理员处理。'
   }
-  return item.error_message || retryReasonLabel(item.retry_reason)
+  return getErrorMessage(item.error_message || retryReasonLabel(item.retry_reason), 'RSS 条目处理失败')
 }
 
 function sourceHealthLabel(status?: string) {
@@ -261,7 +261,7 @@ function getBatchErrorLines(
     .slice(0, 5)
     .map((item) => {
       const id = 'item_id' in item ? item.item_id : item.subscription_id
-      return `${idLabel} #${id}：${item.error_message || item.error_code || '失败'}`
+      return `${idLabel} #${id}：${getErrorMessage(item.error_message || item.error_code || '失败', '失败')}`
     })
 }
 
@@ -437,7 +437,7 @@ function RefreshAllResultPanel({
             )}
             {item.error && (
               <p className="mt-1 text-destructive break-all">
-                {item.error}
+                {getErrorMessage(item.error, '刷新失败')}
               </p>
             )}
           </div>
@@ -1153,7 +1153,9 @@ function RSSImportResultPanel({ result }: { result: RSSImportResponse }) {
               </span>
               <span className="ml-2 text-muted-foreground">{item.name || item.source_url || item.id || '-'}</span>
               {!item.success && (
-                <span className="ml-2 text-destructive">{item.error_message || item.error_code || '失败'}</span>
+                <span className="ml-2 text-destructive">
+                  {getErrorMessage(item.error_message || item.error_code || '失败', '失败')}
+                </span>
               )}
             </div>
           ))}
@@ -2026,7 +2028,9 @@ export function RssPage() {
                           </p>
                         )}
                         {source.last_error && (
-                          <p className="text-xs text-destructive mt-1 break-all">{source.last_error}</p>
+                          <p className="text-xs text-destructive mt-1 break-all">
+                            {getErrorMessage(source.last_error, 'RSS 源刷新失败')}
+                          </p>
                         )}
                       </div>
                       {canManage && (

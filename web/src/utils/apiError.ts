@@ -1,7 +1,9 @@
 import { ApiRequestError } from '@/api/client'
 
 const ERROR_CODE_MESSAGES: Record<string, string> = {
+  VALIDATION_ERROR: '提交内容未通过校验，请检查表单字段后重试；如果问题仍存在，请刷新页面后重新选择目标。',
   SOURCE_OPERATION_UNSUPPORTED: '当前存储源暂不支持该操作；PikPak 暂不支持暂停/恢复和永久删除，请改用取消任务或移入回收站。',
+  SOURCE_NOT_FOUND: '存储源或远端资源不存在，请检查目标是否已删除、挂载配置是否正确。',
   FILE_ALREADY_EXISTS: '目标位置已存在同名文件，请改名后重试。',
   NAME_CONFLICT: '目标位置已存在同名条目，或名称与挂载点冲突。',
   CLOUD_AUTH_FAILED: '网盘账号认证失败，请检查账号、密码或 refresh token。',
@@ -31,6 +33,40 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   TAG_BINDING_NOT_FOUND: '该文件未绑定此标签，可能已被其他操作移除。',
 }
 
+const DATABASE_ERROR_MESSAGE = '服务端数据库处理失败，请稍后重试或联系管理员；详细错误已记录在后端日志中。'
+const PIKPAK_RESOURCE_NOT_FOUND_MESSAGE =
+  'PikPak 连接失败：远端资源不存在或 Root Folder ID 不正确，请检查 PikPak 目录 ID、账号权限和代理配置；如果当前应触发人工验证但后端未返回 verification_url，请检查后端响应。'
+const NO_BACKING_STORAGE_MESSAGE = ERROR_CODE_MESSAGES.NO_BACKING_STORAGE
+
+function isDatabaseErrorMessage(message: string) {
+  return (
+    message.includes('sqlstate') ||
+    message.includes(' sql ') ||
+    message.includes('sql:') ||
+    message.includes('pq:') ||
+    message.includes('gorm') ||
+    message.includes('database') ||
+    message.includes('value too long for type') ||
+    message.includes('duplicate key value') ||
+    message.includes('unique constraint') ||
+    message.includes('constraint failed') ||
+    (message.includes('violates') && message.includes('constraint')) ||
+    (message.includes('error:') && message.includes('sqlstate'))
+  )
+}
+
+function isValidationErrorMessage(message: string) {
+  return (
+    message.includes('validation') && (
+      message.includes('failed on the') ||
+      message.includes('required') ||
+      message.includes('binding') ||
+      message.includes("key: '") ||
+      message.includes('key:')
+    )
+  )
+}
+
 export function getApiErrorCode(error: unknown) {
   if (error instanceof ApiRequestError) return error.code
   return ''
@@ -47,12 +83,16 @@ export function getApiErrorDetailString(error: unknown, key: string) {
 }
 
 export function getRawErrorMessage(error: unknown) {
+  if (typeof error === 'string') return error
   return error instanceof Error ? error.message : ''
 }
 
 export function getApiErrorMessage(error: unknown, fallback = '操作失败') {
   const rawMessage = getRawErrorMessage(error)
   const normalizedMessage = rawMessage.toLowerCase()
+  if (normalizedMessage.includes('no backing storage')) {
+    return NO_BACKING_STORAGE_MESSAGE
+  }
   if (normalizedMessage.includes('cloud captcha required') || normalizedMessage.includes('captcha required')) {
     return ERROR_CODE_MESSAGES.CLOUD_CAPTCHA_REQUIRED
   }
@@ -80,10 +120,23 @@ export function getApiErrorMessage(error: unknown, fallback = '操作失败') {
   if (normalizedMessage.includes('metadata vfs mutation sync failed')) {
     return ERROR_CODE_MESSAGES.METADATA_VFS_MUTATION_SYNC_FAILED
   }
+  if (
+    normalizedMessage.includes('source connection failed') &&
+    normalizedMessage.includes('resource not found')
+  ) {
+    return PIKPAK_RESOURCE_NOT_FOUND_MESSAGE
+  }
 
   const code = getApiErrorCode(error)
   if (code && ERROR_CODE_MESSAGES[code]) {
     return ERROR_CODE_MESSAGES[code]
+  }
+
+  if (isDatabaseErrorMessage(normalizedMessage)) {
+    return DATABASE_ERROR_MESSAGE
+  }
+  if (isValidationErrorMessage(normalizedMessage)) {
+    return ERROR_CODE_MESSAGES.VALIDATION_ERROR
   }
 
   if (!rawMessage) return fallback

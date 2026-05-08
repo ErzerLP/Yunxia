@@ -566,6 +566,102 @@ func TestTaskCompletedImportIsIdempotentWhenStagingAlreadyCleaned(t *testing.T) 
 	}
 }
 
+func TestTaskCompletedImportUsesExistingLocalTargetWhenStagingEmpty(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	objectRepo := gorm.NewStorageObjectRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "空 staging 幂等导入目标",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	filename := "WeChatWin_4.1.9.exe"
+	targetDir := filepath.Join(basePath, "downloads")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(target) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, filename), []byte("installer"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+	emptyStagingDir := filepath.Join(t.TempDir(), "staging", "task-empty")
+	if err := os.MkdirAll(emptyStagingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(staging) error = %v", err)
+	}
+
+	now := time.Now()
+	total := int64(len("installer"))
+	task := &entity.DownloadTask{
+		UserID:                  42,
+		Type:                    "download",
+		DownloaderType:          DownloaderTypeAria2,
+		Status:                  "running",
+		SourceID:                source.ID,
+		SavePath:                "/downloads",
+		TargetVirtualParentPath: "/local/downloads",
+		SaveVirtualPath:         "/local/downloads",
+		ResolvedSourceID:        source.ID,
+		ResolvedInnerSavePath:   "/downloads",
+		StagingDir:              emptyStagingDir,
+		DisplayName:             filename,
+		SourceURL:               "https://example.com/" + filename,
+		ExternalID:              "gid-empty-staging",
+		Progress:                100,
+		DownloadedBytes:         total,
+		TotalBytes:              &total,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("taskRepo.Create() error = %v", err)
+	}
+
+	downloader := &completedWritingDownloader{filename: filename, content: []byte("installer")}
+	committer := NewMetadataVFSCommitService(nodeRepo, objectRepo, WithMetadataVFSCommitTransactor(gorm.NewTransactor(db)))
+	svc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		downloader,
+		WithTaskMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	got, err := svc.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" || got.ErrorMessage != nil || got.ResultVFSNodeID == 0 {
+		t.Fatalf("expected completed task with result_vfs_node_id, got %+v", got)
+	}
+	if _, err := os.Stat(emptyStagingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected empty staging dir to be cleaned, stat err=%v", err)
+	}
+	node, err := nodeRepo.FindByPath(context.Background(), "/local/downloads/"+filename)
+	if err != nil {
+		t.Fatalf("nodeRepo.FindByPath(result) error = %v", err)
+	}
+	if got.ResultVFSNodeID != node.ID {
+		t.Fatalf("expected result_vfs_node_id=%d, got %+v", node.ID, got)
+	}
+}
+
 func TestTaskTargetFilenameRenamesSingleStagedFile(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()

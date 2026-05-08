@@ -231,12 +231,15 @@ function AclRuleModal({
               </div>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground mb-1 block">主体 ID</label>
+              <label htmlFor="acl-rule-subject-id" className="text-sm text-muted-foreground mb-1 block">主体 ID</label>
               <input
+                id="acl-rule-subject-id"
+                name="subject_id"
                 type="number"
                 value={subjectId}
                 onChange={(e) => setSubjectId(e.target.value)}
                 placeholder="1"
+                autoComplete="off"
                 className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -265,11 +268,14 @@ function AclRuleModal({
               </div>
             </div>
             <div>
-              <label className="text-sm text-muted-foreground mb-1 block">优先级</label>
+              <label htmlFor="acl-rule-priority" className="text-sm text-muted-foreground mb-1 block">优先级</label>
               <input
+                id="acl-rule-priority"
+                name="priority"
                 type="number"
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
+                autoComplete="off"
                 className="w-full px-3 py-2 rounded-md border border-input bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
@@ -283,8 +289,10 @@ function AclRuleModal({
                 { key: 'delete', label: '删除', state: deleteP, set: setDeleteP },
                 { key: 'share', label: '分享', state: share, set: setShare },
               ].map(({ key, label, state, set }) => (
-                <label key={key} className="flex items-center gap-1.5 cursor-pointer">
+                <label key={key} htmlFor={`acl-rule-permission-${key}`} className="flex items-center gap-1.5 cursor-pointer">
                   <input
+                    id={`acl-rule-permission-${key}`}
+                    name={`permission_${key}`}
                     type="checkbox"
                     checked={state}
                     onChange={(e) => set(e.target.checked)}
@@ -295,8 +303,10 @@ function AclRuleModal({
               ))}
             </div>
           </div>
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label htmlFor="acl-rule-inherit" className="flex items-center gap-2 cursor-pointer">
             <input
+              id="acl-rule-inherit"
+              name="inherit_to_children"
               type="checkbox"
               checked={inherit}
               onChange={(e) => setInherit(e.target.checked)}
@@ -407,15 +417,22 @@ export function AclPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold text-foreground">ACL 管理</h1>
           {sources.length > 0 && (
-            <select
-              value={selectedSourceId ?? ''}
-              onChange={(e) => setCurrentSourceId(Number(e.target.value))}
-              className="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {sources.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <label htmlFor="acl-current-source" className="text-sm text-muted-foreground">
+                存储源
+              </label>
+              <select
+                id="acl-current-source"
+                name="source_id"
+                value={selectedSourceId ?? ''}
+                onChange={(e) => setCurrentSourceId(Number(e.target.value))}
+                className="px-3 py-1.5 rounded-md border border-border bg-card text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {sources.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
           )}
         </div>
         {canManage && (

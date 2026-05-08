@@ -122,6 +122,39 @@ func TestShareFileLifecycle(t *testing.T) {
 	assertFailureCode(t, missingRec.Body.Bytes(), "SHARE_NOT_FOUND")
 }
 
+func TestShareCreateAcceptsVFSNodeID(t *testing.T) {
+	engine := newStorageTestRouter(t)
+	adminToken, sourceID := bootstrapAdmin(t, engine)
+
+	uploadLocalObjectForTest(t, engine, adminToken, sourceID, "/docs", "node-first.txt", []byte("node first share"))
+
+	listRec := performRequest(t, engine, http.MethodGet, "/api/v2/fs/list?path=/local/docs", nil, adminToken)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("vfs list expected 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	listed := decodeEnvelope[vfsListData](t, listRec.Body.Bytes())
+	nodeID := requireVFSItemIDByName(t, listed.Items, "node-first.txt")
+
+	createRec := performRequest(t, engine, http.MethodPost, "/api/v1/shares", map[string]any{
+		"vfs_node_id": nodeID,
+		"expires_in":  300,
+	}, adminToken)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("node-first create share expected 201, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	created := decodeEnvelope[shareCreateData](t, createRec.Body.Bytes())
+	if int(created.Share["target_vfs_node_id"].(float64)) != nodeID ||
+		created.Share["target_virtual_path"] != "/local/docs/node-first.txt" ||
+		created.Share["resolved_inner_path"] != "/docs/node-first.txt" {
+		t.Fatalf("unexpected node-first share snapshots: %+v", created.Share)
+	}
+
+	publicRec := performRequest(t, engine, http.MethodGet, created.Share["link"].(string), nil, "")
+	if publicRec.Code != http.StatusFound {
+		t.Fatalf("public node-first share open expected 302, got %d body=%s", publicRec.Code, publicRec.Body.String())
+	}
+}
+
 func TestShareGetAndUpdateLifecycle(t *testing.T) {
 	engine := newStorageTestRouter(t)
 	adminToken, sourceID := bootstrapAdmin(t, engine)

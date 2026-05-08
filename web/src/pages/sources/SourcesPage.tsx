@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { sourceApi } from '@/api/source'
 import { systemApi } from '@/api/system'
 import { HardDrive, Plus, CheckCircle2, XCircle, AlertCircle, Trash2, RefreshCw, X, Pencil, Link2, Copy, Lock, Unlock, Eye, EyeOff, ExternalLink } from 'lucide-react'
-import { cn, formatBytes, getApiErrorDetailString, getApiErrorMessage } from '@/utils'
+import { cn, formatBytes, getApiErrorCode, getApiErrorDetailString, getApiErrorMessage, getRawErrorMessage } from '@/utils'
 import { useFileStore } from '@/stores/fileStore'
 import { useUIStore } from '@/stores/uiStore'
 import { useHasCapability } from '@/hooks/useCapability'
@@ -45,11 +45,35 @@ function StatusBadge({ status }: { status: StorageSource['status'] }) {
   )
 }
 
-function getCreateSourceErrorMessage(err: unknown) {
+function getCreateSourceErrorMessage(
+  err: unknown,
+  options: { driverType?: SourceDriverType; verificationUrl?: string } = {}
+) {
   const fallback = '创建存储源失败'
-  const rawMessage = err instanceof Error ? err.message : ''
+  const rawMessage = getRawErrorMessage(err)
 
   const message = rawMessage.toLowerCase()
+  const code = getApiErrorCode(err)
+  if (options.driverType === 'pikpak') {
+    const isCaptchaRequired =
+      code === 'CLOUD_CAPTCHA_REQUIRED' ||
+      message.includes('cloud captcha required') ||
+      message.includes('captcha required')
+    if (isCaptchaRequired && !options.verificationUrl) {
+      return 'PikPak 需要完成人工安全验证，但后端未返回 verification_url；请检查后端响应、代理配置或 captcha 透传逻辑后重试。'
+    }
+
+    const isResourceNotFound =
+      code === 'SOURCE_NOT_FOUND' ||
+      (
+        message.includes('source connection failed') &&
+        message.includes('resource not found')
+      )
+    if (isResourceNotFound) {
+      return 'PikPak 连接失败：远端资源不存在或 Root Folder ID 不正确，请检查 PikPak 目录 ID、账号权限和代理配置；如果当前应触发人工验证但后端未返回 verification_url，请检查后端响应。'
+    }
+  }
+
   if (
     message.includes('web_dav_slug') &&
     (message.includes('unique constraint') || message.includes('constraint failed'))
@@ -745,8 +769,12 @@ function CreateSourceModal({ onClose, onSuccess }: { onClose: () => void; onSucc
       onSuccess()
       onClose()
     } catch (err: unknown) {
-      const message = getCreateSourceErrorMessage(err)
-      setVerificationUrl(getApiErrorDetailString(err, 'verification_url'))
+      const nextVerificationUrl = getApiErrorDetailString(err, 'verification_url')
+      const message = getCreateSourceErrorMessage(err, {
+        driverType,
+        verificationUrl: nextVerificationUrl,
+      })
+      setVerificationUrl(nextVerificationUrl)
       setCreateError(message)
       addToast(message, 'error')
     } finally {

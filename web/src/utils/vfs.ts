@@ -29,24 +29,29 @@ export function buildVfsShareRequest(
   item: VFSItem,
   sources: StorageSource[],
 ): CreateShareRequest | null {
+  const source = item.source_id == null
+    ? sources
+        .slice()
+        .sort((a, b) => normalizeVfsPath(b.mount_path).length - normalizeVfsPath(a.mount_path).length)
+        .find((candidate) => resolveInnerPathFromMount(item.path, candidate.mount_path) !== null)
+    : sources.find((candidate) => candidate.id === item.source_id)
+
+  const innerPath = source ? resolveInnerPathFromMount(item.path, source.mount_path) : null
+  const legacyTarget = source && innerPath
+    ? {
+        source_id: source.id,
+        path: innerPath,
+      }
+    : null
+
   if (item.id) {
     return {
       vfs_node_id: item.id,
+      ...(legacyTarget ?? {}),
     }
   }
 
-  if (item.source_id == null) return null
-
-  const source = sources.find((candidate) => candidate.id === item.source_id)
-  if (!source) return null
-
-  const innerPath = resolveInnerPathFromMount(item.path, source.mount_path)
-  if (!innerPath) return null
-
-  return {
-    source_id: item.source_id,
-    path: innerPath,
-  }
+  return legacyTarget
 }
 
 export function getVfsParentPath(path: string): string {

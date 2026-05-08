@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { shareApi } from '@/api/share'
 import { fileV2Api } from '@/api/fileV2'
+import { sourceApi } from '@/api/source'
 import { useUIStore } from '@/stores/uiStore'
 import {
   Link,
@@ -24,7 +25,7 @@ import {
 import { formatDate, getApiErrorMessage, getFileIconClass } from '@/utils'
 import { cn } from '@/utils'
 import { useHasCapability } from '@/hooks/useCapability'
-import { getVfsParentPath, normalizeVfsPath, toFrontendShareLink } from '@/utils/vfs'
+import { buildVfsShareRequest, getVfsParentPath, normalizeVfsPath, toFrontendShareLink } from '@/utils/vfs'
 import type { CreateShareRequest, Share } from '@/types/api'
 
 const iconMap = {
@@ -40,6 +41,9 @@ const iconMap = {
   pdf: FileText,
   archive: File,
 }
+
+const fetchShareCreateSources = () =>
+  sourceApi.list({ page: 1, page_size: 100, view: 'navigation' })
 
 function ShareIcon({ share }: { share: Share }) {
   const type = getFileIconClass('', share.is_dir)
@@ -179,6 +183,7 @@ function CreateShareModal({
   onSuccess: () => void
 }) {
   const { addToast } = useUIStore()
+  const queryClient = useQueryClient()
   const [vfsPath, setVfsPath] = useState('/')
   const [legacySourceId, setLegacySourceId] = useState('')
   const [legacyPath, setLegacyPath] = useState('/')
@@ -187,14 +192,39 @@ function CreateShareModal({
   const [error, setError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
+  const { data: sourcesData } = useQuery({
+    queryKey: ['share-create-sources'],
+    queryFn: fetchShareCreateSources,
+    retry: false,
+    staleTime: 30_000,
+  })
+  const sources = sourcesData?.items ?? []
+
+  const getSourcesForShareFallback = async () => {
+    try {
+      const result = await queryClient.fetchQuery({
+        queryKey: ['share-create-sources'],
+        queryFn: fetchShareCreateSources,
+        staleTime: 30_000,
+      })
+      return result.items ?? []
+    } catch {
+      return sources
+    }
+  }
+
   const resolveShareTarget = async (targetPath: string): Promise<CreateShareRequest | null> => {
     const normalizedPath = normalizeVfsPath(targetPath)
     if (normalizedPath !== '/') {
       const parentPath = getVfsParentPath(normalizedPath)
       const list = await fileV2Api.list({ path: parentPath, page: 1, page_size: 200 })
       const target = list.items.find((item) => normalizeVfsPath(item.path) === normalizedPath)
-      if (target?.id) {
-        return { vfs_node_id: target.id }
+      if (target) {
+        const fallbackSources = await getSourcesForShareFallback()
+        const nodeFirstPayload = buildVfsShareRequest(target, fallbackSources)
+        if (nodeFirstPayload) {
+          return nodeFirstPayload
+        }
       }
     }
 

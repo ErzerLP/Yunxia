@@ -37,6 +37,20 @@ func TestClassifyDownloadLinkRoutesBTToQBittorrentTypes(t *testing.T) {
 	}
 }
 
+func TestBuildRSSDedupKeyHashesLongGUID(t *testing.T) {
+	longGUID := "https://mikanani.example/RSS/Bangumi?bangumiId=3968&episode=05&token=" + strings.Repeat("abcdef", 40)
+	key := buildRSSDedupKey(7, RSSFetchedItem{GUID: longGUID, Link: "https://example.com/detail", Title: "Example 05"})
+	if !strings.HasPrefix(key, "guid:") {
+		t.Fatalf("expected guid dedup key, got %q", key)
+	}
+	if len(key) > 128 {
+		t.Fatalf("dedup key should fit varchar(128), len=%d key=%q", len(key), key)
+	}
+	if key == "guid:"+longGUID {
+		t.Fatalf("dedup key must not persist raw long guid")
+	}
+}
+
 func TestResolveRSSDownloadLinkPrefersBTLinks(t *testing.T) {
 	gotURL, gotType := resolveRSSDownloadLink(RSSFetchedItem{
 		Title: "Example",

@@ -119,38 +119,29 @@ func (s *ShareService) Get(ctx context.Context, id uint) (*appdto.ShareView, err
 
 // Create 创建新的分享链接。
 func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest) (*appdto.ShareView, error) {
-	source, err := s.sourceRepo.FindByID(ctx, req.SourceID)
-	if err != nil {
-		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
-			ResourceType: "share",
-			Action:       "create",
-			Result:       appaudit.ResultFailed,
-			ErrorCode:    "SOURCE_NOT_FOUND",
-			SourceID:     &req.SourceID,
-		})
-		return nil, err
-	}
-	if err := s.authorizeSharePath(ctx, source.ID, req.Path); err != nil {
-		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
-			ResourceType: "share",
-			Action:       "create",
-			Result:       appaudit.ResultDenied,
-			ErrorCode:    "PERMISSION_DENIED",
-			SourceID:     &source.ID,
-			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
-		})
-		return nil, err
-	}
-
-	virtualPath, name, isDir, err := s.inspectTarget(ctx, source, req.Path)
+	target, err := s.resolveCreateShareTarget(ctx, req)
 	if err != nil {
 		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
 			ResourceType: "share",
 			Action:       "create",
 			Result:       appaudit.ResultFailed,
 			ErrorCode:    shareErrorCode(err),
+			SourceID:     optionalUintPtr(req.SourceID),
+		})
+		return nil, err
+	}
+	source := target.Source
+	if source == nil {
+		return nil, ErrFileNotFound
+	}
+	if err := s.authorizeShareTarget(ctx, target); err != nil {
+		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
+			ResourceType: "share",
+			Action:       "create",
+			Result:       appaudit.ResultDenied,
+			ErrorCode:    "PERMISSION_DENIED",
 			SourceID:     &source.ID,
-			VirtualPath:  mergeMountAndInnerPath(source.MountPath, req.Path),
+			VirtualPath:  target.VirtualPath,
 		})
 		return nil, err
 	}
@@ -163,7 +154,7 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 			Result:       appaudit.ResultDenied,
 			ErrorCode:    "PERMISSION_DENIED",
 			SourceID:     &source.ID,
-			VirtualPath:  mergeMountAndInnerPath(source.MountPath, virtualPath),
+			VirtualPath:  target.VirtualPath,
 		})
 		return nil, err
 	}
@@ -178,7 +169,7 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 				Result:       appaudit.ResultFailed,
 				ErrorCode:    "INTERNAL_ERROR",
 				SourceID:     &source.ID,
-				VirtualPath:  mergeMountAndInnerPath(source.MountPath, virtualPath),
+				VirtualPath:  target.VirtualPath,
 			})
 			return nil, hashErr
 		}
@@ -191,33 +182,21 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 		expireValue := now.Add(time.Duration(req.ExpiresIn) * time.Second)
 		expiresAt = &expireValue
 	}
-	targetVirtualPath := mergeMountAndInnerPath(source.MountPath, virtualPath)
-	if targetVirtualPath == "" {
-		targetVirtualPath = virtualPath
-	}
-	targetVFSNodeID, err := s.resolveShareTargetVFSNodeID(ctx, targetVirtualPath)
-	if err != nil {
-		recordServiceAudit(ctx, s.logger, s.auditRecorder, appaudit.Event{
-			ResourceType: "share",
-			Action:       "create",
-			Result:       appaudit.ResultFailed,
-			ErrorCode:    shareErrorCode(err),
-			SourceID:     &source.ID,
-			VirtualPath:  targetVirtualPath,
-		})
-		return nil, err
+	targetVFSNodeID := uint(0)
+	if target.Node != nil {
+		targetVFSNodeID = target.Node.ID
 	}
 
 	share := &entity.ShareLink{
 		UserID:            userID,
 		SourceID:          source.ID,
-		Path:              virtualPath,
+		Path:              target.InnerPath,
 		TargetVFSNodeID:   targetVFSNodeID,
-		TargetVirtualPath: targetVirtualPath,
+		TargetVirtualPath: target.VirtualPath,
 		ResolvedSourceID:  source.ID,
-		ResolvedInnerPath: virtualPath,
-		Name:              name,
-		IsDir:             isDir,
+		ResolvedInnerPath: target.InnerPath,
+		Name:              target.Name,
+		IsDir:             target.IsDir,
 		Token:             uuid.NewString(),
 		PasswordHash:      passwordHash,
 		ExpiresAt:         expiresAt,
@@ -232,7 +211,7 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 			ErrorCode:    "INTERNAL_ERROR",
 			ResourceID:   encodeUintID(share.ID),
 			SourceID:     &source.ID,
-			VirtualPath:  targetVirtualPath,
+			VirtualPath:  target.VirtualPath,
 		})
 		return nil, err
 	}
@@ -244,10 +223,62 @@ func (s *ShareService) Create(ctx context.Context, req appdto.CreateShareRequest
 		Result:       appaudit.ResultSuccess,
 		ResourceID:   encodeUintID(share.ID),
 		SourceID:     &source.ID,
-		VirtualPath:  targetVirtualPath,
+		VirtualPath:  target.VirtualPath,
 		After:        shareAuditView(share),
 	})
 	return &view, nil
+}
+
+func (s *ShareService) resolveCreateShareTarget(ctx context.Context, req appdto.CreateShareRequest) (*shareTargetResolution, error) {
+	if nodeID := createShareRequestNodeID(req); nodeID > 0 {
+		if s.metadataReader == nil {
+			return nil, ErrFileNotFound
+		}
+		node, err := s.metadataReader.ResolveNodeByID(ctx, nodeID)
+		if err != nil || metadataVFSNodeUnavailable(node) {
+			return nil, ErrFileNotFound
+		}
+		return s.shareTargetFromNode(ctx, node)
+	}
+
+	if req.SourceID == 0 || strings.TrimSpace(req.Path) == "" {
+		return nil, ErrPathInvalid
+	}
+	source, err := s.sourceRepo.FindByID(ctx, req.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	innerPath, name, isDir, err := s.inspectTarget(ctx, source, req.Path)
+	if err != nil {
+		return nil, err
+	}
+	targetVirtualPath := mergeMountAndInnerPath(source.MountPath, innerPath)
+	if targetVirtualPath == "" {
+		targetVirtualPath = innerPath
+	}
+	targetVFSNodeID, err := s.resolveShareTargetVFSNodeID(ctx, targetVirtualPath)
+	if err != nil {
+		return nil, err
+	}
+	target := &shareTargetResolution{
+		Source:      source,
+		VirtualPath: targetVirtualPath,
+		InnerPath:   innerPath,
+		Name:        name,
+		IsDir:       isDir,
+		NodeFirst:   targetVFSNodeID > 0,
+	}
+	if targetVFSNodeID > 0 {
+		target.Node = &entity.VFSNode{ID: targetVFSNodeID}
+	}
+	return target, nil
+}
+
+func createShareRequestNodeID(req appdto.CreateShareRequest) uint {
+	if req.VFSNodeID > 0 {
+		return req.VFSNodeID
+	}
+	return req.TargetVFSNodeID
 }
 
 // Update 更新当前用户拥有的分享链接。
@@ -810,6 +841,16 @@ func (s *ShareService) authorizeSharePath(ctx context.Context, sourceID uint, pa
 		return nil
 	}
 	return s.aclAuthorizer.AuthorizePath(ctx, sourceID, pathValue, ACLActionShare)
+}
+
+func (s *ShareService) authorizeShareTarget(ctx context.Context, target *shareTargetResolution) error {
+	if s.aclAuthorizer == nil || target == nil || target.Source == nil {
+		return nil
+	}
+	if target.Node != nil {
+		return s.aclAuthorizer.AuthorizeVirtualPath(ctx, target.Source.ID, target.VirtualPath, target.Node.ID, ACLActionShare)
+	}
+	return s.aclAuthorizer.AuthorizePath(ctx, target.Source.ID, target.InnerPath, ACLActionShare)
 }
 
 func (s *ShareService) authorizeShareOwnership(ctx context.Context, share *entity.ShareLink, manage bool) error {

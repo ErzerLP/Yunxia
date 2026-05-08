@@ -79,6 +79,11 @@ export function VFSFileToolbar() {
   const handleRefresh = async () => {
     setIsRefreshing(true)
     try {
+      if (currentVirtualPath === '/') {
+        await queryClient.refetchQueries({ queryKey: ['vfs', currentVirtualPath] })
+        addToast('根目录仅展示挂载点，请进入具体挂载目录后同步刷新', 'info')
+        return
+      }
       const result = await fileV2Api.refresh({ path: currentVirtualPath, mode: 'sync' })
       await queryClient.refetchQueries({ queryKey: ['vfs', currentVirtualPath] })
       addToast(

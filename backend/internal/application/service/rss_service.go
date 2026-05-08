@@ -2916,10 +2916,23 @@ func resolveRSSDownloadLink(item RSSFetchedItem) (string, string) {
 func buildRSSDedupKey(sourceID uint, item RSSFetchedItem) string {
 	guid := strings.TrimSpace(item.GUID)
 	if guid != "" {
-		return "guid:" + guid
+		rawKey := "guid:" + guid
+		if len(rawKey) <= 128 {
+			return rawKey
+		}
+		return boundedRSSDedupKey("guid", fmt.Sprintf("%d\x00%s", sourceID, guid))
 	}
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s\x00%s", sourceID, strings.TrimSpace(item.Link), strings.TrimSpace(item.Title))))
 	return "hash:" + hex.EncodeToString(hash[:])
+}
+
+func boundedRSSDedupKey(kind string, raw string) string {
+	hash := sha256.Sum256([]byte(raw))
+	kind = strings.Trim(strings.ToLower(strings.TrimSpace(kind)), ":")
+	if kind == "" {
+		kind = "hash"
+	}
+	return kind + ":" + hex.EncodeToString(hash[:])
 }
 
 func rssSubscriptionMatchesItem(subscription *entity.RSSSubscription, item *entity.RSSItem) bool {

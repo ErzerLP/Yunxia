@@ -178,9 +178,24 @@ assertIncludes(
   'VFS 右键分享应优先使用 VFSItem.id 创建 node-first 分享。',
 )
 assertIncludes(
+  'src/utils/vfs.ts',
+  '...(legacyTarget ?? {})',
+  'VFS node-first 分享 payload 在可解析时必须同时携带 source_id/path 兼容旧后端校验。',
+)
+assertIncludes(
   'src/pages/shares/SharesPage.tsx',
   'vfs_node_id',
   '分享管理页手动创建分享应优先解析并提交 vfs_node_id。',
+)
+assertIncludes(
+  'src/pages/shares/SharesPage.tsx',
+  'buildVfsShareRequest(target, fallbackSources)',
+  '分享管理页手动创建分享解析到 VFS item 后必须复用 node-first + source/path fallback payload。',
+)
+assertIncludes(
+  'src/pages/shares/SharesPage.tsx',
+  'getSourcesForShareFallback',
+  '分享管理页手动创建分享必须在 sources 查询未就绪时按需补取，避免丢失 source_id/path fallback。',
 )
 assertIncludes(
   'src/pages/shares/SharesPage.tsx',
@@ -372,6 +387,26 @@ assertIncludes(
   'PikPak 区域阻塞错误需要映射为网络/代理中文提示。',
 )
 assertIncludes(
+  'src/utils/apiError.ts',
+  'no backing storage',
+  '统一错误映射必须识别后端 no backing storage 英文消息并转为中文提示。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'VALIDATION_ERROR',
+  'Gin/Go validation error 必须映射为中文表单校验提示。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'sqlstate',
+  'SQLSTATE/数据库错误必须统一脱敏，不能直接展示给 RSS/任务等页面用户。',
+)
+assertIncludes(
+  'src/utils/apiError.ts',
+  'resource not found',
+  'PikPak source connection failed: resource not found 必须转成中文排查提示。',
+)
+assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
   'getApiErrorMessage(err, fallback)',
   '创建存储源失败需要复用统一错误映射，不能把 source connection failed: cloud captcha required 等后端英文原文直接展示给用户。',
@@ -385,6 +420,11 @@ assertIncludes(
   'src/utils/apiError.ts',
   'PikPak 需要完成安全验证',
   'PikPak captcha 错误必须展示中文友好提示。',
+)
+assertIncludes(
+  'src/pages/sources/SourcesPage.tsx',
+  'Root Folder ID 不正确',
+  'PikPak resource not found 创建失败必须提示检查远端资源、Root Folder ID 和代理配置。',
 )
 assertIncludes(
   'src/pages/sources/SourcesPage.tsx',
@@ -554,6 +594,16 @@ assertIncludes(
   '文件页刷新按钮必须调用后端 metadata refresh，而不是只 invalidate 本地缓存。',
 )
 assertIncludes(
+  'src/components/files/VFSFileToolbar.tsx',
+  "currentVirtualPath === '/'",
+  '文件页根目录刷新必须短路处理，不能对 / 发起 metadata refresh。',
+)
+assertIncludes(
+  'src/components/files/VFSFileToolbar.tsx',
+  '根目录仅展示挂载点，请进入具体挂载目录后同步刷新',
+  '文件页根目录刷新必须给出中文提示，引导用户进入具体挂载目录。',
+)
+assertIncludes(
   'src/types/api.ts',
   'sync_state',
   'VFSItem 类型必须接收 sync_state 供列表展示弱提示。',
@@ -627,6 +677,21 @@ assertIncludes(
   'src/pages/rss/RssPage.tsx',
   '打开结果目录',
   'RSS completed 且有 result node 时需要提供打开结果目录入口。',
+)
+assertIncludes(
+  'src/pages/rss/RssPage.tsx',
+  "getErrorMessage(item.error, '刷新失败')",
+  'RSS 刷新全部结果中的单源错误必须经过脱敏映射后展示。',
+)
+assertIncludes(
+  'src/pages/acl/AclPage.tsx',
+  'id="acl-current-source"',
+  'ACL 页面存储源下拉框必须提供 id 并与 label 关联。',
+)
+assertIncludes(
+  'src/pages/acl/AclPage.tsx',
+  'name="source_id"',
+  'ACL 页面存储源下拉框必须提供 name，避免 DevTools 表单可访问性提示。',
 )
 
 // Regression checks for login-related form accessibility.

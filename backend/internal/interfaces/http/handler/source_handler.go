@@ -160,8 +160,6 @@ func (h *SourceHandler) Delete(c *gin.Context) {
 
 func (h *SourceHandler) writeError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, domainrepo.ErrNotFound):
-		httpresp.Error(c, http.StatusNotFound, "SOURCE_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceDriverUnsupported):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_DRIVER_UNSUPPORTED", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceOperationUnsupported):
@@ -186,6 +184,8 @@ func (h *SourceHandler) writeError(c *gin.Context, err error) {
 		httpresp.Error(c, http.StatusBadGateway, "CLOUD_PROVIDER_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceConnectionFailed):
 		httpresp.Error(c, http.StatusUnprocessableEntity, "SOURCE_CONNECTION_FAILED", err.Error(), nil)
+	case errors.Is(err, domainrepo.ErrNotFound):
+		httpresp.Error(c, http.StatusNotFound, "SOURCE_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceNameConflict):
 		httpresp.Error(c, http.StatusConflict, "SOURCE_NAME_CONFLICT", err.Error(), nil)
 	case errors.Is(err, appsvc.ErrSourceMountPathConflict):

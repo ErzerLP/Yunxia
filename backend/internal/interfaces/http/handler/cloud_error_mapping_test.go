@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	appsvc "yunxia/internal/application/service"
+	domainrepo "yunxia/internal/domain/repository"
 	domainstorage "yunxia/internal/domain/storage"
 )
 
@@ -207,6 +208,28 @@ func TestCloudCaptchaRequiredIncludesVerificationURL(t *testing.T) {
 	}
 	if body.Error.Details["verification_url"] != "https://verify.example/captcha" || body.Error.Details["requires_manual_verification"] != true || body.Error.Details["provider_code"] != "captcha_required" {
 		t.Fatalf("captcha details not exposed correctly: %+v", body.Error.Details)
+	}
+}
+
+func TestSourceConnectionErrorDoesNotBecomeSourceNotFound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	(&SourceHandler{}).writeError(ctx, fmt.Errorf("%w: %w", appsvc.ErrSourceConnectionFailed, domainrepo.ErrNotFound))
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnprocessableEntity)
+	}
+	var body struct {
+		Success bool   `json:"success"`
+		Code    string `json:"code"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Success || body.Code != "SOURCE_CONNECTION_FAILED" {
+		t.Fatalf("unexpected body = %+v raw=%s", body, recorder.Body.String())
 	}
 }
 

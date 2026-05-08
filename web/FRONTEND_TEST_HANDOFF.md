@@ -56,7 +56,7 @@
 
 | 状态 | 日期 | 模块 | 影响页面 | 优先级 | 关键接口 | 测试重点 | 详情 |
 |---|---|---|---|---|---|---|---|
-| 待联调 | 2026-05-08 | VFS/分享/ACL/任务/RSS node-first | 文件页、分享管理页、公开分享页、ACL 管理页、上传弹窗、离线下载页、RSS/追番页、存储源管理页 | P2 | `/api/v2/fs/refresh`、`/api/v1/tags*`、`/api/v2/fs/tags*`、`/api/v1/shares*`、`/api/v1/acl/rules*`、`/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v1/sources*` | VFS 手动刷新/sync_state/标签，分享和 ACL 优先 node id，上传/任务/RSS result node 完成语义，PikPak proxy_url 与稳定错误提示 | [详情](#test-handoff-2026-05-08-vfs-node-first-adaptations) |
+| 阻塞 | 2026-05-08 | VFS/分享/ACL/任务/RSS node-first | 文件页、分享管理页、公开分享页、ACL 管理页、上传弹窗、离线下载页、RSS/追番页、存储源管理页 | P2 | `/api/v2/fs/refresh`、`/api/v1/tags*`、`/api/v2/fs/tags*`、`/api/v1/shares*`、`/api/v1/acl/rules*`、`/api/v1/upload*`、`/api/v1/tasks*`、`/api/v1/rss/items*`、`/api/v1/sources*` | VFS 手动刷新/sync_state/标签，分享和 ACL 优先 node id，上传/任务/RSS result node 完成语义，PikPak proxy_url 与稳定错误提示 | [详情](#test-handoff-2026-05-08-vfs-node-first-adaptations) |
 | 阻塞 | 2026-05-05 | 存储源/PikPak | 存储源管理页、文件页/VFS、上传弹窗、离线下载页、RSS/追番目标目录、WebDAV 配置 | P1 | `/api/v1/sources*`、`/api/v2/fs*`、`/api/v1/upload*`、`/api/v1/tasks`、`/dav/{slug}` | PikPak 源创建/编辑/secret 掩码/proxy_url，PikPak VFS 写操作/删除回收站文案，上传 server/direct 分支，`pikpak_native` 任务展示与取消，非 local WebDAV 暴露；captcha 验证链接入口和 `/files?path=` 深链已回归通过，PikPak 正向链路仍阻塞 | [详情](#test-handoff-2026-05-05-pikpak-storage-adaptation) |
 | 已通过 | 2026-05-03 | 前端体验完善 | 文件页/VFS、离线下载页、RSS/追番页 | P1 | `/api/v2/fs`、`/api/v1/tasks`、`/api/v1/rss/items` | VFS 批量选择/批量删除、单项文件操作失败提示、任务失败/取消原因、RSS 条目匹配说明展示；2026-05-04 `main@23dbcd7` 回归通过 | [详情](#test-handoff-2026-05-03-frontend-ux-polish) |
 | 已通过 | 2026-05-03 | RSS/通知增强 | RSS/追番页、任务页、设置页/通知区块 | P1 | `/api/v1/rss/subscriptions/preview`、`/api/v1/rss/items/batch-*`、`/api/v1/rss/subscriptions/:id/clone`、`/api/v1/rss/export`、`/api/v1/notifications/*` | 后端修复后已完成完整回归；订阅复制显式禁用、RSS 关联任务取消回写 `needs_attention` 和待处理通知均已通过 | [详情](#test-handoff-2026-05-03-rss-notification-handoff) |
@@ -70,7 +70,7 @@
 
 <a id="test-handoff-2026-05-08-vfs-node-first-adaptations"></a>
 
-### [P2][待联调][VFS/分享/ACL/任务/RSS] 2026-05-08 当前前端待适配项联调测试
+### [P2][阻塞][VFS/分享/ACL/任务/RSS] 2026-05-08 当前前端待适配项联调测试
 
 #### 测试目标
 
@@ -135,6 +135,14 @@
   - `cd web && npm run lint` # pass
   - `cd web && npm run build` # pass
   - `cd web && node scripts/check-vfs-integration.mjs` # pass
+- 2026-05-08：测试负责人清理测试机后从 `main@ba593ce` 部署完整前后端回归。环境：后端 `http://127.0.0.1:18183`，前端 `http://10.0.0.95:15183`，Docker Compose 启动 Postgres/Aria2/qBittorrent，qBittorrent health 返回 `ok`；浏览器 MCP 登录联动。已覆盖并通过：`/hostdisk` 挂载后原有文件可见；`/rwlocal` 手动刷新会先 `POST /api/v2/fs/refresh` 再重新 `GET /api/v2/fs/list`；VFS mkdir、上传 `server_chunk`、`upload/finish.result_vfs_node_id`、标签创建/绑定/解绑；ACL `vfs_node_id` 规则创建、列表展示 node id/virtual_path 且只读权限未误显示为全 true；普通用户读授权目录且写操作被拒绝；小文件 HTTP 离线下载 completed 并返回 `result_vfs_node_id`；存储源 PikPak `proxy_url` 字段存在，非法代理 URL 前端拦截且未发请求；WebDAV 地址 HTTPS 展示；前端 `npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs` 通过；后端 VFS/Share/ACL/RSS/PikPak/Upload/Task/qBittorrent 定向 `go test` 通过。阻塞/问题：
+  - 文件页根目录 `/files` 的“同步刷新当前目录”会请求 `POST /api/v2/fs/refresh {"path":"/","mode":"sync"}`，后端返回 `409 NO_BACKING_STORAGE`；页面没有可见中文处理。
+  - 分享管理页 VFS 路径创建分享会提交 `{"vfs_node_id":15}`，`POST /api/v1/shares` 返回 `400 VALIDATION_ERROR`，提示仍要求 `source_id/path`；弹窗直接展示 Go validation 原文，无法创建 node-first 分享。兼容 `source_id + path` 创建仍可返回 `target_vfs_node_id`，公开文件分享仍 302 到 `/api/v2/fs/download`。
+  - WeChat 安装包 `https://dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.1.9.exe` 离线任务下载到 `234909384/234909384` bytes 且物理文件/VFS 文件均可见，但任务状态为 `failed`、`error_message="file not found"`，无 `result_vfs_node_id`，任务页显示 metadata commit failed 摘要。
+  - Mikan RSS `https://mikanani.kas.pub/RSS/Bangumi?bangumiId=3968` 刷新返回 `500 INTERNAL_ERROR`，message 为 `ERROR: value too long for type character varying(128) (SQLSTATE 22001)`；RSS 页面 toast 直接展示该 SQL 错误，未产生条目，preview 为 0，qBittorrent 入队/完成链路本轮被阻塞。
+  - 使用真实 PikPak 账号并填写 `config.proxy_url=http://172.17.0.1:7890` 后，`/api/v1/sources/test` 与浏览器 `POST /api/v1/sources` 均返回 `404 SOURCE_NOT_FOUND / source connection failed: resource not found`；未返回 `CLOUD_CAPTCHA_REQUIRED` 或 `verification_url`，页面也直接展示英文错误，因此 PikPak 正向 VFS/上传/WebDAV/native download/RSS 目标目录仍未覆盖。
+  - DevTools Issues：ACL 页面存储源下拉框存在一个表单控件缺少 `id` 或 `name`。
+- 2026-05-08：前端补丁待回归：已针对上述前端回归补齐根目录刷新短路与中文提示、`NO_BACKING_STORAGE`/Gin validation/SQLSTATE/PikPak resource not found 脱敏映射、分享管理页 `vfs_node_id + source_id/path` 兼容 payload、ACL 存储源下拉 `label/id/name`，并扩展 `check-vfs-integration.mjs` 静态守护；待测试负责人在同一环境重新覆盖上述阻塞点。
 
 ---
 

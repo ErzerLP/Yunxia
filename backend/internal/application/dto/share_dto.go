@@ -2,10 +2,12 @@ package dto
 
 // CreateShareRequest 表示创建分享请求。
 type CreateShareRequest struct {
-	SourceID  uint   `json:"source_id" binding:"required"`
-	Path      string `json:"path" binding:"required"`
-	ExpiresIn int64  `json:"expires_in"`
-	Password  string `json:"password"`
+	VFSNodeID       uint   `json:"vfs_node_id,omitempty"`
+	TargetVFSNodeID uint   `json:"target_vfs_node_id,omitempty"`
+	SourceID        uint   `json:"source_id,omitempty"`
+	Path            string `json:"path,omitempty"`
+	ExpiresIn       int64  `json:"expires_in"`
+	Password        string `json:"password"`
 }
 
 // UpdateShareRequest 表示更新分享请求。

@@ -480,7 +480,7 @@ PikPak 字段说明：
 - token/captcha/device_id 运行态刷新后会更新当前 source 配置并通过 source repository 持久化写回；服务重启后可继续使用最新 refresh/captcha/device 信息
 - PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required、region blocked 等用户或部署可修正错误不会重试，最终仍按稳定错误码返回
 - PikPak provider 返回区域/网络出口限制（例如大陆网络出口被拒绝）时，接口返回 `451 CLOUD_REGION_BLOCKED`；可通过调整后端网络出口、设置运行环境代理或填写 `config.proxy_url` 解决
-- PikPak provider 要求人工验证时，接口返回 `422 CLOUD_CAPTCHA_REQUIRED`；如果 provider 返回验证页面，响应会在 `error.details.verification_url` 中给出可打开的验证地址，管理员完成验证后把得到的 `captcha_token` 作为 `secret_patch.captcha_token` 重新提交或测试
+- PikPak provider 要求人工验证时，接口返回 `422 CLOUD_CAPTCHA_REQUIRED`；如果 provider 返回验证页面，响应会在 `error.details.verification_url` 中给出可打开的验证地址，管理员完成验证后把得到的 `captcha_token` 作为 `secret_patch.captcha_token` 重新提交或测试；登录/captcha 初始化阶段的 provider `resource_not_found/404` 不会映射为 Yunxia `SOURCE_NOT_FOUND`
 - 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
 - PikPak 上传现在同时支持两条后端路径：前端在 `/upload/init.file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 时，后端优先创建 provider OSS 直传计划；未传 GCID 或传普通 MD5/空值时，后端自动回退为 `server_chunk -> ImportFile`
 
@@ -1025,7 +1025,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - `filename_template`：RSS 入队时会基于 item `parsed` / `title` 渲染为任务级 `target_filename` 快照；下载器仍写入 staging，后端仅在完成导入阶段对“单文件任务”重命名。模板结果不含明确扩展名（如 `.mkv` / `.mp4`；`S01.05` 这类集数后缀不算扩展名）时会自动保留原文件扩展名；多文件 torrent 保持原相对路径，不批量改名。
 - 模板占位符支持 `{anime_title}`、`{season}`、`{episode}`、`{subtitle_group}`、`{resolution}`、`{title}`。目录模板会做路径安全清洗，禁止 `..`、绝对路径、Windows drive-style 前缀（如 `C:/anime` / `C:anime`）和反斜杠逃逸；未知占位符或非法模板返回 `400 PATH_INVALID`；条目解析字段缺失时对应占位渲染为空或安全 fallback，最终不会生成越界路径。
 - 创建/更新订阅会校验目标 VFS 目录可解析、有 backing storage、当前用户具备写权限且底层源可写。
-- RSS 条目去重优先使用 GUID；无 GUID 时使用 source + link + title 哈希。
+- RSS 条目去重优先使用 GUID；GUID 过长时后端会保存短 SHA256 指纹作为 dedup key，避免第三方 feed 长链接/GUID 超过数据库索引长度；无 GUID 时使用 source + link + title 哈希。
 - RSS 源会暴露无人值守调度字段：`health_status`（`ok` / `degraded` / `circuit_open`）、`consecutive_failures`、`last_success_at`、`next_refresh_at`、`last_refresh_status`、`last_refresh_stats`。
 - RSS 源连续失败会记录 `last_error` 并按失败次数退避；超过阈值进入 `circuit_open`，成功刷新后恢复 `ok` 并清零失败计数。单源失败不会中断 refresh-all 中其他源；手动 refresh-all 会强制刷新所有启用源，`skipped` 仅表示该源已有刷新在进行。
 - 条目状态当前可能为：`new`、`unsupported`、`ignored`、`matched`、`enqueued`、`retry_pending`、`completed`、`needs_attention`、`failed`。
@@ -1160,7 +1160,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 |---|---|---|---|---|
 | GET | `/shares` | Bearer | - | 200，`{items[]}` |
 | GET | `/shares/:id` | Bearer | path: `id` | 200，`{share}` |
-| POST | `/shares` | Bearer | `source_id,path,expires_in,password` | 201，`{share}` |
+| POST | `/shares` | Bearer | `vfs_node_id` 优先；兼容 `source_id,path`；另含 `expires_in,password` | 201，`{share}` |
 | PUT | `/shares/:id` | Bearer | `expires_in,password` | 200，`{share}` |
 | DELETE | `/shares/:id` | Bearer | path: `id` | 200，`{id,deleted}` |
 | GET | `/s/:token` | 无 | query: `password,path,page,page_size,sort_by,sort_order,disposition` | 文件：302；目录：200 JSON；异常：401/404/410 |
@@ -1172,6 +1172,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
   - `target_virtual_path`
   - `resolved_source_id`
   - `resolved_inner_path`
+- 创建分享推荐使用 `vfs_node_id`（来自 `/api/v2/fs/list` 的 `VFSItem.id`）。传 `vfs_node_id` 时后端不要求 `source_id/path`，并会按 node 当前路径解析 source/inner path 快照；未传时继续兼容旧 `source_id + path`。
 - 打开分享时后端优先按 `target_vfs_node_id` 解析当前 metadata VFS node；旧分享缺少 node id 时才兼容回退到 `target_virtual_path` / `source_id+path` 快照。
 - 文件分享不会直接由 `/s/:token` 长时间流式返回大文件；成功校验分享密码/过期后返回 `302 Location: /api/v2/fs/download?path=<当前虚拟路径>&access_token=<短期令牌>&disposition=...`。短期令牌 TTL 默认为 5 分钟，且不会超过分享链接过期剩余时间。
 - `/api/v2/fs/download` 会继续复用现有下载入口：local 返回文件流并支持 HTTP Range；S3/PikPak 等支持 presign 的 driver 返回 provider 临时 URL 302。
@@ -1701,7 +1702,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 ### 7.4 分享页流程
 
 1. 分享列表：`GET /api/v1/shares`
-2. 创建分享：`POST /api/v1/shares`
+2. 创建分享：`POST /api/v1/shares`，优先传当前选中文件/目录的 `vfs_node_id`
 3. 更新分享：`PUT /api/v1/shares/:id`
 4. 删除分享：`DELETE /api/v1/shares/:id`
 5. 公开分享页：
