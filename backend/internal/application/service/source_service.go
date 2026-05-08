@@ -698,9 +698,22 @@ func (s *SourceService) validateSource(ctx context.Context, source *entity.Stora
 		return ErrSourceDriverUnsupported
 	}
 	if err := probe.Test(ctx, source); err != nil {
+		if isCloudProviderError(err) {
+			return err
+		}
 		return fmt.Errorf("%w: %w", ErrSourceConnectionFailed, err)
 	}
 	return nil
+}
+
+func isCloudProviderError(err error) bool {
+	return errors.Is(err, ErrCloudAuthFailed) ||
+		errors.Is(err, ErrCloudTokenInvalid) ||
+		errors.Is(err, ErrCloudCaptchaRequired) ||
+		errors.Is(err, ErrCloudCaptchaExpired) ||
+		errors.Is(err, ErrCloudRateLimited) ||
+		errors.Is(err, ErrCloudRegionBlocked) ||
+		errors.Is(err, ErrCloudProviderUnavailable)
 }
 
 func (s *SourceService) syncSourceMountAfterMutation(ctx context.Context, source *entity.StorageSource) error {

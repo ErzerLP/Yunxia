@@ -1056,10 +1056,29 @@ func (s *TaskService) importCompletedTask(ctx context.Context, task *entity.Down
 			return err
 		}
 		if err := s.importStagedFile(ctx, source, targetPath, file.localPath); err != nil {
+			if errors.Is(err, ErrFileAlreadyExists) {
+				if recovered, nodeID, recoverErr := s.recoverCompletedTaskResult(ctx, task, source, targetPath); recoverErr != nil {
+					return recoverErr
+				} else if recovered {
+					_ = os.Remove(file.localPath)
+					if nodeID > 0 && task.ResultVFSNodeID == 0 {
+						task.ResultVFSNodeID = nodeID
+					}
+					continue
+				}
+			}
 			return err
 		}
 		nodeID, err := s.commitTaskImportedMetadataFile(ctx, task, source, targetPath, info)
 		if err != nil {
+			if recovered, recoveredNodeID, recoverErr := s.recoverCompletedTaskResult(ctx, task, source, targetPath); recoverErr != nil {
+				return recoverErr
+			} else if recovered {
+				if recoveredNodeID > 0 && task.ResultVFSNodeID == 0 {
+					task.ResultVFSNodeID = recoveredNodeID
+				}
+				continue
+			}
 			return err
 		}
 		if nodeID > 0 && task.ResultVFSNodeID == 0 {
@@ -1119,6 +1138,62 @@ func (s *TaskService) commitTaskMetadataFileObject(ctx context.Context, task *en
 		return 0, maskMetadataVFSCommitError(err)
 	}
 	return result.Node.ID, nil
+}
+
+func (s *TaskService) recoverCompletedTaskResult(ctx context.Context, task *entity.DownloadTask, source *entity.StorageSource, targetPath string) (bool, uint, error) {
+	if task == nil || source == nil || strings.TrimSpace(targetPath) == "" {
+		return false, 0, nil
+	}
+	if source.DriverType != "local" {
+		return false, 0, nil
+	}
+	_, physicalPath, err := resolvePhysicalPath(source, targetPath)
+	if err != nil {
+		return false, 0, err
+	}
+	info, err := os.Stat(physicalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+	if info.IsDir() {
+		return false, 0, nil
+	}
+	if nodeID, ok := s.resolveExistingTaskResultNode(ctx, task, source, targetPath); ok {
+		return true, nodeID, nil
+	}
+	nodeID, err := s.commitTaskImportedMetadataFile(ctx, task, source, targetPath, info)
+	if err != nil {
+		if existingID, ok := s.resolveExistingTaskResultNode(ctx, task, source, targetPath); ok {
+			return true, existingID, nil
+		}
+		return false, 0, err
+	}
+	return true, nodeID, nil
+}
+
+func (s *TaskService) resolveExistingTaskResultNode(ctx context.Context, task *entity.DownloadTask, source *entity.StorageSource, targetPath string) (uint, bool) {
+	if s.metadataReader == nil || task == nil || source == nil {
+		return 0, false
+	}
+	innerParentPath, filename, err := splitParentName(targetPath)
+	if err != nil || filename == "" {
+		return 0, false
+	}
+	virtualParentPath := taskImportedMetadataVirtualParentPath(task, source, innerParentPath)
+	if strings.TrimSpace(virtualParentPath) == "" {
+		return 0, false
+	}
+	node, err := s.metadataReader.ResolveNode(ctx, joinVirtualPath(virtualParentPath, filename))
+	if err != nil || metadataVFSNodeUnavailable(node) || node.Kind != entity.VFSNodeKindFile {
+		return 0, false
+	}
+	if node.SourceID == nil || *node.SourceID != source.ID {
+		return 0, false
+	}
+	return node.ID, true
 }
 
 func (s *TaskService) recordTaskMetadataCommitFailure(ctx context.Context, task *entity.DownloadTask, source *entity.StorageSource, objectPath string, virtualParentPath string, err error) {

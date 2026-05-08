@@ -662,6 +662,113 @@ func TestTaskCompletedImportUsesExistingLocalTargetWhenStagingEmpty(t *testing.T
 	}
 }
 
+func TestTaskCompletedImportRecoversExistingLocalTargetNode(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	sourceRepo := gorm.NewSourceRepository(db)
+	taskRepo := gorm.NewTaskRepository(db)
+	nodeRepo := gorm.NewVFSNodeRepository(db)
+	objectRepo := gorm.NewStorageObjectRepository(db)
+
+	basePath := t.TempDir()
+	configJSON, err := marshalLocalSourceConfig(basePath)
+	if err != nil {
+		t.Fatalf("marshalLocalSourceConfig() error = %v", err)
+	}
+	source := &entity.StorageSource{
+		Name:       "已有目标节点",
+		DriverType: "local",
+		Status:     "online",
+		IsEnabled:  true,
+		MountPath:  "/local",
+		RootPath:   "/",
+		ConfigJSON: configJSON,
+	}
+	if err := sourceRepo.Create(context.Background(), source); err != nil {
+		t.Fatalf("sourceRepo.Create() error = %v", err)
+	}
+
+	filename := "download.txt"
+	targetDir := filepath.Join(basePath, "downloads")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(target) error = %v", err)
+	}
+	targetFile := filepath.Join(targetDir, filename)
+	if err := os.WriteFile(targetFile, []byte("already downloaded"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	committer := NewMetadataVFSCommitService(nodeRepo, objectRepo, WithMetadataVFSCommitTransactor(gorm.NewTransactor(db)))
+	commitResult, err := committer.CommitFileObject(context.Background(), MetadataVFSFileObjectCommitRequest{
+		Source:                  source,
+		VirtualParentPath:       "/local/downloads",
+		ResolvedInnerParentPath: "/downloads",
+		Filename:                filename,
+		ObjectPath:              "/downloads/" + filename,
+		Size:                    int64(len("already downloaded")),
+		MimeType:                "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("CommitFileObject(existing) error = %v", err)
+	}
+
+	stagingDir := filepath.Join(t.TempDir(), "staging", "task-existing")
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(staging) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingDir, filename), []byte("already downloaded"), 0o644); err != nil {
+		t.Fatalf("WriteFile(staging) error = %v", err)
+	}
+
+	total := int64(len("already downloaded"))
+	now := time.Now()
+	task := &entity.DownloadTask{
+		UserID:                  42,
+		Type:                    "download",
+		DownloaderType:          DownloaderTypeAria2,
+		Status:                  "running",
+		SourceID:                source.ID,
+		SavePath:                "/downloads",
+		TargetVirtualParentPath: "/local/downloads",
+		SaveVirtualPath:         "/local/downloads",
+		ResolvedSourceID:        source.ID,
+		ResolvedInnerSavePath:   "/downloads",
+		StagingDir:              stagingDir,
+		DisplayName:             filename,
+		SourceURL:               "https://example.com/" + filename,
+		ExternalID:              "gid-existing-target",
+		DownloadedBytes:         total,
+		TotalBytes:              &total,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+	}
+	if err := taskRepo.Create(context.Background(), task); err != nil {
+		t.Fatalf("taskRepo.Create() error = %v", err)
+	}
+
+	metadataReader := NewMetadataVFSService(nodeRepo)
+	svc := NewTaskService(
+		taskRepo,
+		sourceRepo,
+		&completedWritingDownloader{filename: filename, content: []byte("already downloaded")},
+		WithTaskMetadataVFSReader(metadataReader),
+		WithTaskMetadataVFSCommitter(committer),
+	)
+	ctx := security.WithRequestAuth(context.Background(), security.RequestAuth{UserID: 42, RoleKey: "user", Status: "active"})
+
+	got, err := svc.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.Status != "completed" || got.ErrorMessage != nil || got.ResultVFSNodeID != commitResult.Node.ID {
+		t.Fatalf("expected recovered completed task, got %+v existingNode=%+v", got, commitResult.Node)
+	}
+	if _, err := os.Stat(stagingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected staging dir cleaned, stat err=%v", err)
+	}
+}
+
 func TestTaskTargetFilenameRenamesSingleStagedFile(t *testing.T) {
 	db, cleanup := openTestDB(t)
 	defer cleanup()
@@ -1959,6 +2066,30 @@ func TestSourceServiceCreatePersistsExplicitWebDAVReadOnlyFalse(t *testing.T) {
 	}
 	if !stored.IsWebDAVExposed || stored.WebDAVReadOnly {
 		t.Fatalf("expected persisted source to preserve webdav_read_only=false, got %+v", stored)
+	}
+}
+
+func TestSourceServiceTestReturnsCloudErrorWithoutConnectionWrapper(t *testing.T) {
+	probe := &recordingSourceProbe{err: ErrCloudCaptchaRequired}
+	svc := NewSourceService(
+		nil,
+		nil,
+		WithSourceConfigCodec(fakeSourceConfigCodec{driverType: "fakecloud", slug: "cloud"}),
+		WithSourceDriverProbe("fakecloud", probe),
+	)
+
+	_, err := svc.Test(context.Background(), appdto.SourceUpsertRequest{
+		Name:       "captcha cloud",
+		DriverType: "fakecloud",
+		IsEnabled:  true,
+		RootPath:   "/",
+		Config:     map[string]any{},
+	})
+	if !errors.Is(err, ErrCloudCaptchaRequired) {
+		t.Fatalf("expected cloud captcha error, got %v", err)
+	}
+	if errors.Is(err, ErrSourceConnectionFailed) {
+		t.Fatalf("cloud provider error must not be wrapped as source connection failed: %v", err)
 	}
 }
 

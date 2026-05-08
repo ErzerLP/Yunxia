@@ -553,9 +553,6 @@ export function AclPage() {
                             <span className="text-xs text-muted-foreground">无</span>
                           )}
                       </div>
-                      <span className="text-[10px] text-muted-foreground/60 ml-0 font-mono block mt-1">
-                        {JSON.stringify(rule.permissions)}
-                      </span>
                     </td>
                     <td className="px-4 py-2.5 text-muted-foreground">{rule.priority}</td>
                     <td className="px-4 py-2.5">

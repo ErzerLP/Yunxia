@@ -674,7 +674,7 @@ func (c *PikPakHTTPClient) doJSONWithProxy(ctx context.Context, method string, r
 			}
 			continue
 		}
-		if err := mapPikPakHTTPErrorForRequest(resp.StatusCode, data, rawURL); err != nil {
+		if err := mapPikPakHTTPErrorForRequest(resp.StatusCode, data, parsed.String()); err != nil {
 			if retryAfter > 0 {
 				if providerErr, ok := err.(*domainstorage.ProviderError); ok && providerErr.RetryAfterSeconds == 0 {
 					providerErr.RetryAfterSeconds = int(retryAfter.Seconds())
@@ -863,11 +863,12 @@ func mapPikPakHTTPErrorForRequest(status int, body []byte, rawURL string) error 
 	code := pikPakProviderErrorSignal(payload)
 	verificationURL := pikPakPayloadVerificationURL(payload)
 	authFlow := isPikPakAuthFlowURL(rawURL)
+	rootList := isPikPakRootListURL(rawURL)
 	if isPikPakRegionBlockedPayload(payload) {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudRegionBlocked, Message: "cloud region blocked", ProviderCode: code}
 	}
 	if code != "" && code != "0" {
-		return mapPikPakProviderCode(code, payload, authFlow)
+		return mapPikPakProviderCode(code, payload, authFlow || rootList)
 	}
 	if status >= http.StatusBadRequest && verificationURL != "" {
 		return &domainstorage.ProviderError{Kind: domainstorage.ErrCloudCaptchaRequired, Message: "cloud captcha required", VerificationURL: verificationURL}
@@ -876,7 +877,7 @@ func mapPikPakHTTPErrorForRequest(status int, body []byte, rawURL string) error 
 	case status >= 200 && status < 300:
 		return nil
 	case status == http.StatusNotFound:
-		if authFlow {
+		if authFlow || rootList {
 			return &domainstorage.ProviderError{
 				Kind:         domainstorage.ErrCloudCaptchaRequired,
 				Message:      "cloud captcha required",
@@ -942,6 +943,22 @@ func isPikPakAuthFlowURL(rawURL string) bool {
 	}
 	pathValue := strings.ToLower(parsed.Path)
 	return strings.Contains(pathValue, "/v1/auth/") || strings.Contains(pathValue, "/v1/shield/")
+}
+
+func isPikPakRootListURL(rawURL string) bool {
+	if strings.TrimSpace(rawURL) == "" {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	pathValue := strings.ToLower(parsed.Path)
+	if !strings.Contains(pathValue, "/drive/v1/files") {
+		return false
+	}
+	parentID := strings.TrimSpace(parsed.Query().Get("parent_id"))
+	return parentID == "" || parentID == "root"
 }
 
 func pikPakProviderErrorSignal(payload pikPakErrorPayload) string {

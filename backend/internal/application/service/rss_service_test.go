@@ -1315,6 +1315,87 @@ func TestRSSRetrySkipsActiveTaskToAvoidDuplicate(t *testing.T) {
 	}
 }
 
+func TestRSSStaleRetryStatesWithCompletedTaskBackfillCompleted(t *testing.T) {
+	repo := newFakeRSSRepo()
+	tasks := newFakeRSSTasks()
+	now := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+	completedTaskID := tasks.addTask("completed", nil)
+	tasks.tasks[completedTaskID].ResultVFSNodeID = 17
+	attentionTaskID := tasks.addTask("completed", nil)
+	tasks.tasks[attentionTaskID].ResultVFSNodeID = 18
+	failedMessage := "download canceled by stale worker"
+	failedTaskID := tasks.addTask("failed", &failedMessage)
+	source := repo.mustCreateSource(&entity.RSSSource{UserID: 1, Name: "s", URL: "https://example/rss.xml", IsEnabled: true, CreatedAt: now, UpdatedAt: now})
+	sub := repo.mustCreateSubscription(&entity.RSSSubscription{UserID: 1, SourceID: source.ID, Name: "sub", IsEnabled: true, TargetVirtualParentPath: "/anime", CreatedAt: now, UpdatedAt: now})
+	staleMessage := "file already exists"
+	retryReason := RSSRetryReasonTaskFailed
+	retryItem := repo.mustCreateItem(&entity.RSSItem{
+		UserID:                1,
+		SourceID:              source.ID,
+		Title:                 "Show",
+		DownloadURL:           "magnet:?xt=urn:btih:completed",
+		LinkType:              RSSLinkTypeMagnet,
+		Status:                RSSItemStatusRetryPending,
+		MatchedSubscriptionID: &sub.ID,
+		TaskID:                &completedTaskID,
+		ErrorMessage:          &staleMessage,
+		RetryReason:           &retryReason,
+		MaxRetryCount:         3,
+		NextRetryAt:           &now,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	})
+	attentionItem := repo.mustCreateItem(&entity.RSSItem{
+		UserID:                1,
+		SourceID:              source.ID,
+		Title:                 "Show needs attention",
+		DownloadURL:           "magnet:?xt=urn:btih:completed-attention",
+		LinkType:              RSSLinkTypeMagnet,
+		Status:                RSSItemStatusNeedsAttention,
+		MatchedSubscriptionID: &sub.ID,
+		TaskID:                &attentionTaskID,
+		ErrorMessage:          &staleMessage,
+		RetryReason:           &retryReason,
+		MaxRetryCount:         3,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	})
+	completedItem := repo.mustCreateItem(&entity.RSSItem{
+		UserID:                1,
+		SourceID:              source.ID,
+		Title:                 "Already completed",
+		DownloadURL:           "magnet:?xt=urn:btih:already-completed",
+		LinkType:              RSSLinkTypeMagnet,
+		Status:                RSSItemStatusCompleted,
+		MatchedSubscriptionID: &sub.ID,
+		TaskID:                &failedTaskID,
+		ResultVFSNodeID:       99,
+		MaxRetryCount:         3,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	})
+	svc := NewRSSService(repo, nil, tasks, WithRSSTaskRepository(tasks), WithRSSNow(func() time.Time { return now }))
+
+	if _, err := svc.RunRetryCycle(context.Background(), 10); err != nil {
+		t.Fatalf("RunRetryCycle failed: %v", err)
+	}
+	retryAfter, _ := repo.FindItemByID(context.Background(), retryItem.ID)
+	attentionAfter, _ := repo.FindItemByID(context.Background(), attentionItem.ID)
+	completedAfter, _ := repo.FindItemByID(context.Background(), completedItem.ID)
+	if tasks.createCalls != 0 {
+		t.Fatalf("should not enqueue duplicate task, createCalls=%d", tasks.createCalls)
+	}
+	if retryAfter.Status != RSSItemStatusCompleted || retryAfter.ResultVFSNodeID != 17 || retryAfter.ErrorMessage != nil || retryAfter.NextRetryAt != nil || retryAfter.RetryReason != nil {
+		t.Fatalf("expected completed backlink to win over retry_pending, got %#v", retryAfter)
+	}
+	if attentionAfter.Status != RSSItemStatusCompleted || attentionAfter.ResultVFSNodeID != 18 || attentionAfter.ErrorMessage != nil || attentionAfter.NextRetryAt != nil || attentionAfter.RetryReason != nil {
+		t.Fatalf("expected completed backlink to win over needs_attention, got %#v", attentionAfter)
+	}
+	if completedAfter.Status != RSSItemStatusCompleted || completedAfter.ResultVFSNodeID != 99 {
+		t.Fatalf("completed item/result node should not be downgraded by failed task, got %#v", completedAfter)
+	}
+}
+
 func TestRSSRefreshDoesNotRequeueCompletedOrRetryPendingItems(t *testing.T) {
 	repo := newFakeRSSRepo()
 	tasks := newFakeRSSTasks()

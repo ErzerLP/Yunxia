@@ -30,6 +30,13 @@ function assertRegex(rel, regex, message) {
   }
 }
 
+function assertNotRegex(rel, regex, message) {
+  const content = read(rel)
+  if (regex.test(content)) {
+    throw new Error(`${message}\n  Regex ${regex} unexpectedly matched ${rel}`)
+  }
+}
+
 assertIncludes(
   'src/components/layout/PreviewDrawer.tsx',
   'fileV2Api',
@@ -223,6 +230,11 @@ assertNotIncludes(
   'src/pages/acl/AclPage.tsx',
   'line-through',
   'ACL 权限展示不能把未授予的写/删/分享标签也显示出来。',
+)
+assertNotRegex(
+  'src/pages/acl/AclPage.tsx',
+  /JSON\.stringify\s*\(\s*rule\.permissions\b/,
+  'ACL 权限列只能展示中文权限标签或“无”，不能直接展示原始 permissions JSON。',
 )
 assertIncludes(
   'src/components/files/FileToolbar.tsx',

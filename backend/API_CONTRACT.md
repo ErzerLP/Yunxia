@@ -480,7 +480,7 @@ PikPak 字段说明：
 - token/captcha/device_id 运行态刷新后会更新当前 source 配置并通过 source repository 持久化写回；服务重启后可继续使用最新 refresh/captcha/device 信息
 - PikPak provider 请求遇到 429 或 5xx 临时错误时，后端会执行有限次数退避重试；401/403、账号密码错误、captcha required、region blocked 等用户或部署可修正错误不会重试，最终仍按稳定错误码返回
 - PikPak provider 返回区域/网络出口限制（例如大陆网络出口被拒绝）时，接口返回 `451 CLOUD_REGION_BLOCKED`；可通过调整后端网络出口、设置运行环境代理或填写 `config.proxy_url` 解决
-- PikPak provider 要求人工验证时，接口返回 `422 CLOUD_CAPTCHA_REQUIRED`；如果 provider 返回验证页面，响应会在 `error.details.verification_url` 中给出可打开的验证地址，管理员完成验证后把得到的 `captcha_token` 作为 `secret_patch.captcha_token` 重新提交或测试；登录/captcha 初始化阶段的 provider `resource_not_found/404` 不会映射为 Yunxia `SOURCE_NOT_FOUND`
+- PikPak provider 要求人工验证时，接口返回 `422 CLOUD_CAPTCHA_REQUIRED`；如果 provider 返回验证页面，响应会在 `error.details.verification_url` 中给出可打开的验证地址，管理员完成验证后把得到的 `captcha_token` 作为 `secret_patch.captcha_token` 重新提交或测试；登录/captcha 初始化以及根目录探测阶段的 provider `resource_not_found/404` 不会映射为 Yunxia `SOURCE_NOT_FOUND` / `SOURCE_CONNECTION_FAILED`
 - 当离线任务目标解析到 PikPak source 时，后端会优先调用 PikPak 原生离线下载任务，而不是先下载到 Yunxia staging；该优化不改变前端创建任务接口
 - PikPak 上传现在同时支持两条后端路径：前端在 `/upload/init.file_hash` 传 `gcid:<40位hex>` 或 `<40位hex>` 时，后端优先创建 provider OSS 直传计划；未传 GCID 或传普通 MD5/空值时，后端自动回退为 `server_chunk -> ImportFile`
 
@@ -757,7 +757,7 @@ PikPak `direct_parts` 响应示例：
 - 用户主动取消的非终态任务会先在 Yunxia 内记录为 `canceled` 和 `error_message="download canceled by user"`，后续下载器状态刷新不会覆盖该取消原因
 - 具备 `task.read_all` / `task.manage_all` capability 的角色可跨用户治理
 - 终态任务（`completed` / `failed` / `canceled`）返回时会清空实时下载字段：`speed_bytes=0`、`eta_seconds=null`
-- `completed` 任务返回时 `error_message` 固定为 `null`；若导入或 metadata commit 失败，任务会转为 `failed`，`speed_bytes=0`、`eta_seconds=null`，`error_message` 为安全摘要（metadata commit 失败固定 `metadata vfs commit failed`），并记录 `task_commit` operation journal
+- `completed` 任务返回时 `error_message` 固定为 `null`；若目标文件已经落到本地源且 metadata VFS 中已有可用 result node，后端会回填 `result_vfs_node_id` 并保持 `completed`，避免重复同步/重试把事实完成的任务改为失败；若导入或 metadata commit 失败且无法确认既有 result node，任务会转为 `failed`，`speed_bytes=0`、`eta_seconds=null`，`error_message` 为安全摘要（metadata commit 失败固定 `metadata vfs commit failed`），并记录 `task_commit` operation journal
 - `failed` / `canceled` 任务会返回明确 `error_message`；下载器未返回原因时后端补默认原因，用户主动取消时为 `download canceled by user`
 - `DownloadTaskView.downloader_type` 当前可能为 `aria2`、`qbittorrent` 或 `pikpak_native`
 - ACL / 权限失败统一返回 `403 PERMISSION_DENIED`
@@ -1030,7 +1030,7 @@ RSS 导入响应会逐项返回结果；单项失败不导致整体 HTTP 失败�
 - RSS 源连续失败会记录 `last_error` 并按失败次数退避；超过阈值进入 `circuit_open`，成功刷新后恢复 `ok` 并清零失败计数。单源失败不会中断 refresh-all 中其他源；手动 refresh-all 会强制刷新所有启用源，`skipped` 仅表示该源已有刷新在进行。
 - 条目状态当前可能为：`new`、`unsupported`、`ignored`、`matched`、`enqueued`、`retry_pending`、`completed`、`needs_attention`、`failed`。
 - 条目重试字段：`retry_count`、`max_retry_count`、`last_attempt_at`、`next_retry_at`、`retry_reason`。自动重试默认最多 3 次，退避为 5m / 30m / 2h；手动 retry 可绕过 `next_retry_at`。
-- 已有关联非终态 task 的 RSS item 不会重复入队；普通自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `completed` 且有 result node 才会回写 item `completed`，task `failed` / `canceled` 或 completed 但缺失 result node 会进入 `needs_attention`（或按既有瞬时下载器错误进入有限 `retry_pending`），metadata commit 失败固定展示安全错误摘要。
+- 已有关联非终态 task 的 RSS item 不会重复入队；普通自动刷新不会绕过 `retry_pending` / `needs_attention` / `completed` 状态重复入队；task `completed` 且有 result node 会优先回写 item `completed`，即使 item 当前因旧错误停在 `retry_pending` / `needs_attention` 也会收敛为 completed；已 completed 且有 result node 的 item 不会被后续失败/重试状态降级。task `failed` / `canceled` 或 completed 但缺失 result node 会进入 `needs_attention`（或按既有瞬时下载器错误进入有限 `retry_pending`），metadata commit 失败固定展示安全错误摘要。
 - 规则 preview 返回每个已有 item 的 `result`（`matched` / `missing` / `excluded`）以及 `matched`、`missing`、`excluded` 关键词列表，用于解释命中/未命中原因。
 - 复制订阅会授权原订阅 owner，复制 `source_id`、规则、regex/case、目标路径、目录/文件名模板与 VFS 解析快照；新订阅使用新 `id/created_at/updated_at`。未传 `name` 时默认生成 `原名 Copy`（必要时简单追加序号），未传 `is_enabled` 时保持原订阅状态。
 - 批量启用/禁用订阅对每个 `subscription_id` 独立 `FindSubscriptionByID` 与授权；成功项更新 `is_enabled` 与 `updated_at`，失败项写入 `error_code/error_message`，不会导致整个响应失败。

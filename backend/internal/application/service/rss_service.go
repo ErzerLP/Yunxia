@@ -1905,36 +1905,39 @@ func (s *RSSService) reconcileTaskBacklinks(ctx context.Context, limit int, proc
 	if s.taskReader == nil || limit <= 0 {
 		return nil
 	}
-	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{IncludeAll: true, Status: RSSItemStatusEnqueued})
-	if err != nil {
-		return err
-	}
 	var joined error
 	now := s.now()
-	for _, item := range items {
-		if *processed >= limit {
-			break
-		}
-		if item.TaskID == nil {
+	for _, status := range []string{RSSItemStatusEnqueued, RSSItemStatusRetryPending, RSSItemStatusNeedsAttention} {
+		items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{IncludeAll: true, Status: status})
+		if err != nil {
+			joined = errors.Join(joined, err)
 			continue
 		}
-		task, err := s.taskReader.FindByID(ctx, *item.TaskID)
-		if err != nil {
-			if errors.Is(err, domainrepo.ErrNotFound) {
-				message := "download task not found"
-				s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), errors.New(message), now, false)
-				(*processed)++
+		for _, item := range items {
+			if *processed >= limit {
+				break
+			}
+			if item.TaskID == nil {
 				continue
 			}
-			joined = errors.Join(joined, err)
-			continue
-		}
-		if err := s.applyRSSItemTaskBacklink(ctx, item, task, now); err != nil {
-			joined = errors.Join(joined, err)
-			continue
-		}
-		if isTerminalTaskStatus(task.Status) {
-			(*processed)++
+			task, err := s.taskReader.FindByID(ctx, *item.TaskID)
+			if err != nil {
+				if errors.Is(err, domainrepo.ErrNotFound) {
+					message := "download task not found"
+					s.markItemRetryOrAttention(ctx, item, valueOrZero(item.MatchedSubscriptionID), errors.New(message), now, false)
+					(*processed)++
+					continue
+				}
+				joined = errors.Join(joined, err)
+				continue
+			}
+			if err := s.applyRSSItemTaskBacklink(ctx, item, task, now); err != nil {
+				joined = errors.Join(joined, err)
+				continue
+			}
+			if isTerminalTaskStatus(task.Status) {
+				(*processed)++
+			}
 		}
 	}
 	return joined
@@ -1947,7 +1950,6 @@ func (s *RSSService) reconcileSingleTaskBacklink(ctx context.Context, task *enti
 	items, err := s.rssRepo.ListItems(ctx, domainrepo.RSSItemFilter{
 		IncludeAll: true,
 		TaskID:     task.ID,
-		Status:     RSSItemStatusEnqueued,
 	})
 	if err != nil {
 		return err
@@ -1964,6 +1966,9 @@ func (s *RSSService) reconcileSingleTaskBacklink(ctx context.Context, task *enti
 
 func (s *RSSService) applyRSSItemTaskBacklink(ctx context.Context, item *entity.RSSItem, task *entity.DownloadTask, now time.Time) error {
 	if item == nil || task == nil {
+		return nil
+	}
+	if task.Status != "completed" && s.preserveRSSItemCompletedResult(ctx, item, now) {
 		return nil
 	}
 	switch task.Status {
@@ -2009,6 +2014,19 @@ func (s *RSSService) retryDueItems(ctx context.Context, limit int, processed *in
 		if s.itemHasActiveTask(ctx, item) {
 			continue
 		}
+		if s.preserveRSSItemCompletedResult(ctx, item, now) {
+			(*processed)++
+			continue
+		}
+		reconciled, err := s.reconcileRetryItemCompletedTask(ctx, item, now)
+		if err != nil {
+			joined = errors.Join(joined, err)
+			continue
+		}
+		if reconciled {
+			(*processed)++
+			continue
+		}
 		itemCtx := s.contextForRSSOwner(ctx, item.UserID)
 		subscription, err := s.subscriptionForItemRetry(itemCtx, item, 0)
 		if err != nil {
@@ -2032,6 +2050,23 @@ func (s *RSSService) retryDueItems(ctx context.Context, limit int, processed *in
 		(*processed)++
 	}
 	return joined
+}
+
+func (s *RSSService) reconcileRetryItemCompletedTask(ctx context.Context, item *entity.RSSItem, now time.Time) (bool, error) {
+	if s.taskReader == nil || item == nil || item.TaskID == nil {
+		return false, nil
+	}
+	task, err := s.taskReader.FindByID(ctx, *item.TaskID)
+	if err != nil {
+		if errors.Is(err, domainrepo.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if task.Status != "completed" || task.ResultVFSNodeID == 0 {
+		return false, nil
+	}
+	return true, s.applyRSSItemTaskBacklink(ctx, item, task, now)
 }
 
 func (s *RSSService) subscriptionForItemRetry(ctx context.Context, item *entity.RSSItem, requestedID uint) (*entity.RSSSubscription, error) {
@@ -2082,6 +2117,9 @@ func (s *RSSService) retryItemWithSubscription(ctx context.Context, item *entity
 
 func (s *RSSService) markItemRetryOrAttention(ctx context.Context, item *entity.RSSItem, subscriptionID uint, err error, now time.Time, countAttempt bool) {
 	if item == nil || err == nil {
+		return
+	}
+	if s.preserveRSSItemCompletedResult(ctx, item, now) {
 		return
 	}
 	previousStatus := item.Status
@@ -3113,6 +3151,24 @@ func boolDefault(value *bool, fallback bool) bool {
 
 func rssItemIsCompleted(item *entity.RSSItem) bool {
 	return item != nil && item.Status == RSSItemStatusCompleted
+}
+
+func (s *RSSService) preserveRSSItemCompletedResult(ctx context.Context, item *entity.RSSItem, now time.Time) bool {
+	if item == nil || item.ResultVFSNodeID == 0 {
+		return false
+	}
+	if item.Status == RSSItemStatusCompleted && item.ErrorMessage == nil && item.RetryReason == nil && item.NextRetryAt == nil {
+		return true
+	}
+	item.Status = RSSItemStatusCompleted
+	item.ErrorMessage = nil
+	item.RetryReason = nil
+	item.NextRetryAt = nil
+	item.UpdatedAt = now
+	if err := s.rssRepo.UpdateItem(ctx, item); err != nil {
+		s.logger.Warn("rss item completed result preservation failed", slog.String("event", "rss.item.completed_result_preservation_failed"), slog.Uint64("item_id", uint64(item.ID)), slog.Any("error", err))
+	}
+	return true
 }
 
 func rssItemAllowsAutomaticProcessing(item *entity.RSSItem) bool {

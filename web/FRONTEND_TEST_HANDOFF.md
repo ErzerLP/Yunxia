@@ -125,7 +125,7 @@
 
 #### 阻塞 / 备注
 
-- 本轮前端已完成静态验证，但尚未在真实后端运行环境完成上述端到端 smoke，因此状态为 `待联调`。
+- 2026-05-08 `main@06ef6ab` 已在真实后端运行环境完成端到端 smoke；上一轮前端阻塞点已大多回归通过，但仍存在离线任务 metadata commit、RSS item/task 状态回写、PikPak 稳定错误码等后端阻塞，故总状态保持 `阻塞`。
 - 若测试环境没有可用 PikPak captcha/token，可先记录 PikPak 正向链路阻塞，但仍应覆盖 `proxy_url` 表单提交/校验与错误提示。
 - VFS 标签绑定依赖目标 path 已有 metadata node；前端绑定前会先请求父目录 list，若后端仍返回 `FILE_NOT_FOUND`，请记录对应 path 和请求响应。
 
@@ -143,6 +143,12 @@
   - 使用真实 PikPak 账号并填写 `config.proxy_url=http://172.17.0.1:7890` 后，`/api/v1/sources/test` 与浏览器 `POST /api/v1/sources` 均返回 `404 SOURCE_NOT_FOUND / source connection failed: resource not found`；未返回 `CLOUD_CAPTCHA_REQUIRED` 或 `verification_url`，页面也直接展示英文错误，因此 PikPak 正向 VFS/上传/WebDAV/native download/RSS 目标目录仍未覆盖。
   - DevTools Issues：ACL 页面存储源下拉框存在一个表单控件缺少 `id` 或 `name`。
 - 2026-05-08：前端补丁待回归：已针对上述前端回归补齐根目录刷新短路与中文提示、`NO_BACKING_STORAGE`/Gin validation/SQLSTATE/PikPak resource not found 脱敏映射、分享管理页 `vfs_node_id + source_id/path` 兼容 payload、ACL 存储源下拉 `label/id/name`，并扩展 `check-vfs-integration.mjs` 静态守护；待测试负责人在同一环境重新覆盖上述阻塞点。
+- 2026-05-08：测试负责人清理旧环境后从 `main@06ef6ab` 部署完整前后端回归。环境：后端 `http://127.0.0.1:18183`，前端 `http://10.0.0.95:15183`，Docker Compose 启动 Postgres/Aria2/qBittorrent，浏览器 MCP 联动，代理 `http://172.17.0.1:7890`。已覆盖并通过：`/` 与 `/vfs` 跳转 `/files`；根目录刷新短路为中文提示且不再请求 `/api/v2/fs/refresh /`；`/hostdisk` 挂载后可见原有 `original.txt`，进入挂载目录刷新会 `POST /api/v2/fs/refresh {"path":"/hostdisk","mode":"sync"}` 后重新 list；VFS mkdir、上传 `server_chunk` 与 `upload/finish.result_vfs_node_id`、标签创建/绑定/解绑；分享管理页 VFS 路径创建分享成功，请求体含 `vfs_node_id + source_id/path`，分享卡片展示节点与快照路径，公开文件分享 302 下载可读；ACL node-first 只读规则创建，普通用户可读且写操作被拒绝，DevTools 未再出现下拉缺 `id/name` issue；WeChat 离线任务 completed/100%/bytes/result node，打开保存目录可见文件；Mikan RSS 源刷新成功、获取 6 条，preview 有匹配，qBittorrent health ok，条目可入队，关联 qBittorrent 任务 completed 且结果文件在 VFS 可见；PikPak 非法 proxy URL 前端拦截且未发请求，合法 proxy 会随 `config.proxy_url` 提交，`SOURCE_CONNECTION_FAILED/resource not found` 已显示中文行动建议；前端 `npm run lint`、`npm run build`、`node scripts/check-vfs-integration.mjs` 通过；后端 VFS/Share/ACL/RSS/PikPak/Upload/Task/qBittorrent 定向 `go test` 通过。阻塞/问题：
+  - 前端：ACL 管理页权限列仍把原始 permissions JSON 直接显示在“读”标签旁，例如 `{"read":true,"write":false,"delete":false,"share":false}`。
+  - 后端：普通 HTTP 小文件离线任务 `download.txt` 已下载 `4224/4224` bytes，VFS 目录中也可见文件，但任务状态为 `failed`、`error_message="metadata vfs commit failed"`，无 `result_vfs_node_id`。
+  - 后端：Mikan RSS 条目入队后关联任务 #3 已 `completed` 且有 `result_vfs_node_id=17`，结果文件在 VFS 可见，但 RSS item 仍/再次变为 `retry_pending`，`error_message` 先后出现 `file already exists` / `qbittorrent /api/v2/torrents/add failed: Fails.`。
+  - 后端：PikPak `/api/v1/sources/test` 与 `/api/v1/sources` 使用合法 proxy 和测试账号时返回 `SOURCE_CONNECTION_FAILED / source connection failed: resource not found`，未返回预期 `CLOUD_CAPTCHA_REQUIRED`、`CLOUD_REGION_BLOCKED` 或 `verification_url`，PikPak 正向链路仍未覆盖。
+- 2026-05-08：前端补丁待回归：ACL 管理页权限列已移除原始 `permissions` JSON 展示，只保留中文权限标签“读/写/删/分享”或“无”；只读规则应仅显示“读”。已增加静态检查禁止 `AclPage` 直接 `JSON.stringify(rule.permissions)`，待测试负责人在 ACL 规则列表回归确认。
 
 ---
 

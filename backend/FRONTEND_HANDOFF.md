@@ -920,7 +920,7 @@ type PikPakSecretPatch = {
 - 非 PikPak 目标仍使用原有 staging 下载与导入策略；PikPak 原生离线下载不要求前端改创建任务入参，只需要识别任务返回的 `downloader_type="pikpak_native"`。
 - PikPak provider 429/5xx 会由后端有限退避重试；前端仍只需要处理最终稳定错误码，例如 `CLOUD_RATE_LIMITED` 或 `CLOUD_PROVIDER_UNAVAILABLE`。
 - `CLOUD_REGION_BLOCKED` 对应 HTTP 451，通常不是账号密码错误，而是后端到 PikPak 的网络出口所在区域被拒绝；UI 不要提示用户改密码。
-- `CLOUD_CAPTCHA_REQUIRED` 对应 HTTP 422；如果 `error.details.verification_url` 存在，建议 UI 展示“打开验证页面”入口，并提示管理员验证完成后把得到的 `captcha_token` 回填到 PikPak 源 secret 后重试。
+- `CLOUD_CAPTCHA_REQUIRED` 对应 HTTP 422；如果 `error.details.verification_url` 存在，建议 UI 展示“打开验证页面”入口，并提示管理员验证完成后把得到的 `captcha_token` 回填到 PikPak 源 secret 后重试；PikPak 登录/captcha 初始化和根目录探测阶段的 provider `resource_not_found/404` 不再展示为 `SOURCE_CONNECTION_FAILED`。
 - `delete_mode=permanent` 仍返回 `422 SOURCE_OPERATION_UNSUPPORTED`。
 - `CLOUD_CAPTCHA_REQUIRED` 表示需要管理员完成 PikPak 人工验证后回填 `captcha_token`。
 - 更新 source 时不传某个 secret 字段表示保留旧值；传 `null` 表示清空。
@@ -1046,9 +1046,10 @@ type PikPakSecretPatch = {
 
 - 上传、离线下载、PikPak 原生离线、RSS item 的完成语义统一以 metadata VFS node/object commit 成功为准。
 - 上传成功和任务 completed 后，`/api/v2/fs/list` 会立即看到 result node；成功 DTO 会回写 `result_vfs_node_id`。
+- 普通 HTTP 离线下载若目标文件已落到本地源且 metadata VFS 已有可用 result node，后端会回填 `result_vfs_node_id` 并保持任务 `completed`，不再因重复同步/同名导入把任务降级为 `failed`。
 - PikPak native 若 provider completed 但没有返回安全文件名且任务没有 `target_filename`，会转为 `failed` + `METADATA_VFS_COMMIT_FAILED`，不会用 URL/magnet 字符串伪造完成结果。
 - metadata commit 失败会记录内部 `upload_commit` / `task_commit` operation journal，对外只返回稳定错误码和安全摘要。
-- RSS backlink 收敛：task completed 但没有 result node 不再把 item 标为 completed，而是进入 `needs_attention`。
+- RSS backlink 收敛：task completed 且有 result node 会优先把 item 标为 `completed`；task completed 但没有 result node 不再把 item 标为 completed，而是进入 `needs_attention`；已 completed/result 的 item 不会被旧的 retry/failure 状态降级。
 
 完整字段和错误码见 `backend/API_CONTRACT.md` 的 `3.7 upload`、`3.9 tasks`、`3.10 rss`。
 
